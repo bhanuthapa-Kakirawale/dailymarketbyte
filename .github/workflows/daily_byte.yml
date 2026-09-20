@@ -1,0 +1,36 @@
+name: Daily Byte
+on:
+  schedule:
+    - cron: "10 2 * * 1-5"   # 02:10 UTC = 07:40 IST, Mon-Fri -> video live ~8 AM (GitHub may start late)
+  workflow_dispatch: {}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: sudo apt-get install -y -qq fonts-dejavu-core
+      - run: pip install -r requirements.txt
+      - name: Restore YouTube credentials
+        env:
+          YT_TOKEN_JSON: ${{ secrets.YT_TOKEN_JSON }}
+          YT_CLIENT_SECRET_JSON: ${{ secrets.YT_CLIENT_SECRET_JSON }}
+        run: |
+          if [ -n "$YT_TOKEN_JSON" ]; then
+            echo "$YT_TOKEN_JSON" > token.json
+            echo "$YT_CLIENT_SECRET_JSON" > client_secret.json
+          fi
+      - name: Build (and upload if credentials exist)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -f token.json ]; then python main.py --upload; else python main.py --force; fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: daily-byte
+          path: |
+            output/*.mp4
+            output/*.json

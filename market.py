@@ -95,7 +95,7 @@ def get_market() -> dict:
     bank_pct = vix = None
     try:
         b = history("^NSEBANK", "1mo")
-        if b.index[-1] == nifty.index[-1]:
+        if b.index[-1] == nifty.index[-1] and b.index[-2] == nifty.index[-2]:
             bank_pct = float((b.Close.iloc[-1] / b.Close.iloc[-2] - 1) * 100)
     except Exception as e:
         print(f"[market] Bank Nifty failed: {e}")
@@ -106,12 +106,18 @@ def get_market() -> dict:
     return analyze(nifty, bank_pct, vix)
 
 
-def get_movers(universe: dict, recap_date: dt.date, n: int = 5):
+def get_movers(universe: dict, recap_date: dt.date, prev_date: dt.date, n: int = 5):
+    """prev_date: the actual previous trading session, from the Nifty index's own calendar -
+    every mover's day-over-day % is only trusted if ITS previous close lands on that same date.
+    yfinance can silently drop a day for a specific stock (verified 2026-09-18: ADANIGREEN's
+    history skipped 17 Sep entirely, so close[-1]/close[-2] quietly became a 2-day change
+    mislabeled as 1-day, +5.06% shown vs the real +4.73%) - without this check that kind of
+    gap is invisible, so a stock whose dates don't line up is dropped rather than mismeasured."""
     import yfinance as yf
     syms = list(universe)
     raw = retry(lambda: yf.download([s + ".NS" for s in syms], period="1mo", interval="1d", group_by="ticker",
                                     auto_adjust=False, progress=False, threads=True))
-    rows = []
+    rows, skipped_gap = [], []
     for s in syms:
         try:
             d = _clean(raw[s + ".NS"][["Open", "High", "Low", "Close", "Volume"]])
@@ -119,13 +125,18 @@ def get_movers(universe: dict, recap_date: dt.date, n: int = 5):
             continue
         if len(d) < 3 or d.index[-1].date() != recap_date:
             continue
+        if d.index[-2].date() != prev_date:
+            skipped_gap.append(s)
+            continue
         c, v = d.Close, d.Volume
         avgv = v.iloc[-11:-1].mean()
         rows.append({"symbol": s, "name": universe[s], "close": float(c.iloc[-1]),
                      "pct": float((c.iloc[-1] / c.iloc[-2] - 1) * 100),
                      "volx": float(v.iloc[-1] / avgv) if avgv and avgv > 0 else None})
+    if skipped_gap:
+        print(f"[market] dropped {len(skipped_gap)} stocks with a data gap vs {prev_date}: {skipped_gap}")
     if len(rows) < 2 * n:
-        raise RuntimeError(f"Only {len(rows)} stocks had data for {recap_date}")
+        raise RuntimeError(f"Only {len(rows)} stocks had clean data for {recap_date}")
     df = pd.DataFrame(rows).sort_values("pct", ascending=False)
     return df.head(n).to_dict("records"), df.tail(n).iloc[::-1].to_dict("records")
 
@@ -217,6 +228,7 @@ def analyze(df: pd.DataFrame, bank_pct=None, vix=None) -> dict:
     return {
         "chart_df": cdf,
         "recap_date": df.index[-1].date(),
+        "prev_date": df.index[-2].date(),
         "open": float(last.Open), "high": float(last.High), "low": float(last.Low),
         "close": float(last.Close), "prev": float(prev.Close),
         "chg": float(last.Close - prev.Close), "pct": float((last.Close / prev.Close - 1) * 100),
@@ -287,7 +299,9 @@ SECTORS = [("Bank", "NIFTY BANK", "^NSEBANK"), ("IT", "NIFTY IT", "^CNXIT"),
            ("Media", "NIFTY MEDIA", "^CNXMEDIA"), ("Infra", "NIFTY INFRASTRUCTURE", "^CNXINFRA")]
 
 
-def get_sectors(recap_date, nse_idx: dict) -> list:
+def get_sectors(recap_date, prev_date, nse_idx: dict) -> list:
+    """prev_date: same-calendar guard as get_movers() - a sector index with the same yfinance
+    day-gap issue would otherwise silently report a multi-day move as if it were one day."""
     out = []
     for label, nse_name, yt in SECTORS:
         if nse_name in nse_idx:
@@ -295,15 +309,21 @@ def get_sectors(recap_date, nse_idx: dict) -> list:
             continue
         try:
             d = history(yt, "1mo")
-            if d.index[-1].date() == recap_date:
+            if d.index[-1].date() == recap_date and d.index[-2].date() == prev_date:
                 out.append({"name": label, "pct": float((d.Close.iloc[-1] / d.Close.iloc[-2] - 1) * 100)})
+            elif d.index[-1].date() == recap_date:
+                print(f"[market] sector {label} dropped: prev-close date {d.index[-2].date()} != {prev_date}")
         except Exception as e:
             print(f"[market] sector {label} failed: {e}")
     return sorted(out, key=lambda x: -x["pct"])
 
 
 # ----------------------------------------------------------------------------- global cues
-GLOBALS = [("DOW JONES", "^DJI", 0, ""), ("NASDAQ", "^IXIC", 0, ""), ("BRENT CRUDE", "BZ=F", 2, "$"),
+# BRENT CRUDE deliberately excluded: yfinance's BZ=F ticker was verified (2026-09-18 session)
+# to show -5.28% against an independently-reported -1.54% real move - a ~4x error, likely from
+# tracking a thin/mismatched contract. It's sourced via news.ai_pass() (Gemini-verified,
+# hidden if unconfirmed) instead of trusted blindly here. Re-verify before re-adding it to yfinance.
+GLOBALS = [("DOW JONES", "^DJI", 0, ""), ("NASDAQ", "^IXIC", 0, ""),
            ("USD / INR", "INR=X", 2, ""), ("GOLD", "GC=F", 0, "$")]
 
 

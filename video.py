@@ -9,12 +9,12 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from config import (W, H, FPS, ASSETS_DIR, BG1, BG2, CARD, CARD_ACTIVE, TEXT, SUB,
-                    ACCENT, GREEN, RED, YELLOW, fmt_in)
+                    ACCENT, GREEN, RED, YELLOW, MUSIC_VOLUME, fmt_in)
 
 # Layout (inside the Shorts safe zone: bottom ~20% and right edge are covered by YouTube UI)
 X0, X1 = 50, 1030
-TICK_Y = 262
-LINE_Y = 326
+TICK_Y = 288
+LINE_Y = 340
 SECTION_Y = 344
 TOP = 470
 LAYER_H = 1210
@@ -141,19 +141,17 @@ def header_layer(info, demo=False):
     img = Image.new("RGBA", (W, LINE_Y + 8), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     f = font(74)
-    d.text((60, 72), "DAILY", font=f, fill=TEXT)
-    d.text((60 + tlen("DAILY ", f), 72), "BYTE", font=f, fill=ACCENT)
-    tag = "INDIAN MARKETS"
-    tx = 60 + tlen("DAILY BYTE  ", f)
-    d.rounded_rectangle((tx, 92, tx + tlen(tag, font(24)) + 28, 130), 18, outline=ACCENT, width=2)
-    d.text((tx + 14, 97), tag, font=font(24), fill=ACCENT)
-    d.text((60, 162), info["today_str"], font=font(44), fill=YELLOW)
-    d.text((60, 216), f"Recap of {info['recap_str']} session", font=font(30, False), fill=SUB)
+    d.text((62, 74), "DAILY MARKET", font=f, fill=(0, 0, 0, 90))
+    d.text((62 + tlen("DAILY MARKET ", f), 74), "BYTE", font=f, fill=(0, 0, 0, 90))
+    d.text((60, 72), "DAILY MARKET", font=f, fill=TEXT)
+    d.text((60 + tlen("DAILY MARKET ", f), 72), "BYTE", font=f, fill=ACCENT)
+    d.text((60, 182), info["today_str"], font=font(44), fill=YELLOW)
+    d.text((60, 236), f"Recap of {info['recap_str']} session", font=font(30, False), fill=SUB)
     if demo:
         txt = "DEMO DATA - NOT REAL"
         fw = tlen(txt, font(30))
-        d.rounded_rectangle((X1 - fw - 36, 208, X1, 254), 14, fill=(220, 30, 40))
-        d.text((X1 - fw - 18, 214), txt, font=font(30), fill=(255, 255, 255))
+        d.rounded_rectangle((X1 - fw - 36, 228, X1, 274), 14, fill=(220, 30, 40))
+        d.text((X1 - fw - 18, 234), txt, font=font(30), fill=(255, 255, 255))
     return img
 
 
@@ -272,27 +270,29 @@ class IntroScene(Scene):
 
     def draw(self, d, L, t):
         e = ease(t / 0.7)
-        f = font(110 + 40 * e)
-        tw = tlen("DAILY BYTE", f)
-        x = (W - tw) / 2
-        d.text((x, 560 - 60 * e), "DAILY", font=f, fill=TEXT)
-        d.text((x + tlen("DAILY ", f), 560 - 60 * e), "BYTE", font=f, fill=ACCENT)
+        f = font(100 + 30 * e)
+        y1 = 500 - 60 * e
+        tw1 = tlen("DAILY MARKET", f)
+        d.text(((W - tw1) / 2, y1), "DAILY MARKET", font=f, fill=TEXT)
+        y2 = y1 + 130
+        tw2 = tlen("BYTE", f)
+        d.text(((W - tw2) / 2, y2), "BYTE", font=f, fill=ACCENT)
         s = "Indian Stock Market Recap"
-        d.text(((W - tlen(s, font(50))) / 2, 700), s, font=font(50), fill=TEXT)
+        d.text(((W - tlen(s, font(50))) / 2, 830), s, font=font(50), fill=TEXT)
         if self.hook:
             fh = fit(self.hook, 880, 40)
             hw = tlen(self.hook, fh)
-            d.rounded_rectangle(((W - hw) / 2 - 30, 800, (W + hw) / 2 + 30, 880), 22, outline=YELLOW, width=3,
+            d.rounded_rectangle(((W - hw) / 2 - 30, 930, (W + hw) / 2 + 30, 1010), 22, outline=YELLOW, width=3,
                                 fill=(40, 36, 10, int(200 * e)))
-            d.text(((W - hw) / 2, 817), self.hook, font=fh, fill=YELLOW)
+            d.text(((W - hw) / 2, 947), self.hook, font=fh, fill=YELLOW)
         items = [("GLOBAL", ACCENT), ("NIFTY", TEXT), ("SECTORS", YELLOW), ("GAINERS", GREEN), ("LOSERS", RED)]
         fs = font(28)
         widths = [tlen(i, fs) + 36 for i, _ in items]
         x = (W - sum(widths) - 14 * 4) / 2
         for k, ((it, c), w) in enumerate(zip(items, widths)):
             if t > 0.1 + k * 0.08:
-                d.rounded_rectangle((x, 930, x + w, 984), 27, outline=c, width=3)
-                d.text((x + 18, 941), it, font=fs, fill=c)
+                d.rounded_rectangle((x, 1060, x + w, 1114), 27, outline=c, width=3)
+                d.text((x + 18, 1071), it, font=fs, fill=c)
             x += w + 14
 
 
@@ -549,7 +549,7 @@ class OutroScene(Scene):
         d.rounded_rectangle(((W - w2) / 2 - 50, 700 - 80 - lvl * 2, (W + w2) / 2 + 50, 700 + 80 + lvl * 2), 40,
                             fill=(230, 33, 23))
         d.text(((W - w2) / 2, 700 - f2.size * 0.62), "SUBSCRIBE", font=f2, fill=(255, 255, 255))
-        s3 = "for your DAILY BYTE"
+        s3 = "for your DAILY MARKET BYTE"
         d.text(((W - tlen(s3, font(56))) / 2, 830), s3, font=font(56), fill=ACCENT)
         s4 = "New recap every trading day  |  8 AM IST"
         d.text(((W - tlen(s4, font(34, False))) / 2, 930), s4, font=font(34, False), fill=SUB)
@@ -577,7 +577,7 @@ def render(scenes, info, ticker_items, music_path, out_path, demo=False):
     if music_path:
         cmd += ["-stream_loop", "-1", "-i", music_path, "-map", "0:v", "-map", "1:a",
                 "-c:a", "aac", "-b:a", "160k",
-                "-af", f"volume=0.7,afade=t=in:st=0:d=1,afade=t=out:st={total - 2.5}:d=2.5"]
+                "-af", f"volume={MUSIC_VOLUME},afade=t=in:st=0:d=1,afade=t=out:st={total - 2.5}:d=2.5"]
     cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p",
             "-movflags", "+faststart", "-t", f"{total:.2f}", out_path]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)

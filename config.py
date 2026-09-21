@@ -12,6 +12,9 @@ OUT_DIR = os.getenv("DAILY_BYTE_OUT", os.path.join(BASE_DIR, "output"))
 W, H, FPS = 1080, 1920, 30
 DURATION = 75.0   # target length; scenes that can't get data are dropped and others stretch
 
+# Background music volume (0.0-1.0), mixed low under the captions by default. Override via env.
+MUSIC_VOLUME = float(os.getenv("MUSIC_VOLUME", "0.22"))
+
 # Stock universe for gainers/losers: NIFTY50 | NIFTY100 | NIFTY200 | NIFTY500
 UNIVERSE = os.getenv("DAILY_BYTE_UNIVERSE", "NIFTY100").upper()
 UNIVERSE_LABEL = {"NIFTY50": "Nifty 50", "NIFTY100": "Nifty 100",
@@ -20,7 +23,7 @@ TOP_N = 5
 
 # Free AI: Google Gemini API (free tier) with Google Search grounding.
 # Get a key at https://aistudio.google.com/apikey . Without a key, Google News headlines are used.
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
 
 # Nifty F&O expiry weekday (0=Mon, 1=Tue). NSE moved Nifty expiry to Tuesday in Sep 2025.
 EXPIRY_WEEKDAY = int(os.getenv("NIFTY_EXPIRY_WEEKDAY", "1"))

@@ -125,8 +125,8 @@ def ticker_items(m, tiles, sec, gainers, losers):
 # ----------------------------------------------------------------------------- metadata
 def build_metadata(m, gainers, losers, events, info, fd, sec, tiles):
     d = m["recap_date"].strftime("%d %b")
-    title = f"Daily Byte {d}: Nifty {fmt_in(m['close'])} ({m['pct']:+.2f}%) | Gainers, Losers, FII #shorts"[:100]
-    L = [f"Daily Byte - Indian stock market recap for {info['recap_str']}.", "",
+    title = f"Daily Market Byte {d}: Nifty {fmt_in(m['close'])} ({m['pct']:+.2f}%) | Gainers, Losers, FII #shorts"[:100]
+    L = [f"Daily Market Byte - Indian stock market recap for {info['recap_str']}.", "",
          f"Nifty 50: {fmt_in(m['close'], 2)} ({m['pct']:+.2f}%)",
          f"Resistance: {', '.join(fmt_in(x) for x in m['levels']['res']) or '-'} | "
          f"Support: {', '.join(fmt_in(x) for x in m['levels']['sup']) or '-'}"]
@@ -205,7 +205,7 @@ def run(args):
     if args.demo:
         m, gainers, losers, events, nifty_reason, tiles, fd, sec = demo_data()
     else:
-        print("[1/6] Fetching Nifty data...")
+        print("[1/5] Fetching Nifty data...")
         m = market.get_market()
         prev_wd = today - dt.timedelta(days={0: 3, 6: 2}.get(today.weekday(), 1))
         state_file = os.path.join(OUT_DIR, "last_session.txt")
@@ -218,15 +218,19 @@ def run(args):
                 return None
         print(f"      session {m['recap_date']}: Nifty {m['close']:.2f} ({m['pct']:+.2f}%)")
 
-        print("[2/6] NSE data, sectors, global cues...")
+        print("[2/5] NSE data, sectors, global cues...")
         nse = market.NSE()
         idx = market.nse_all_indices(nse, m["recap_date"])
         fd = market.fii_dii_nse(nse, m["recap_date"])
-        sec = market.get_sectors(m["recap_date"], idx)
+        sec = market.get_sectors(m["recap_date"], m["prev_date"], idx)
         tiles = market.get_globals()
 
-        print("[3/6] Cross-checking with a second source (Gemini web search)...")
-        facts = news.market_facts(m["recap_date"], today, m["close"])
+        print("[3/5] Top gainers & losers...")
+        universe = market.get_universe(UNIVERSE)
+        gainers, losers = market.get_movers(universe, m["recap_date"], m["prev_date"], TOP_N)
+
+        print("[4/5] AI cross-check, reasons & events (single Gemini call)...")
+        facts, nifty_reason, events = news.ai_pass(m["recap_date"], today, m["close"], gainers, losers, m)
         ref = idx.get("NIFTY 50", {}).get("last") or facts.get("nifty_close")
         if ref:
             diff = abs(ref / m["close"] - 1) * 100
@@ -239,13 +243,9 @@ def run(args):
         if facts.get("gift"):
             tiles.insert(0, {"label": "GIFT NIFTY", "value": facts["gift"]["value"],
                              "pct": facts["gift"]["pct"], "dec": 0, "prefix": ""})
-
-        print("[4/6] Top gainers & losers...")
-        universe = market.get_universe(UNIVERSE)
-        gainers, losers = market.get_movers(universe, m["recap_date"], TOP_N)
-        print("[5/6] News reasons and today's events...")
-        nifty_reason = news.explain_moves(gainers, losers, m)
-        events = news.todays_events(today)
+        if facts.get("brent"):
+            tiles.append({"label": "BRENT CRUDE", "value": facts["brent"]["value"],
+                          "pct": facts["brent"]["pct"], "dec": 2, "prefix": "$"})
 
     info = {"today_str": today.strftime("%A, %d %B %Y"),
             "today_short": today.strftime("%a %d %b"),
@@ -275,9 +275,9 @@ def run(args):
                video.EventsScene(events, info, dur["events"]),
                video.OutroScene(dur["outro"])]
 
-    print(f"[6/6] Rendering {sum(s.dur for s in scenes):.1f}s video ({len(scenes)} scenes)...")
+    print(f"[5/5] Rendering {sum(s.dur for s in scenes):.1f}s video ({len(scenes)} scenes)...")
     swells = list(np.cumsum([s.dur for s in scenes])[:-1])
-    mus = music.get_music(ASSETS_DIR, OUT_DIR, DURATION, swells)
+    mus = music.get_music(ASSETS_DIR, OUT_DIR, DURATION, swells, date=m["recap_date"])
     out = os.path.join(OUT_DIR, f"daily_byte_{tag}{'_DEMO' if args.demo else ''}.mp4")
     video.render(scenes, info, ticker_items(m, tiles, sec, gainers, losers), mus, out, demo=args.demo)
 

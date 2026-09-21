@@ -21,6 +21,7 @@ import market
 import music
 import news
 import video
+from adapters import report_builder
 from config import OUT_DIR, ASSETS_DIR, UNIVERSE, UNIVERSE_LABEL, TOP_N, DURATION, now_ist, fmt_in
 
 RS = video.RS
@@ -202,6 +203,7 @@ def run(args):
     os.makedirs(OUT_DIR, exist_ok=True)
     today = now_ist().date()
 
+    facts, idx = {}, {}      # AI fact set and NSE index snapshot; empty in demo mode
     if args.demo:
         m, gainers, losers, events, nifty_reason, tiles, fd, sec = demo_data()
     else:
@@ -284,6 +286,13 @@ def run(args):
     meta = build_metadata(m, gainers, losers, events, info, fd, sec, tiles)
     with open(out.replace(".mp4", ".json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2, ensure_ascii=False)
+
+    # Canonical market-intelligence artifact (Phase 1 strangler seam). Built from the data
+    # already collected above, written after the video so it can never affect publication.
+    report_builder.build_and_save_report(
+        OUT_DIR, m=m, tiles=tiles, fd=fd, sec=sec, gainers=gainers, losers=losers,
+        events=events, nifty_reason=nifty_reason, ai_facts=facts, nse_idx=idx,
+        report_date=today, universe_label=uni, demo=args.demo)
     print(f"Done: {out}")
 
     if args.upload and not args.demo:

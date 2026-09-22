@@ -57,6 +57,35 @@ tested by persisting today *before* analysing it.
 exist in canonical history. Weekends and holidays are not missing sessions; they are not
 sessions. A test asserts 20 sessions necessarily span more than 20 calendar days.
 
+**Streak continuity is strict.** A streak is a *continuity* claim, so it walks the **canonical
+session spine** — every session we hold a report for, regardless of any metric's status — and
+stops at the first recorded session that does not continue the run:
+
+| At an adjacent recorded session | Effect |
+| --- | --- |
+| same direction, eligible evidence | continues |
+| opposite direction | **breaks** |
+| zero | **breaks** |
+| the fact is missing | **breaks** |
+| the fact exists but is ineligible (`CONFLICT`, `STALE`, `PROVISIONAL`, `MISSING`, `REJECTED`) | **breaks** |
+| weekend / holiday / a day we never recorded | not on the spine — never consulted, cannot break |
+
+> **A missing calendar day is not missing canonical trading-session evidence.**
+
+The walk never reaches past a broken session to find another matching value behind it.
+Applies to FII, DII and sector streaks.
+
+**Continuity and summary are different statistics, and the wording says which:**
+
+| | Semantics | Wording |
+| --- | --- | --- |
+| Streak | unbroken run over adjacent recorded sessions | "N consecutive **recorded** sessions" |
+| Cumulative flow | sum over the last N eligible readings, gaps passed over | "last N **available** sessions" |
+
+The session spine comes from `MarketHistory.get_recent_sessions()` — distinct `session_date`
+values from the `reports` table, deliberately independent of eligibility so that "we never
+recorded that day" and "that session's evidence was unusable" remain distinguishable.
+
 **Validation-status eligibility.** Centralised in one frozen set:
 
 ```python
@@ -71,6 +100,13 @@ launder it into one.
 `definition_version == "2.0"`. Phase 3 changed the window from 10 prior sessions to 20, so a
 1.x reading measures a different thing that happens to share a name. Incompatible readings are
 excluded and the exclusion is recorded as a warning.
+
+**Canonical fact identity, not observation count.** A fact may carry several observations, and
+`get_recent_metric_points` returns one row per observation. Relative-volume history is
+collapsed to `(report_id, fact_id)` before anything is counted — counting observations would
+inflate `comparable_sample`, the rank and the supporting-fact list, making a reading look
+better corroborated than it is. A fact counts as comparable when **any** of its observations
+establishes the 2.0 definition.
 
 **Minimum history is explicit.** A statistic defined as N sessions is not that statistic with
 fewer. With 15 of 20 sessions the insight is `INSUFFICIENT_HISTORY` and makes **no statement
@@ -90,7 +126,7 @@ one caused the other.
 | Category | Statement shape |
 | --- | --- |
 | `INDEX_MOVE` | "Nifty's 1.80% move is larger than 17 of the previous 20 sessions." |
-| `INSTITUTIONAL_FLOW` | streak ending today; cumulative 5/20-session flow with the matching direction count |
+| `INSTITUTIONAL_FLOW` | continuity streak ending today; cumulative 5/20-session flow with the matching direction count |
 | `VOLATILITY` | VIX vs its 5-session average; rank within the previous 20 readings |
 | `SECTOR_PERSISTENCE` | consecutive up/down run; **compounded** return, never summed |
 | `MOVER_RECURRENCE` | prior appearances in 20 sessions; `FIRST_APPEARANCE` (0) / `REPEAT_MOVER` (1–2) / `FREQUENT_MOVER` (3+) |

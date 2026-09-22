@@ -6,12 +6,17 @@ increasingly wrong as the window lengthens, and the result would still be labell
 
 A sector missing from a session is skipped explicitly and shrinks the sample rather than
 being treated as a flat day - an absent reading is not a zero.
+
+The streak is a CONTINUITY claim and walks the canonical session spine: a recorded session
+where the sector is missing or its fact ineligible BREAKS the run rather than being stepped
+over. A missing calendar day is different - weekends, holidays and days we never recorded
+are not on the spine at all and cannot break anything.
 """
 from __future__ import annotations
 
 from core import Metric
 
-from .history import compounded_return, median, streak, strength_for
+from .history import compounded_return, continuity_streak, median, strength_for
 from .models import IntelligenceInsight, InsightCategory, Strength, is_eligible
 
 LOOKBACK = 5
@@ -28,30 +33,38 @@ def analyse(report, window) -> list:
     by_session = {}
     for point in history:
         by_session.setdefault(point.market_date, {})[point.instrument] = point
-    sessions = sorted(by_session, reverse=True)[:LOOKBACK]
+    # The spine, not the sessions that happen to have sector data: a recorded session where
+    # a sector is missing must be able to break that sector's run.
+    sessions = window.session_spine(LOOKBACK)
 
     candidates = []
     for name, (value, fact_id) in sorted(current.items()):
-        readings = [by_session[s][name] for s in sessions if name in by_session[s]]
+        readings = [by_session[s][name] for s in sessions
+                    if s in by_session and name in by_session[s]]
         sample = len(readings) + 1                      # historical readings plus today
         if sample < 2:
             continue
 
-        sequence = [value] + [r.value for r in readings]
         rising = value > 0
-        run = streak(sequence, positive=rising) if value != 0 else 0
+        supporting = (continuity_streak(sessions,
+                                        {s: by_session[s][name] for s in sessions
+                                         if s in by_session and name in by_session[s]},
+                                        positive=rising)
+                      if value != 0 else [])
+        run = 1 + len(supporting) if value != 0 else 0
+        sequence = [value] + [r.value for r in readings]
         positives = sum(1 for v in sequence if v > 0)
         cumulative = compounded_return(sequence)
 
         if len(readings) < len(sessions):
             window.warn(f"sector {name} is absent from "
-                        f"{len(sessions) - len(readings)} of the last {len(sessions)} sessions; "
-                        "its sample is reduced rather than padded")
+                        f"{len(sessions) - len(readings)} of the last {len(sessions)} "
+                        "recorded sessions; its sample is reduced rather than padded")
 
         candidates.append({
             "name": name, "value": value, "fact_id": fact_id, "readings": readings,
-            "sample": sample, "streak": run, "positives": positives,
-            "cumulative": cumulative, "rising": rising,
+            "supporting": supporting, "sample": sample, "streak": run,
+            "positives": positives, "cumulative": cumulative, "rising": rising,
             "outperformed": _median_outperformance(name, sessions, by_session, current),
         })
 
@@ -74,16 +87,16 @@ def analyse(report, window) -> list:
 def _insight(candidate) -> IntelligenceInsight:
     name, run = candidate["name"], candidate["streak"]
     direction = "advanced" if candidate["rising"] else "declined"
-    readings = candidate["readings"]
+    supporting = candidate["supporting"]
     return IntelligenceInsight(
         insight_id=f"sector-streak-{name.lower().replace(' ', '-')}",
         category=InsightCategory.SECTOR_PERSISTENCE, subject=name,
-        statement=f"Nifty {name} has {direction} in {run} consecutive available sessions.",
+        statement=f"Nifty {name} has {direction} in {run} consecutive recorded sessions.",
         current_value=candidate["value"], comparison_value=candidate["cumulative"],
         lookback_sessions=run, sample_size=candidate["sample"],
         strength=strength_for(candidate["sample"], LOOKBACK + 1),
-        supporting_report_ids=[r.report_id for r in readings],
-        supporting_fact_ids=[candidate["fact_id"]] + [r.fact_id for r in readings],
+        supporting_report_ids=[r.report_id for r in supporting],
+        supporting_fact_ids=[candidate["fact_id"]] + [r.fact_id for r in supporting],
         metadata={
             "streak_sessions": run, "direction": "UP" if candidate["rising"] else "DOWN",
             "positive_sessions": candidate["positives"],
@@ -92,6 +105,8 @@ def _insight(candidate) -> IntelligenceInsight:
             "compounding": "product(1 + r/100) - 1",
             "outperformed_median_sessions": candidate["outperformed"],
             "includes_current_session": True,
+            "continuity": "adjacent canonical sessions; a recorded session where the sector "
+                          "is missing or ineligible breaks the run",
             "selection_score": min(run / 5.0, 1.0),
         })
 
@@ -110,8 +125,10 @@ def _median_outperformance(name, sessions, by_session, current) -> int:
         count += 1
 
     for session in sessions:
-        readings = by_session[session]
-        if name not in readings:
+        # The spine includes recorded sessions that have no eligible sector readings at all,
+        # so this must tolerate a session being absent from `by_session` entirely.
+        readings = by_session.get(session)
+        if not readings or name not in readings:
             continue
         mid = median([r.value for r in readings.values()])
         if mid is not None and readings[name].value > mid:

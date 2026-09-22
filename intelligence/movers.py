@@ -114,16 +114,30 @@ def analyse_relative_volume(report, window) -> list:
     if not current:
         return []
 
-    points = window.points(Metric.STOCK_RELATIVE_VOLUME)
+    # One row per OBSERVATION comes back, and a fact may have several. Collapse to canonical
+    # fact identity first: counting observations would inflate the sample, the rank and the
+    # supporting-fact list, making a reading look better corroborated than it is. A fact is
+    # comparable if ANY of its observations establishes the 2.0 definition.
+    by_fact = {}
+    for point in window.points(Metric.STOCK_RELATIVE_VOLUME):
+        key = (point.report_id, point.fact_id)
+        compatible = (point.observation_metadata or {}).get(
+            "definition_version") == RELATIVE_VOLUME_DEFINITION_VERSION
+        entry = by_fact.get(key)
+        if entry is None:
+            by_fact[key] = {"point": point, "compatible": compatible}
+        elif compatible:
+            entry["compatible"] = True
+
     comparable, skipped = {}, 0
-    for point in points:
-        if (point.observation_metadata or {}).get(
-                "definition_version") != RELATIVE_VOLUME_DEFINITION_VERSION:
-            skipped += 1
-            continue                # a 1.x reading measures a different thing entirely
+    for entry in by_fact.values():
+        if not entry["compatible"]:
+            skipped += 1            # a 1.x reading measures a different thing entirely
+            continue
+        point = entry["point"]
         comparable.setdefault(point.instrument, []).append(point)
     if skipped:
-        window.warn(f"{skipped} historical relative-volume readings use an older definition "
+        window.warn(f"{skipped} historical relative-volume facts use an older definition "
                     f"than {RELATIVE_VOLUME_DEFINITION_VERSION} and were excluded")
 
     candidates = []

@@ -4,6 +4,15 @@ A streak is a run that ends today, so today's reading is appended to history exa
 history is loaded strictly before the session, and the current value comes from the current
 report. Double-counting today would lengthen every streak by one.
 
+Two different questions, two different semantics, and the wording says which is which:
+
+* **Streak** - a CONTINUITY claim over *consecutive recorded sessions*. It walks the
+  canonical session spine and stops at the first recorded session that does not continue
+  the run, including one whose evidence is missing or ineligible. It never skips over such
+  a session to find another matching value further back.
+* **Cumulative flow** - a SUMMARY over the last N *available sessions*, which is exactly
+  what "available" discloses: sessions with eligible evidence, gaps passed over.
+
 Co-occurrence is not causality. This layer reports that FIIs sold and that Nifty moved; it
 never says one caused the other.
 """
@@ -11,7 +20,7 @@ from __future__ import annotations
 
 from core import Metric
 
-from .history import streak, strength_for
+from .history import continuity_streak, strength_for
 from .models import IntelligenceInsight, InsightCategory, Strength, is_eligible
 
 FLOWS = (("FII", Metric.FII_NET_CASH), ("DII", Metric.DII_NET_CASH))
@@ -31,34 +40,38 @@ def analyse(report, window) -> list:
         # Today first, then history - a run ending today, counted once.
         sequence = [value] + [p.value for p in history]
 
-        insights.extend(_streak_insight(subject, metric, value, fact_id, history, sequence))
+        insights.extend(_streak_insight(subject, value, fact_id, history, window))
         insights.extend(_cumulative_insights(subject, metric, value, fact_id, history,
                                              sequence, window))
     return insights
 
 
-def _streak_insight(subject, metric, value, fact_id, history, sequence) -> list:
-    buying = value > 0
+def _streak_insight(subject, value, fact_id, history, window) -> list:
+    """A continuity claim: consecutive recorded sessions, broken by any session we recorded
+    whose evidence does not continue the run (opposite sign, zero, missing or ineligible)."""
     if value == 0:
         return []
-    length = streak(sequence, positive=buying)
+    buying = value > 0
+    supporting = continuity_streak(window.session_spine(),
+                                   {p.market_date: p for p in history}, positive=buying)
+    length = 1 + len(supporting)                     # today plus the unbroken run behind it
     if length < MIN_STREAK_TO_REPORT:
         return []
 
-    # The streak covers today plus (length - 1) historical sessions.
-    supporting = history[:length - 1]
     direction = "net buyers" if buying else "net sellers"
     return [IntelligenceInsight(
         insight_id=f"{subject.lower()}-flow-streak",
         category=InsightCategory.INSTITUTIONAL_FLOW, subject=subject,
         statement=(f"{subject}s have been {direction} for {length} consecutive "
-                   f"available sessions."),
+                   f"recorded sessions."),
         current_value=value, lookback_sessions=length, sample_size=length,
         strength=Strength.FULL_HISTORY,
         supporting_report_ids=[p.report_id for p in supporting],
         supporting_fact_ids=[fact_id] + [p.fact_id for p in supporting],
         metadata={"direction": "BUYING" if buying else "SELLING", "streak_sessions": length,
                   "includes_current_session": True, "unit": UNIT,
+                  "continuity": "adjacent canonical sessions; a recorded session with "
+                                "missing or ineligible evidence breaks the run",
                   # A five-session run is genuinely unusual; anything beyond that is capped
                   # so one very long streak cannot crowd out every other category forever.
                   "selection_score": min(length / 5.0, 1.0)})]

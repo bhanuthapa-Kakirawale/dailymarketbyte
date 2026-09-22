@@ -137,11 +137,22 @@ The first phase where the database produces value rather than only recording it.
 - **One optional scene.** MARKET CONTEXT appears only when there are displayable insights,
   and its 6s is carved out of the three stretch scenes, so the Short stays 75.0s.
 
+### Phase 4.1 review fixes
+
+Two correctness fixes after review:
+
+- **Streak continuity is conservative.** Streaks now walk the canonical session spine and
+  break at any recorded session whose evidence is opposite, zero, missing or ineligible,
+  instead of stepping over it to find another matching value. Calendar gaps (weekends,
+  holidays, days never recorded) are not on the spine and still cannot break a run. Wording
+  changed to "N consecutive **recorded** sessions"; cumulative flow keeps its separate
+  "available sessions" semantics. Added `MarketHistory.get_recent_sessions()` as the spine.
+- **Relative volume counts canonical facts, not observations.** History is collapsed to
+  `(report_id, fact_id)` before sampling or ranking, so a fact with several observations can
+  no longer inflate `comparable_sample`, the rank or the supporting-fact list.
+
 ### Phase 4.1 compromises
 
-- **Streaks count through an ineligible session** rather than breaking on it. The wording
-  says "consecutive *available* sessions" and the word is the disclosure, but a dropped
-  session inside a run can overstate its length. Breaking instead would understate it.
 - **News/publisher independence is not consulted** by intelligence; it reads numeric facts
   only, so the Phase 2 syndication gap is not exercised here.
 - **Sector median outperformance** is computed against the sectors present in each session,

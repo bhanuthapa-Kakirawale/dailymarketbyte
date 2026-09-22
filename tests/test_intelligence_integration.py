@@ -102,7 +102,7 @@ def test_it_sector_decline_streak_matches_the_pattern(snapshot):
     insight = _by_id(snapshot, "sector-streak-it")
     assert insight.metadata["streak_sessions"] == 5
     assert insight.metadata["direction"] == "DOWN"
-    assert "declined in 5 consecutive available sessions" in insight.statement
+    assert "declined in 5 consecutive recorded sessions" in insight.statement
 
 
 def test_repeated_mover_matches_the_pattern(snapshot):

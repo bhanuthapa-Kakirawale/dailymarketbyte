@@ -83,6 +83,27 @@ def _rewrite_relative_volume_version(report, version):
             for o in fact.observations]
 
 
+def duplicate_relative_volume_observations(report, copies=1):
+    """Give every relative-volume fact extra observations of the SAME canonical value.
+
+    A fact legitimately can carry several observations. Counting observations instead of
+    canonical facts would inflate a sample and a rank, so tests need a fact that really does
+    have more than one.
+    """
+    from dataclasses import replace
+
+    from core import Metric
+    for fact in report.facts:
+        if fact.metric is not Metric.STOCK_RELATIVE_VOLUME:
+            continue
+        original = list(fact.observations)
+        for index in range(copies):
+            for observation in original:
+                fact.observations.append(replace(
+                    observation, observation_id=f"{observation.observation_id}-dup{index}"))
+    return report
+
+
 def seed(history, reports):
     for report in reports:
         history.save_report(report, artifact_path=f"{report.report_id}.json",

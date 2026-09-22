@@ -78,6 +78,7 @@ class HistoricalWindow:
         self.warnings: list = []
         self._series: dict = {}
         self._points: dict = {}
+        self._spine: list | None = None
 
     # ------------------------------------------------------------------ loading
     def series(self, metric: Metric, instrument: str | None = None) -> list:
@@ -126,6 +127,22 @@ class HistoricalWindow:
                                  if r.report_id != self.report_id
                                  and (_as_date(r.market_date) or self.session_date) < self.session_date]
         return self._points[key]
+
+    def session_spine(self, limit: int | None = None) -> list:
+        """Canonical trading sessions before this one, newest first.
+
+        Independent of any metric's eligibility: a session belongs here because we hold a
+        report for it, not because a particular fact in it was usable. Continuity claims
+        walk this so an unusable session breaks a run instead of being stepped over.
+        """
+        if self._spine is None:
+            try:
+                self._spine = self.history.get_recent_sessions(
+                    before_date=self.session_date, limit=self.window_sessions,
+                    include_demo=self.include_demo)
+            except Exception as exc:
+                raise HistoryUnavailable(f"{type(exc).__name__}: {exc}") from exc
+        return self._spine[:limit] if limit else list(self._spine)
 
     # ------------------------------------------------------------------ session accounting
     def sessions(self, metric: Metric, instrument: str | None = None) -> list:
@@ -180,8 +197,9 @@ def count_below(values: list, target: float) -> int:
 def streak(values: list, positive: bool) -> int:
     """Length of the run at the START of `values` sharing a sign.
 
-    `values` is newest-first and must already include the current session when the caller
-    wants the run to end today. Zero is neither positive nor negative and breaks a run.
+    Operates on an already-assembled sequence and knows nothing about sessions, so it must
+    not be used directly for a continuity claim - see `continuity_streak`. Zero is neither
+    positive nor negative and breaks a run.
     """
     length = 0
     for value in values:
@@ -190,6 +208,38 @@ def streak(values: list, positive: bool) -> int:
         else:
             break
     return length
+
+
+def continuity_streak(spine: list, by_session: dict, positive: bool) -> list:
+    """Historical sessions extending an unbroken run backwards from today.
+
+    A streak is a CONTINUITY claim, so it may only continue across ADJACENT canonical
+    trading sessions. The spine is every session we hold a canonical report for; the walk
+    stops at the first one that does not continue the run:
+
+    * same direction, eligible evidence  -> continues
+    * opposite direction                 -> breaks
+    * zero                               -> breaks
+    * fact missing for that session      -> breaks (absent from `by_session`)
+    * fact present but ineligible        -> breaks (filtered out before it reaches here)
+
+    A missing CALENDAR day is not a missing canonical trading session: weekends, holidays
+    and days we never recorded are simply not on the spine, are never consulted, and so
+    cannot break anything. What breaks a run is a session we *did* record whose evidence
+    does not continue it - which is why this walks the spine rather than the eligible
+    readings, and never reaches further back to find another matching value.
+
+    Returns the supporting historical readings (excluding today), newest first.
+    """
+    supporting = []
+    for session in spine:
+        point = by_session.get(session)
+        if point is None or point.value == 0:
+            break
+        if (point.value > 0) != positive:
+            break
+        supporting.append(point)
+    return supporting
 
 
 def compounded_return(pct_changes: list) -> float:
@@ -219,4 +269,5 @@ def median(values: list) -> float | None:
 
 
 __all__ = ["HistoricalWindow", "SessionValue", "HistoryUnavailable", "DEFAULT_WINDOW_SESSIONS",
-           "strength_for", "count_below", "streak", "compounded_return", "mean", "median"]
+           "strength_for", "count_below", "streak", "continuity_streak", "compounded_return",
+           "mean", "median"]

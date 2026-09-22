@@ -397,6 +397,35 @@ class MarketHistory:
         params.append(limit_sessions)
         return sql, params
 
+    def get_recent_sessions(self, before_date=None, limit: int | None = None,
+                            include_demo: bool = False) -> list:
+        """Distinct canonical trading sessions, newest first.
+
+        A canonical trading session is one this pipeline holds a report for, regardless of
+        what any individual metric's status is in that report. This is deliberately
+        independent of eligibility: it is the spine a continuity claim walks, and the
+        difference between "that day was not a session we recorded" and "that session's
+        evidence was unusable" is exactly what a streak must be able to tell apart.
+        """
+        sql = "SELECT DISTINCT session_date FROM reports WHERE session_date IS NOT NULL"
+        params: list = []
+        if before_date:
+            sql += " AND session_date < ?"
+            params.append(_iso(before_date))
+        if not include_demo:
+            sql += " AND is_demo = 0"
+        sql += " ORDER BY session_date DESC"
+        if limit:
+            sql += " LIMIT ?"
+            params.append(limit)
+        out = []
+        for row in self.conn.execute(sql, params).fetchall():
+            try:
+                out.append(dt.date.fromisoformat(row[0]))
+            except (TypeError, ValueError):
+                continue
+        return out
+
     def get_recent_facts(self, metric: str, instrument: str | None = None, before_date=None,
                          statuses=None, limit_sessions: int | None = None,
                          include_demo: bool = False) -> list:

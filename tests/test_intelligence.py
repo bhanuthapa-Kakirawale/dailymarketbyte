@@ -4,8 +4,8 @@ import datetime as dt
 import pytest
 
 from conftest import NOW
-from conftest_intelligence import (BASE_SESSION, seed, session_report, movers,
-                                   trading_sessions)
+from conftest_intelligence import (BASE_SESSION, duplicate_relative_volume_observations,
+                                   seed, session_report, movers, trading_sessions)
 
 from core import Metric, ValidationStatus
 from intelligence import HistoricalWindow, IntelligenceSnapshot, Strength, build_snapshot
@@ -143,7 +143,7 @@ def test_fii_selling_streak_counts_today_once(db):
     insight = next(i for i in flows.analyse(today, _window(db, today))
                    if i.insight_id == "fii-flow-streak")
     assert insight.metadata["streak_sessions"] == 6       # 5 historical + today, not 7
-    assert "net sellers for 6 consecutive available sessions" in insight.statement
+    assert "net sellers for 6 consecutive recorded sessions" in insight.statement
     assert insight.metadata["direction"] == "SELLING"
 
 
@@ -165,7 +165,7 @@ def test_dii_buying_streak_is_reported_separately(db):
 
     dii = next(i for i in flows.analyse(today, _window(db, today))
                if i.insight_id == "dii-flow-streak")
-    assert "DIIs have been net buyers for 5 consecutive available sessions." == dii.statement
+    assert "DIIs have been net buyers for 5 consecutive recorded sessions." == dii.statement
 
 
 def test_cumulative_flow_statement_counts_the_direction_it_names(db):
@@ -192,25 +192,96 @@ def test_cumulative_flow_needs_the_full_window(db):
     assert five.statement == ""
 
 
-def test_flow_history_with_ineligible_facts_is_excluded(db):
-    """A stale session is dropped from the series entirely rather than breaking the run.
+def _fii_streak(db, today):
+    return next((i for i in flows.analyse(today, _window(db, today))
+                 if i.insight_id == "fii-flow-streak"), None)
 
-    That is what "consecutive AVAILABLE sessions" means, and the word is load-bearing: the
-    count is over sessions we hold usable data for, not over the calendar.
+
+def test_streak_breaks_at_a_recorded_session_with_ineligible_evidence(db):
+    """Required case A: an ineligible session BREAKS the run rather than being stepped over.
+
+    A streak is a continuity claim. Reaching past a session whose evidence we could not use,
+    to find another matching value behind it, would assert continuity we cannot support.
     """
+    sessions = trading_sessions(6)                      # 5 historical + today
+    reports = [session_report(s, fii=-100.0, dii=10.0) for s in sessions[:-1]]
+    conflicted = reports[-3]                            # third-most-recent historical session
+    for fact in conflicted.facts_for(Metric.FII_NET_CASH):
+        fact.validation_status = ValidationStatus.CONFLICT
+    seed(db, reports)
+    today = session_report(sessions[-1], fii=-100.0, dii=10.0)
+
+    insight = _fii_streak(db, today)
+    assert insight.metadata["streak_sessions"] == 3, \
+        "today plus the two clean sessions behind it - the run stops at the conflicted one"
+    assert conflicted.report_id not in insight.supporting_report_ids
+
+
+def test_streak_breaks_at_a_recorded_session_with_the_fact_missing(db):
+    """Required case B: a session we recorded that simply has no FII fact breaks the run."""
+    sessions = trading_sessions(6)
+    reports = []
+    for i, session in enumerate(sessions[:-1]):
+        if i == 2:                                      # third-oldest: no flows at all
+            reports.append(session_report(session))
+        else:
+            reports.append(session_report(session, fii=-100.0, dii=10.0))
+    seed(db, reports)
+    today = session_report(sessions[-1], fii=-100.0, dii=10.0)
+
+    insight = _fii_streak(db, today)
+    assert insight.metadata["streak_sessions"] == 3     # today + the two most recent sessions
+    assert reports[2].report_id not in insight.supporting_report_ids
+
+
+def test_streak_continues_across_weekends_and_holidays(db):
+    """Required case C: a missing CALENDAR day is not missing canonical evidence.
+
+    Weekends, holidays and days we never recorded are not on the session spine at all, are
+    never consulted, and therefore cannot break anything.
+    """
+    holiday = dt.date(2026, 9, 16)
+    sessions = trading_sessions(6, skip={holiday})
+    seed(db, [session_report(s, fii=-100.0, dii=10.0) for s in sessions[:-1]])
+    today = session_report(sessions[-1], fii=-100.0, dii=10.0)
+
+    insight = _fii_streak(db, today)
+    assert insight.metadata["streak_sessions"] == 6, \
+        "the run is unbroken: no session was recorded on the holiday or at the weekend"
+    assert holiday not in sessions
+    # Six sessions necessarily span more than six calendar days once the gaps are skipped.
+    assert (sessions[-1] - sessions[0]).days > 6
+
+
+def test_streak_of_one_is_not_reported(db):
+    """When the immediately preceding recorded session breaks the run there is no streak."""
     sessions = trading_sessions(6)
     reports = [session_report(s, fii=-100.0, dii=10.0) for s in sessions[:-1]]
     for fact in reports[-1].facts_for(Metric.FII_NET_CASH):
         fact.validation_status = ValidationStatus.STALE
-    stale_report_id = reports[-1].report_id
     seed(db, reports)
     today = session_report(sessions[-1], fii=-100.0, dii=10.0)
 
-    insight = next(i for i in flows.analyse(today, _window(db, today))
-                   if i.insight_id == "fii-flow-streak")
-    assert insight.metadata["streak_sessions"] == 5      # today + 4 eligible, stale excluded
-    assert "available sessions" in insight.statement
-    assert stale_report_id not in insight.supporting_report_ids
+    assert _fii_streak(db, today) is None, "a run of one is below the reporting threshold"
+
+
+def test_cumulative_flow_keeps_available_session_semantics(db):
+    """Required: continuity is strict, but the cumulative summary is deliberately not.
+
+    It says "available sessions" and means it - eligible readings, gaps passed over. The two
+    statistics answer different questions and the wording distinguishes them.
+    """
+    sessions = trading_sessions(6)
+    reports = [session_report(s, fii=-100.0, dii=10.0) for s in sessions[:-1]]
+    for fact in reports[-3].facts_for(Metric.FII_NET_CASH):
+        fact.validation_status = ValidationStatus.CONFLICT
+    seed(db, reports)
+    today = session_report(sessions[-1], fii=-100.0, dii=10.0)
+
+    insights = flows.analyse(today, _window(db, today))
+    cumulative = next(i for i in insights if i.insight_id == "fii-flow-cumulative-5")
+    assert "available sessions" in cumulative.statement
+    assert "recorded sessions" in _fii_streak(db, today).statement
 
 
 # --------------------------------------------------------------------- volatility
@@ -272,7 +343,7 @@ def test_sector_decline_streak(db):
     insight = next(i for i in sectors.analyse(today, _window(db, today))
                    if i.subject == "IT")
     assert insight.metadata["streak_sessions"] == 6
-    assert "Nifty IT has declined in 6 consecutive available sessions." == insight.statement
+    assert "Nifty IT has declined in 6 consecutive recorded sessions." == insight.statement
     assert insight.metadata["direction"] == "DOWN"
 
 
@@ -309,6 +380,47 @@ def test_sector_absent_from_a_session_reduces_the_sample(db):
     it = next(i for i in insights if i.subject == "IT")
     assert it.sample_size == 5, "the absent session shrinks the sample rather than padding it"
     assert any("absent from" in w for w in window.warnings)
+
+
+def test_sector_streak_breaks_at_a_session_where_the_sector_is_missing(db):
+    """Required case D: a recorded session lacking the sector breaks its run.
+
+    IT falls on the two most recent sessions and on older ones, but one recorded session in
+    between has no IT reading at all - so the run is today plus two, not the whole span.
+    """
+    sessions = trading_sessions(6)
+    reports = []
+    for i, session in enumerate(sessions[:-1]):
+        rows = [_sector("Bank", 0.3)] if i == 2 else [_sector("IT", -0.5), _sector("Bank", 0.3)]
+        reports.append(session_report(session, sectors=rows))
+    seed(db, reports)
+    today = session_report(sessions[-1], sectors=[_sector("IT", -0.4), _sector("Bank", 0.2)])
+
+    insight = next(i for i in sectors.analyse(today, _window(db, today)) if i.subject == "IT")
+    assert insight.metadata["streak_sessions"] == 3
+    assert reports[2].report_id not in insight.supporting_report_ids
+
+
+def test_sector_streak_breaks_at_an_ineligible_session(db):
+    sessions = trading_sessions(6)
+    reports = [session_report(s, sectors=[_sector("IT", -0.5)]) for s in sessions[:-1]]
+    for fact in reports[2].facts_for(Metric.SECTOR_CHANGE_PCT):
+        fact.validation_status = ValidationStatus.CONFLICT
+    seed(db, reports)
+    today = session_report(sessions[-1], sectors=[_sector("IT", -0.4)])
+
+    insight = next(i for i in sectors.analyse(today, _window(db, today)) if i.subject == "IT")
+    assert insight.metadata["streak_sessions"] == 3
+
+
+def test_sector_streak_continues_across_calendar_gaps(db):
+    holiday = dt.date(2026, 9, 16)
+    sessions = trading_sessions(6, skip={holiday})
+    seed(db, [session_report(s, sectors=[_sector("IT", -0.5)]) for s in sessions[:-1]])
+    today = session_report(sessions[-1], sectors=[_sector("IT", -0.4)])
+
+    insight = next(i for i in sectors.analyse(today, _window(db, today)) if i.subject == "IT")
+    assert insight.metadata["streak_sessions"] == 6
 
 
 def test_sector_without_a_streak_is_not_reported(db):
@@ -413,6 +525,64 @@ def test_relative_volume_ranks_against_comparable_readings(db):
     assert insight.metadata["higher_than_readings"] == 7
     assert insight.metadata["definition_version"] == "2.0"
     assert "higher than 7 of its previous 7 comparable readings" in insight.statement
+
+
+def test_relative_volume_counts_each_canonical_fact_once(db):
+    """Five historical facts with two observations each is a sample of five, not ten.
+
+    get_recent_metric_points returns one row per observation; counting rows would inflate
+    the sample, the rank and the supporting-fact list, making a reading look better
+    corroborated than it is.
+    """
+    sessions = trading_sessions(7)
+    reports = [duplicate_relative_volume_observations(
+        session_report(s, gainers=movers(["ABC"], volx=1.0 + i * 0.1)))
+        for i, s in enumerate(sessions[:-1])]
+    seed(db, reports)
+    today = session_report(sessions[-1], gainers=movers(["ABC"], volx=9.0))
+
+    insight = next(iter(movers_mod.analyse_relative_volume(today, _window(db, today))))
+    assert insight.metadata["comparable_sample"] == 6      # six historical facts, not twelve
+    assert insight.metadata["higher_than_readings"] == 6
+    assert insight.sample_size == 6
+    assert "higher than 6 of its previous 6 comparable readings" in insight.statement
+
+
+def test_relative_volume_supporting_facts_appear_once_each(db):
+    sessions = trading_sessions(7)
+    reports = [duplicate_relative_volume_observations(
+        session_report(s, gainers=movers(["ABC"], volx=1.0))) for s in sessions[:-1]]
+    seed(db, reports)
+    today = session_report(sessions[-1], gainers=movers(["ABC"], volx=9.0))
+
+    insight = next(iter(movers_mod.analyse_relative_volume(today, _window(db, today))))
+    historical = insight.supporting_fact_ids[1:]          # first is today's fact
+    assert len(historical) == len(set(historical)) == 6
+
+
+def test_a_single_fact_with_two_observations_adds_one_to_the_sample(db):
+    sessions = trading_sessions(7)
+    plain = [session_report(s, gainers=movers(["ABC"], volx=1.0)) for s in sessions[1:-1]]
+    doubled = duplicate_relative_volume_observations(
+        session_report(sessions[0], gainers=movers(["ABC"], volx=1.0)))
+    seed(db, plain + [doubled])
+    today = session_report(sessions[-1], gainers=movers(["ABC"], volx=9.0))
+
+    insight = next(iter(movers_mod.analyse_relative_volume(today, _window(db, today))))
+    assert insight.metadata["comparable_sample"] == 6     # 5 plain + 1 doubled, counted once
+
+
+def test_multi_observation_facts_on_an_older_definition_stay_excluded(db):
+    """Duplicated observations must not smuggle an incompatible reading back in."""
+    sessions = trading_sessions(8)
+    seed(db, [duplicate_relative_volume_observations(
+        session_report(s, gainers=movers(["ABC"], volx=1.0), definition_version="1.0"))
+        for s in sessions[:-1]])
+    today = session_report(sessions[-1], gainers=movers(["ABC"], volx=9.0))
+
+    window = _window(db, today)
+    assert movers_mod.analyse_relative_volume(today, window) == []
+    assert any("older definition" in w for w in window.warnings)
 
 
 def test_relative_volume_needs_a_minimum_comparable_sample(db):

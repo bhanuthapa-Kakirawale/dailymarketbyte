@@ -21,6 +21,12 @@ Validation           date, freshness, range, and cross-source corroboration by i
       v
 MarketReport         the authoritative, dated contract - built BEFORE anything is rendered
       |
+      +---> JSON artifact      output/reports/  - immutable record of this run
+      +---> SQLite index       output/data/     - queryable history across runs
+      |
+      v
+Publication Gate     report.publication_ready - an unfit report renders nothing
+      |
       v
 Presentation Adapter presentation/ - reshapes the report into renderer structures
       |
@@ -28,7 +34,7 @@ Presentation Adapter presentation/ - reshapes the report into renderer structure
 Renderer             video.py / chart.py, unchanged; acquires nothing
       |
       v
-Publication QA       content safety re-scan of every finalized public string
+Publication QA       video QA (artifact) + content safety (finalized public strings)
       |
       v
 Publisher            upload.py
@@ -58,14 +64,16 @@ not fetch anything or compute a new market fact.
 
 | Layer          | Module                             | Phase 2 status                     |
 | -------------- | ---------------------------------- | ---------------------------------- |
-| Acquisition    | `providers/`                       | new - wraps market.py / news.py     |
-| Legacy fetch   | `market.py`, `news.py`             | still underneath; now record provenance |
-| Domain         | `core/`                            | + `sources.py`, independence-aware validation |
+| Acquisition    | `providers/`                       | wraps market.py / news.py           |
+| Legacy fetch   | `market.py`, `news.py`             | still underneath; record provenance |
+| Domain         | `core/`                            | `sources.py`, independence-aware validation, content safety |
 | Report build   | `adapters/`                        | builds from provider output         |
-| Presentation   | `presentation/`                    | new - the renderer boundary         |
+| Persistence    | `storage/`                         | Phase 3 - SQLite historical index   |
+| Presentation   | `presentation/`                    | the renderer boundary               |
 | Rendering      | `video.py`, `chart.py`, `music.py` | unchanged                           |
+| Artifact QA    | `qa/`                              | Phase 3 - deterministic video checks |
 | Publication    | `upload.py`                        | unchanged                           |
-| Orchestration  | `main.py`                          | thin: collect → report → gate → present → render → QA → publish |
+| Orchestration  | `main.py`                          | thin: collect → report → persist → gate → present → render → QA → publish |
 
 ## What changed in Phase 2
 
@@ -78,23 +86,35 @@ The renderer itself was not rewritten. `presentation/report_adapter.py` produces
 structures `video.py` and `chart.py` have always consumed, so the migration moved the
 *source* of those structures without touching the code that draws them.
 
-## Two independent gates
+## Three independent gates
 
 ```
-DATA VALIDATION  (report.publication_ready)
-        +
-CONTENT SAFETY   (core/content_safety.py, deterministic, no Gemini)
-        +
-PUBLICATION QA   (final scan of finalized artifacts)
+DATA QA      report.publication_ready   - validation, corroboration, required facts
+     AND
+CONTENT QA   core/content_safety.py     - deterministic, no model
+     AND
+VIDEO QA     qa/video_qa.py             - deterministic artifact inspection
         ↓
    publication allowed
 ```
 
-Both must pass. Validation failing stops the run before rendering; content safety failing
-stops the upload after it. Neither is advisory.
+All three must pass, and none is advisory. Data QA failing stops the run before rendering;
+video and content QA failing stop the upload after it, preserving every artifact for
+diagnosis. Persistence is a fourth precondition: if the run cannot be recorded in history, it
+does not publish, because auditability is part of publication integrity.
+
+See `docs/PRODUCTION_QA.md`.
+
+## Two artifacts
+
+The JSON report is the **immutable per-run record**; SQLite is a **queryable index across
+runs** that points back at those files. SQLite is not in the rendering path - the renderer
+consumes the current MarketReport through `ReportPresentation`, so a database problem can
+never change what a video looks like. See `docs/STORAGE.md`.
 
 ## Still deliberately absent
 
-No database, no post-market edition, no Zerodha, no paid market-data APIs, no new indicators,
-no dashboards or APIs. `ReportType.POST_MARKET` exists as an enum only. These stay deferred;
-Phase 2 exists so that adding them later does not mean rebuilding the foundation.
+No post-market edition, no historical analytics, no dashboards or API server, no Zerodha, no
+paid market-data APIs, no new indicators, no trading signals or recommendations.
+`ReportType.POST_MARKET` exists as an enum only. These stay deferred; the phases so far exist
+so that adding them later does not mean rebuilding the foundation.

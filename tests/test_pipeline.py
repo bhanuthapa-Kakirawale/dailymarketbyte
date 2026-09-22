@@ -14,6 +14,7 @@ from conftest import IST, PREV_SESSION, SESSION
 
 import main
 from core import MarketReport, Metric, ValidationStatus
+from storage import MarketHistory
 
 
 class _Args:
@@ -60,7 +61,29 @@ def offline_pipeline(monkeypatch, tmp_path, market_dict, movers, sectors, tiles,
         open(out_path, "wb").write(b"stub")
 
     monkeypatch.setattr(main.video, "render", _render)
+
+    # Media probing is the mockable boundary: tests never invoke ffmpeg, but the production
+    # QA implementation stays exactly as it ships.
+    monkeypatch.setattr(main, "check_video", _stub_video_qa)
     return rendered
+
+
+def _stub_video_qa(video_path, expected_duration, metadata_path=None, report_path=None, **kw):
+    """A passing QA result, built through the real result type so the gate logic is real."""
+    from qa.video_qa import QACheck, QAStatus, VideoQAResult
+    result = VideoQAResult(checked_at=dt.datetime(2026, 9, 21, 7, 40, tzinfo=IST),
+                           video_path=video_path)
+    result.add(QACheck("stubbed", QAStatus.PASS, expected="pass", actual="pass"))
+    return result
+
+
+def _failing_video_qa(video_path, expected_duration, metadata_path=None, report_path=None, **kw):
+    from qa.video_qa import QACheck, QAStatus, VideoQAResult
+    result = VideoQAResult(checked_at=dt.datetime(2026, 9, 21, 7, 40, tzinfo=IST),
+                           video_path=video_path)
+    result.add(QACheck("resolution", QAStatus.FAIL, expected="1080x1920", actual="640x480",
+                       message="wrong resolution for a vertical Short"))
+    return result
 
 
 def _stub_chart(tmp_path, m):
@@ -154,6 +177,117 @@ def test_unsafe_upstream_text_is_neutralised_and_never_reaches_the_report(
     assert all("to buy" not in (e["text"] or "").lower() for e in report.events)
     assert report.content_safety["blocked_count"] >= 1
     assert report.content_safety["final_scan"]["status"] == "SAFE"
+
+
+def test_report_persists_to_history_before_publication(offline_pipeline, tmp_path):
+    """Persistence happens before the publication gate, so an unfit report is still kept."""
+    main.run(_Args())
+    with MarketHistory(str(tmp_path / "data" / "market_history.db")) as history:
+        reports = history.get_reports_between(dt.date(2026, 1, 1), dt.date(2026, 12, 31))
+        assert len(reports) == 1
+        stored = reports[0]
+        assert stored.publication_ready is True
+        assert stored.json_artifact_path and os.path.exists(stored.json_artifact_path)
+        assert history.get_facts(metric="INDEX_CLOSE")
+
+
+def test_run_lifecycle_is_recorded_for_a_local_run(offline_pipeline, tmp_path):
+    main.run(_Args())
+    with MarketHistory(str(tmp_path / "data" / "market_history.db")) as history:
+        run = history.get_publication_runs()[0]
+        assert run.mode == "LOCAL"
+        assert run.stage == "NO_UPLOAD"
+        assert run.data_qa_status == "PASSED"
+        assert run.video_qa_status == "PASS"
+        assert run.content_qa_status == "PASSED"
+        assert run.publication_status == "NOT_ATTEMPTED"
+        assert run.youtube_video_id is None
+
+
+def test_unpublishable_report_is_persisted_and_records_its_failure(offline_pipeline, monkeypatch,
+                                                                   tmp_path):
+    """Validation failure must not mean losing the report - the history is how anyone later
+    answers why a given day was not published."""
+    monkeypatch.setattr(main, "check_publication", lambda report, demo=False: False)
+    assert main.run(_Args(upload=True)) is None
+
+    with MarketHistory(str(tmp_path / "data" / "market_history.db")) as history:
+        assert history.get_reports_between(dt.date(2026, 1, 1), dt.date(2026, 12, 31))
+        run = history.get_publication_runs()[0]
+        assert run.failure_stage == "DATA_QA"
+        assert run.publication_status == "BLOCKED"
+
+
+def test_persistence_failure_blocks_upload(offline_pipeline, monkeypatch):
+    """Auditability is part of publication integrity: if the run cannot be recorded, it is
+    not published."""
+    monkeypatch.setattr(main, "persist_report",
+                        lambda *a, **k: (False, "OperationalError: disk is full"))
+
+    def _boom(*a, **k):
+        raise AssertionError("must not publish when history could not be written")
+
+    monkeypatch.setattr(main, "publish", _boom)
+    assert main.run(_Args(upload=True)) is None
+    assert "scenes" not in offline_pipeline, "nothing should have been rendered"
+
+
+def test_video_qa_failure_blocks_upload_but_keeps_artifacts(offline_pipeline, monkeypatch,
+                                                            tmp_path):
+    monkeypatch.setattr(main, "check_video", _failing_video_qa)
+
+    def _boom(*a, **k):
+        raise AssertionError("must not publish when video QA failed")
+
+    monkeypatch.setattr(main, "publish", _boom)
+    out = main.run(_Args(upload=True))
+
+    assert out and os.path.exists(out), "the failed video is preserved for diagnosis"
+    assert os.listdir(tmp_path / "reports")
+    assert os.listdir(tmp_path / "qa"), "the QA artifact is written even when QA fails"
+    with MarketHistory(str(tmp_path / "data" / "market_history.db")) as history:
+        run = history.get_publication_runs()[0]
+        assert run.failure_stage == "VIDEO_QA"
+        assert run.video_qa_status == "FAIL"
+        assert run.publication_status == "BLOCKED"
+
+
+def test_qa_artifact_is_written_for_every_render(offline_pipeline, tmp_path):
+    main.run(_Args())
+    qa_files = os.listdir(tmp_path / "qa")
+    assert qa_files
+    payload = json.loads((tmp_path / "qa" / qa_files[0]).read_text(encoding="utf-8"))
+    assert payload["report_id"] and payload["overall_status"] == "PASS"
+    assert payload["report_json_artifact"]
+
+
+def test_all_gates_passing_publishes_only_with_upload_flag(offline_pipeline, monkeypatch):
+    published = {}
+    monkeypatch.setattr(main, "publish", lambda out, meta, d: published.setdefault("id", "vid123"))
+
+    main.run(_Args(upload=False))
+    assert not published, "a no-upload run must never publish"
+
+    main.run(_Args(upload=True))
+    assert published["id"] == "vid123"
+
+
+def test_publish_records_the_video_id_in_history(offline_pipeline, monkeypatch, tmp_path):
+    monkeypatch.setattr(main, "publish", lambda out, meta, d: "vid123")
+    main.run(_Args(upload=True))
+    with MarketHistory(str(tmp_path / "data" / "market_history.db")) as history:
+        run = history.get_publication_runs()[0]
+        assert run.publication_status == "PUBLISHED"
+        assert run.youtube_video_id == "vid123"
+
+
+def test_rerunning_the_same_session_does_not_duplicate_history(offline_pipeline, tmp_path):
+    """GitHub Actions retries and manual reruns must not multiply canonical history."""
+    main.run(_Args())
+    main.run(_Args())
+    with MarketHistory(str(tmp_path / "data" / "market_history.db")) as history:
+        assert len(history.get_reports_between(dt.date(2026, 1, 1), dt.date(2026, 12, 31))) == 1
+        assert len(history.get_publication_runs()) == 2, "runs are operational history and append"
 
 
 def test_unsafe_text_surviving_into_metadata_blocks_upload(offline_pipeline, monkeypatch):

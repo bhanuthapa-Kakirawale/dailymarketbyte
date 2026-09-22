@@ -1,4 +1,12 @@
 output/
+# Runtime history databases. output/ already covers the default location, but these are
+# named explicitly so a relocated OUT_DIR cannot accidentally commit market history.
+# (Runtime QA artifacts live in output/qa/; the qa/ source package is tracked.)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
 token.json
 client_secret.json
 .venv/

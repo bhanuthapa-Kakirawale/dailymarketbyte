@@ -97,6 +97,42 @@ The contract between market intelligence and any presentation layer.
 
 Reading a 1.x report still works; the sections added in 2.0 come back empty.
 
+## Relative volume (versioned metric)
+
+`STOCK_RELATIVE_VOLUME` is defined explicitly, because "2.4x average volume" means nothing
+without saying which average:
+
+```
+relative_volume = current session volume / mean volume of the PRIOR 20 trading sessions
+```
+
+The current session is **excluded** from the denominator — including it would damp exactly
+the spike the metric exists to show. With fewer than 20 prior sessions the value is `None`,
+never a mean over however many happen to be available.
+
+| Version | Window | Used by |
+| --- | --- | --- |
+| 1.x | 10 prior sessions | every report generated before Phase 3 |
+| 2.0 | 20 prior sessions | Phase 3 onwards |
+
+Historical JSON is **not rewritten** and old history is **not backfilled**. Instead every
+`STOCK_RELATIVE_VOLUME` observation carries its own definition, so a reader can always tell
+which one produced the number in front of them:
+
+```json
+{"definition": "current_volume / mean_prior_volume", "lookback_sessions": 20,
+ "minimum_required_sessions": 20, "includes_current_session": false,
+ "definition_version": "2.0"}
+```
+
+Reports without this metadata block are by definition version 1.x.
+
+## Persistence
+
+The canonical model is also the shape of the historical index — `reports → facts →
+observations → sources`, plus `validation_results`, `catalysts`, `events` and
+`publication_runs`. See `docs/STORAGE.md`.
+
 Serialise with `to_dict()` / `to_json()`, restore with `from_dict()` / `from_json()`.
 Round-tripping preserves provenance down to individual observations and validation details.
 

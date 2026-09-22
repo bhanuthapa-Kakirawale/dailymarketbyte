@@ -110,6 +110,40 @@ def get_market() -> dict:
     return analyze(nifty, bank_pct, vix)
 
 
+# Relative volume, defined explicitly because "2.4x average volume" is meaningless without
+# saying which average. Version 2.0 (Phase 3) fixed the window at 20 PRIOR sessions; version
+# 1.x used 10 and is what every report generated before Phase 3 contains. Reports are not
+# rewritten, so the definition travels with the number instead.
+RELATIVE_VOLUME_LOOKBACK = 20
+RELATIVE_VOLUME_DEFINITION = {
+    "definition": "current_volume / mean_prior_volume",
+    "lookback_sessions": RELATIVE_VOLUME_LOOKBACK,
+    "minimum_required_sessions": RELATIVE_VOLUME_LOOKBACK,
+    "includes_current_session": False,
+    "definition_version": "2.0",
+}
+
+
+def relative_volume(volumes, lookback: int = RELATIVE_VOLUME_LOOKBACK):
+    """Current session's volume over the mean of the `lookback` sessions immediately before it.
+
+    The current session is excluded from the denominator: including it would damp exactly the
+    spike the metric exists to show. With fewer than `lookback` prior sessions the answer is
+    None rather than a mean over whatever happens to be available - silently computing over 7
+    or 15 sessions and calling it the same metric is how a number stops meaning anything.
+    """
+    if volumes is None or len(volumes) < lookback + 1:
+        return None
+    prior = volumes.iloc[-(lookback + 1):-1].dropna()
+    if len(prior) < lookback:
+        return None
+    mean_prior = float(prior.mean())
+    current = volumes.iloc[-1]
+    if mean_prior <= 0 or current is None or pd.isna(current):
+        return None
+    return float(current) / mean_prior
+
+
 def get_movers(universe: dict, recap_date: dt.date, prev_date: dt.date, n: int = 5):
     """prev_date: the actual previous trading session, from the Nifty index's own calendar -
     every mover's day-over-day % is only trusted if ITS previous close lands on that same date.
@@ -132,7 +166,10 @@ def get_movers(universe: dict, recap_date: dt.date, prev_date: dt.date, n: int =
     syms = list(universe)
 
     def _fetch():
-        return yf.download([s + ".NS" for s in syms], period="1mo", interval="1d", group_by="ticker",
+        # 3mo rather than 1mo: relative volume needs 20 prior sessions plus the current one,
+        # and a one-month window lands right on that boundary, so a single missing day would
+        # silently drop the metric for the whole universe.
+        return yf.download([s + ".NS" for s in syms], period="3mo", interval="1d", group_by="ticker",
                            auto_adjust=False, progress=False, threads=True)
 
     raw = retry(_fetch)
@@ -157,10 +194,9 @@ def get_movers(universe: dict, recap_date: dt.date, prev_date: dt.date, n: int =
                 skipped_gap.append(s)
                 continue
             c, v = d.Close, d.Volume
-            avgv = v.iloc[-11:-1].mean()
             rows.append({"symbol": s, "name": universe[s], "close": float(c.iloc[-1]),
                          "pct": float((c.iloc[-1] / c.iloc[-2] - 1) * 100),
-                         "volx": float(v.iloc[-1] / avgv) if avgv and avgv > 0 else None})
+                         "volx": relative_volume(v)})
         if len(rows) >= 2 * n or not pending_backfill or attempt == 2:
             break
         wait = 30 * (attempt + 1)

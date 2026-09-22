@@ -109,9 +109,13 @@ def test_movers_produce_price_change_and_volume(movers):
 
 
 def test_relative_volume_records_its_definition(movers):
+    """Definition version 2.0 (Phase 3) fixed the window at 20 prior sessions; 1.x used 10.
+    Reports are never rewritten, so the version travels with the number."""
     gainers, _ = movers
     volume = _by(_adapter().observe_movers(gainers, "gainer"), Metric.STOCK_RELATIVE_VOLUME)
-    assert volume.metadata["lookback_sessions"] == 10
+    assert volume.metadata["lookback_sessions"] == 20
+    assert volume.metadata["definition_version"] == "2.0"
+    assert volume.metadata["includes_current_session"] is False
     assert volume.source_type is SourceType.DERIVED
 
 

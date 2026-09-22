@@ -85,15 +85,51 @@ What changed:
   the providers. The providers consume them immediately, but the seam is visible.
 - **Relative volume still uses a 10-session lookback**, not the 20 the product spec describes.
 
-## Phase 3+ (explicitly deferred)
+## Phase 3 (complete): persistence, auditability, production reliability
 
-Fact database, source-licence registry, instrument master, catalyst time-matching, relevance
-scoring for stock selection, post-market edition, adaptive video duration.
+- **`storage/`** - SQLite historical index (`reports`, `sources`, `facts`, `observations`,
+  `validation_results`, `catalysts`, `events`, `publication_runs`). Transactional,
+  idempotent, schema-versioned via `PRAGMA user_version`. See `docs/STORAGE.md`.
+- **JSON stays the immutable per-run artifact.** SQLite indexes those files and stores
+  `json_artifact_path` so the authoritative record is always locatable. Nothing in the render
+  path reads from the database.
+- **`qa/`** - deterministic post-render artifact checks, now a third binding publication gate
+  alongside data validation and content safety. See `docs/PRODUCTION_QA.md`.
+- **Publication runs** record every execution and the stage that blocked it, so
+  "why wasn't the 22 Sep report published?" is answerable later.
+- **Persistence is a precondition for publishing.** If the run cannot be recorded, it is not
+  published; auditability is part of publication integrity.
+- **Relative volume** now uses exactly 20 prior sessions, excludes the current one, returns
+  `None` below that, and carries its definition version on every observation.
+
+### Phase 3 compromises
+
+- **`sources` is keyed on `source_name`.** Documented assumption, safe because per-report
+  independence lives on each observation rather than being read back from the registry.
+  `docs/STORAGE.md` records where this changes if a source ever needs real versioning.
+- **Demo runs persist with `is_demo = 1`** rather than being skipped, so the persistence path
+  is exercised on every demo render. Every query excludes them by default.
+- **Blank-frame detection is deliberately blunt** - flat frames and decode failures block,
+  merely-dark frames warn. The design is legitimately dark and a gate that cries wolf gets
+  switched off.
+- **Media probing parses `ffmpeg -i` stderr**, because imageio-ffmpeg ships no ffprobe and a
+  media dependency is not worth a handful of fields. It is isolated behind one seam.
+- **The fetch window widened from 1mo to 3mo** in `get_movers` so 20 prior sessions are
+  reliably available - more data transferred per run, for a metric that is now well defined.
+- **Old history is not backfilled** and old JSON is not rewritten. Reports carrying relative
+  volume without a `definition_version` are version 1.x by definition.
+- Carried forward from Phase 2: the duplicated Nifty guard, publisher-level news
+  independence, and `display_rights_status` as a placeholder.
+
+## Phase 4+ (explicitly deferred)
+
+Historical analytics, dashboards or an API server, source-licence system, instrument master,
+catalyst time-matching, relevance scoring for stock selection, post-market edition, adaptive
+video duration, backfilling legacy history.
 
 These are deferred on the product spec's own reasoning: the YouTube channel is an unvalidated
 experiment, and this infrastructure would multiply the codebase without changing a single
-frame. Phases 1 and 2 exist so that building them later does not mean rebuilding the
-foundation.
+frame. Phases 1-3 exist so that building them later does not mean rebuilding the foundation.
 
 ## Rules for contributors
 

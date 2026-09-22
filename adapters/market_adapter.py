@@ -39,6 +39,20 @@ _TECHNICAL_KEYS = ("ema20", "ema50", "rsi")
 _REPORT_DATE_LABELS = frozenset({"GIFT NIFTY"})
 
 
+def _relative_volume_definition() -> dict:
+    """The versioned relative-volume semantics, attached to every such observation.
+
+    Carried on the observation rather than assumed, because reports written before Phase 3
+    used a 10-session window and are not rewritten: a reader has to be able to tell which
+    definition produced the number in front of them.
+    """
+    try:
+        import market
+        return dict(market.RELATIVE_VOLUME_DEFINITION)
+    except Exception:
+        return {}
+
+
 def _sector_nse_names() -> dict:
     """Label -> NSE index name, mirroring market.SECTORS so we can tell which sector rows
     came from NSE's feed and which fell back to Yahoo."""
@@ -205,8 +219,7 @@ class MarketAdapter:
                           SRC_YAHOO, SourceType.SECONDARY, **common),
                 self._obs(Metric.STOCK_RELATIVE_VOLUME, symbol, row.get("volx"), UNIT_RATIO,
                           SRC_YAHOO, SourceType.DERIVED,
-                          lookback_sessions=10, definition="volume / mean(previous 10 sessions)",
-                          **common),
+                          **_relative_volume_definition(), **common),
             ]
         return [o for o in out if o]
 

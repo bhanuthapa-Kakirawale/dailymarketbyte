@@ -27,6 +27,8 @@ from config import OUT_DIR, ASSETS_DIR, UNIVERSE, UNIVERSE_LABEL, TOP_N, DURATIO
 from core.content_safety import CONTENT_SAFETY_VERSION, SafetyStatus, sanitize_field, scan_publication
 from presentation import ReportPresentation
 from providers import GeminiProvider, NewsProvider, NseProvider, YahooProvider
+from qa import check_video, write_qa_artifact
+from storage import MarketHistory, default_db_path
 
 RS = video.RS
 BASE_DUR = {"intro": 2.0, "global": 7.0, "fii": 5.0, "nifty": 16.0, "sector": 8.0,
@@ -437,6 +439,53 @@ def final_qa(scenes, events, meta, out, upload_requested):
     return scan
 
 
+def persist_report(report, artifact_path, demo=False, history=None):
+    """Record the report in the historical index. Returns (ok, error).
+
+    A report that failed validation is still historically valuable - "why wasn't the 22 Sep
+    report published?" is only answerable if the unfit report was kept - so this runs for
+    every report, storing its real statuses rather than only the publishable ones.
+
+    Demo runs are written with is_demo=1 and excluded from every history query by default,
+    so synthetic fixtures cannot contaminate real market history while still being available
+    for debugging the pipeline itself.
+    """
+    try:
+        owned = history is None
+        history = history or MarketHistory(default_db_path(OUT_DIR))
+        try:
+            written = history.save_report(report, artifact_path=artifact_path, is_demo=demo)
+            print(f"      history: {'stored' if written else 'already stored'} {report.report_id}"
+                  f"{' (demo)' if demo else ''}")
+            return True, None
+        finally:
+            if owned:
+                history.close()
+    except Exception as exc:
+        # Auditability is part of publication integrity: the caller refuses to upload.
+        print(f"      history: FAILED to persist {report.report_id}: {type(exc).__name__}: {exc}")
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+def video_qa(out, meta_path, report_path, expected_duration, upload_requested):
+    """Deterministic artifact QA. Failure blocks publication but preserves every artifact."""
+    result = check_video(out, expected_duration=expected_duration, metadata_path=meta_path,
+                         report_path=report_path)
+    if result.passed:
+        note = f" ({len(result.warnings)} warning(s))" if result.warnings else ""
+        print(f"      video QA: {result.status.value}{note}")
+    else:
+        print(f"      video QA FAILED ({len(result.blocking_issues)} blocking):")
+        for issue in result.blocking_issues:
+            print(f"  - {issue}")
+        print(f"Local artifacts preserved for inspection: {out}")
+        if upload_requested:
+            print("Upload blocked by video QA.")
+    for warning in result.warnings:
+        print(f"      video QA warning: {warning}")
+    return result
+
+
 def publish(out, meta, session_date):
     import upload
     vid = upload.upload(out, meta)
@@ -449,60 +498,158 @@ def publish(out, meta, session_date):
 def run(args):
     os.makedirs(OUT_DIR, exist_ok=True)
     today = now_ist().date()
+    mode = "DEMO" if args.demo else ("PRODUCTION" if args.upload else "LOCAL")
+    history, run_id = _open_history(mode)
 
-    raw = collect(args, today)
-    if raw is None:
-        return None
+    try:
+        raw = collect(args, today)
+        if raw is None:
+            _finish(history, run_id, "NO_UPLOAD", "SKIPPED", failure_stage="COLLECT",
+                    failure_reason="holiday or already posted")
+            return None
+        _stage(history, run_id, "COLLECTED")
 
-    # Content safety runs before the report is built, so the report stores publishable text
-    # and presentation inherits it rather than being cleaned separately downstream.
-    (raw["nifty_reason"], raw["gainers"], raw["losers"], raw["events"],
-     safety_findings) = apply_content_safety(raw["nifty_reason"], raw["gainers"],
-                                             raw["losers"], raw["events"])
+        # Content safety runs before the report is built, so the report stores publishable
+        # text and presentation inherits it rather than being cleaned separately downstream.
+        (raw["nifty_reason"], raw["gainers"], raw["losers"], raw["events"],
+         safety_findings) = apply_content_safety(raw["nifty_reason"], raw["gainers"],
+                                                 raw["losers"], raw["events"])
 
-    print("[5/6] Building validated market report...")
-    report = build_report(raw, today, demo=args.demo,
-                          content_safety=summarize_content_safety(safety_findings, None))
-    print(f"      report: {report_builder.describe(report)}")
+        print("[5/7] Building validated market report...")
+        report = build_report(raw, today, demo=args.demo,
+                              content_safety=summarize_content_safety(safety_findings, None))
+        print(f"      report: {report_builder.describe(report)}")
+        _stage(history, run_id, "REPORT_BUILT", report_id=report.report_id)
 
-    if not check_publication(report, demo=args.demo):
-        path = report_builder.save_report(report, OUT_DIR, demo=args.demo)
-        print(f"Report written for diagnosis (no video rendered): {path}")
-        return None
+        # JSON artifact first, then the historical index: the file is the immutable record of
+        # what this run produced, and the database is an index over those files.
+        report_path = report_builder.save_report(report, OUT_DIR, demo=args.demo)
+        ok, error = persist_report(report, report_path, demo=args.demo, history=history)
+        if not ok:
+            _finish(history, run_id, "FAILED", "BLOCKED", failure_stage="PERSIST",
+                    failure_reason=error, artifact_path=report_path)
+            print("Publication blocked: the run could not be recorded in history.")
+            return None
+        _stage(history, run_id, "PERSISTED", artifact_path=report_path)
 
-    pres = ReportPresentation(report)
-    info = {"today_str": today.strftime("%A, %d %B %Y"),
-            "today_short": today.strftime("%a %d %b"),
-            "recap_str": pres.session_date.strftime("%a, %d %b %Y")}
-    dur = durations(pres.present())
-    tag = today.strftime("%Y-%m-%d")
-    charts = chart.make_chart(pres.m, os.path.join(OUT_DIR, f"nifty_chart_{tag}"))
-    uni = UNIVERSE_LABEL.get(UNIVERSE, UNIVERSE)
-    scenes = build_scenes(pres, info, dur, charts, uni)
+        # Gate 1 of 3: data validation.
+        if not check_publication(report, demo=args.demo):
+            _finish(history, run_id, "DATA_QA_FAILED", "BLOCKED", failure_stage="DATA_QA",
+                    failure_reason="; ".join(report.validation_summary.blocking_issues),
+                    data_qa_status="FAILED", artifact_path=report_path)
+            print(f"Report written for diagnosis (no video rendered): {report_path}")
+            return None
+        _stage(history, run_id, "DATA_QA_PASSED", data_qa_status="PASSED")
 
-    print(f"[6/6] Rendering {sum(s.dur for s in scenes):.1f}s video ({len(scenes)} scenes)...")
-    swells = list(np.cumsum([s.dur for s in scenes])[:-1])
-    mus = music.get_music(ASSETS_DIR, OUT_DIR, DURATION, swells, date=pres.session_date)
-    out = os.path.join(OUT_DIR, f"daily_byte_{tag}{'_DEMO' if args.demo else ''}.mp4")
-    video.render(scenes, info, ticker_items(pres.m, pres.tiles, pres.sec, pres.gainers, pres.losers),
-                 mus, out, demo=args.demo)
+        pres = ReportPresentation(report)
+        info = {"today_str": today.strftime("%A, %d %B %Y"),
+                "today_short": today.strftime("%a %d %b"),
+                "recap_str": pres.session_date.strftime("%a, %d %b %Y")}
+        dur = durations(pres.present())
+        tag = today.strftime("%Y-%m-%d")
+        charts = chart.make_chart(pres.m, os.path.join(OUT_DIR, f"nifty_chart_{tag}"))
+        uni = UNIVERSE_LABEL.get(UNIVERSE, UNIVERSE)
+        scenes = build_scenes(pres, info, dur, charts, uni)
 
-    meta = build_metadata(pres.m, pres.gainers, pres.losers, pres.events, info,
-                          pres.fd, pres.sec, pres.tiles)
-    with open(out.replace(".mp4", ".json"), "w", encoding="utf-8") as f:
-        json.dump(meta, f, indent=2, ensure_ascii=False)
+        total = sum(s.dur for s in scenes)
+        print(f"[6/7] Rendering {total:.1f}s video ({len(scenes)} scenes)...")
+        swells = list(np.cumsum([s.dur for s in scenes])[:-1])
+        mus = music.get_music(ASSETS_DIR, OUT_DIR, DURATION, swells, date=pres.session_date)
+        out = os.path.join(OUT_DIR, f"daily_byte_{tag}{'_DEMO' if args.demo else ''}.mp4")
+        video.render(scenes, info,
+                     ticker_items(pres.m, pres.tiles, pres.sec, pres.gainers, pres.losers),
+                     mus, out, demo=args.demo)
 
-    scan = final_qa(scenes, pres.events, meta, out, args.upload)
-    report.content_safety = summarize_content_safety(safety_findings, scan)
-    path = report_builder.save_report(report, OUT_DIR, demo=args.demo)
-    cs = report.content_safety
-    print(f"      report: {os.path.basename(path)} | content safety: status={cs['status']} "
-          f"sanitized={cs['sanitized_count']} blocked={cs['blocked_count']}")
-    print(f"Done: {out}")
+        meta = build_metadata(pres.m, pres.gainers, pres.losers, pres.events, info,
+                              pres.fd, pres.sec, pres.tiles)
+        meta_path = out.replace(".mp4", ".json")
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2, ensure_ascii=False)
+        _stage(history, run_id, "RENDERED", artifact_path=out)
 
-    if args.upload and not args.demo and scan.status is SafetyStatus.SAFE:
-        publish(out, meta, pres.session_date)
-    return out
+        print("[7/7] Publication QA...")
+        # Gate 2 of 3: the rendered artifact itself.
+        qa_result = video_qa(out, meta_path, report_path, total, args.upload)
+        qa_path = write_qa_artifact(qa_result, OUT_DIR, report, report_path=report_path,
+                                    video_path=out, demo=args.demo)
+        print(f"      qa artifact: {os.path.basename(qa_path)}")
+
+        # Gate 3 of 3: nothing unsafe survived into the finalized public text.
+        scan = final_qa(scenes, pres.events, meta, out, args.upload)
+        report.content_safety = summarize_content_safety(safety_findings, scan)
+        # Re-save the JSON and refresh the stored row now that the final scan is known.
+        report_path = report_builder.save_report(report, OUT_DIR, demo=args.demo)
+        _refresh_history(history, report, report_path, demo=args.demo)
+
+        cs = report.content_safety
+        print(f"      report: {os.path.basename(report_path)} | content safety: status={cs['status']} "
+              f"sanitized={cs['sanitized_count']} blocked={cs['blocked_count']}")
+        print(f"Done: {out}")
+
+        content_ok = scan.status is SafetyStatus.SAFE
+        _stage(history, run_id, "VIDEO_QA_PASSED" if qa_result.passed else "VIDEO_QA_FAILED",
+               video_qa_status=qa_result.status.value,
+               content_qa_status="PASSED" if content_ok else "FAILED")
+
+        if not (qa_result.passed and content_ok):
+            _finish(history, run_id, "FAILED", "BLOCKED",
+                    failure_stage="VIDEO_QA" if not qa_result.passed else "CONTENT_QA",
+                    failure_reason="; ".join(qa_result.blocking_issues or scan.blocked_fields),
+                    artifact_path=out)
+            return out
+
+        if args.upload and not args.demo:
+            vid = publish(out, meta, pres.session_date)
+            _finish(history, run_id, "PUBLISHED", "PUBLISHED", artifact_path=out,
+                    youtube_video_id=vid)
+        else:
+            _finish(history, run_id, "NO_UPLOAD", "NOT_ATTEMPTED", artifact_path=out)
+        return out
+    finally:
+        if history:
+            history.close()
+
+
+def _open_history(mode):
+    """Open the history database and start a run record. Never fatal on its own - a failure
+    here surfaces at the persistence gate, which is where refusing to publish belongs."""
+    try:
+        history = MarketHistory(default_db_path(OUT_DIR))
+        return history, history.start_run(mode)
+    except Exception as exc:
+        print(f"[history] unavailable: {type(exc).__name__}: {exc}")
+        return None, None
+
+
+def _stage(history, run_id, stage, **fields):
+    if history and run_id:
+        try:
+            history.update_run(run_id, stage=stage, **fields)
+        except Exception as exc:
+            print(f"[history] could not record stage {stage}: {exc}")
+
+
+def _finish(history, run_id, stage, publication_status, **fields):
+    if history and run_id:
+        try:
+            history.finish_run(run_id, stage, publication_status, **fields)
+        except Exception as exc:
+            print(f"[history] could not close run: {exc}")
+
+
+def _refresh_history(history, report, report_path, demo=False):
+    """Re-store the report once the final content-safety verdict is attached.
+
+    An explicit replace, because this is the same run correcting its own record rather than a
+    rerun: the JSON on disk was just rewritten with the final scan, and the index must match
+    the artifact it points at.
+    """
+    if not history:
+        return
+    try:
+        history.save_report(report, artifact_path=report_path, replace=True, is_demo=demo)
+    except Exception as exc:
+        print(f"[history] could not refresh stored report: {exc}")
 
 
 if __name__ == "__main__":

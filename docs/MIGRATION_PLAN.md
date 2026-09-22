@@ -121,7 +121,35 @@ What changed:
 - Carried forward from Phase 2: the duplicated Nifty guard, publisher-level news
   independence, and `display_rights_status` as a placeholder.
 
-## Phase 4+ (explicitly deferred)
+## Phase 4.1 (complete): deterministic historical intelligence
+
+The first phase where the database produces value rather than only recording it.
+
+- **`intelligence/`** derives an `IntelligenceSnapshot` from today's canonical report plus
+  canonical history: index-move context, FII/DII persistence, VIX context, sector
+  persistence, mover recurrence and relative-volume context.
+- **Deterministic.** No LLM computes any statistic; the same inputs produce byte-identical
+  output. Statements are templates, scanned by the Phase 1.1 content filter before display.
+- **Derived, not canonical.** Written to `output/intelligence/`; canonical JSON and SQLite
+  rows are untouched, asserted by test.
+- **Two narrow repository retrievals** were added (`get_recent_facts`,
+  `get_recent_metric_points`) - bulk, session-bounded, with no analytics in `repository.py`.
+- **One optional scene.** MARKET CONTEXT appears only when there are displayable insights,
+  and its 6s is carved out of the three stretch scenes, so the Short stays 75.0s.
+
+### Phase 4.1 compromises
+
+- **Streaks count through an ineligible session** rather than breaking on it. The wording
+  says "consecutive *available* sessions" and the word is the disclosure, but a dropped
+  session inside a run can overstate its length. Breaking instead would understate it.
+- **News/publisher independence is not consulted** by intelligence; it reads numeric facts
+  only, so the Phase 2 syndication gap is not exercised here.
+- **Sector median outperformance** is computed against the sectors present in each session,
+  so a session with partial sector coverage is compared against its own cohort.
+- **No backfill.** Reports that predate Phase 3 are not in the database and are not ingested,
+  so history begins where persistence did.
+
+## Phase 4.2+ (explicitly deferred)
 
 Historical analytics, dashboards or an API server, source-licence system, instrument master,
 catalyst time-matching, relevance scoring for stock selection, post-market edition, adaptive

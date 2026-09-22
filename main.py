@@ -24,6 +24,7 @@ import video
 from adapters import report_builder
 from adapters.news_adapter import NO_CATALYST_TEXT
 from config import OUT_DIR, ASSETS_DIR, UNIVERSE, UNIVERSE_LABEL, TOP_N, DURATION, now_ist, fmt_in
+import intelligence
 from core import MarketReport
 from core.content_safety import CONTENT_SAFETY_VERSION, SafetyStatus, sanitize_field, scan_publication
 from presentation import ReportPresentation
@@ -35,6 +36,9 @@ RS = video.RS
 BASE_DUR = {"intro": 2.0, "global": 7.0, "fii": 5.0, "nifty": 16.0, "sector": 8.0,
             "gainers": 13.5, "losers": 13.5, "events": 7.0, "outro": 3.0}
 STRETCH = ("nifty", "gainers", "losers")
+# Taken from the stretch scenes when historical context is available, never added on top -
+# see durations(). Deliberately short: context supplements the recap, it does not lead it.
+CONTEXT_DUR = 6.0
 
 
 # ----------------------------------------------------------------------------- captions
@@ -286,12 +290,22 @@ def operational_content_qa(scan) -> dict:
 
 
 # ----------------------------------------------------------------------------- main
-def durations(present: set) -> dict:
+def durations(present: set, context: bool = False) -> dict:
+    """Scene durations. The total is always sum(BASE_DUR) - currently 75.0s.
+
+    The market-context scene is carved out of the three scenes already designed to flex
+    rather than added on top, so historical context never lengthens the Short. On a day with
+    no usable history the scene is absent and the timing is exactly as it was before Phase 4.
+    """
     dur = {k: v for k, v in BASE_DUR.items() if k in present}
     missing = sum(v for k, v in BASE_DUR.items() if k not in present)
     base = sum(BASE_DUR[k] for k in STRETCH)
     for k in STRETCH:
         dur[k] += missing * BASE_DUR[k] / base
+    if context:
+        for k in STRETCH:
+            dur[k] -= CONTEXT_DUR * BASE_DUR[k] / base
+        dur["context"] = CONTEXT_DUR
     return dur
 
 
@@ -408,8 +422,12 @@ def check_publication(report, demo=False) -> bool:
     return False
 
 
-def build_scenes(pres, info, dur, charts, uni):
-    """Scene construction, reading only from the presentation view of the report."""
+def build_scenes(pres, info, dur, charts, uni, context=()):
+    """Scene construction, reading only from the presentation view of the report.
+
+    `context` is the already-selected, already-content-checked historical statements; the
+    scene appears only when there are some, so a cold-start run is identical to a Phase 3 one.
+    """
     present = pres.present()
     scenes = [video.IntroScene(info, hook_line(pres.m, pres.fd, pres.sec), dur["intro"])]
     if "global" in present:
@@ -422,8 +440,10 @@ def build_scenes(pres, info, dur, charts, uni):
         scenes.append(video.SectorScene(pres.sec, info["recap_str"], sector_captions(pres.sec),
                                         dur["sector"]))
     scenes += [video.MoversScene("gainers", pres.gainers, uni, info["recap_str"], dur["gainers"]),
-               video.MoversScene("losers", pres.losers, uni, info["recap_str"], dur["losers"]),
-               video.EventsScene(pres.events, info, dur["events"]),
+               video.MoversScene("losers", pres.losers, uni, info["recap_str"], dur["losers"])]
+    if context:
+        scenes.append(video.ContextScene(list(context), dur["context"]))
+    scenes += [video.EventsScene(pres.events, info, dur["events"]),
                video.OutroScene(dur["outro"])]
     return scenes
 
@@ -511,6 +531,60 @@ def adopt_existing_report(report, history):
         return None, None, (f"canonical artifact {path} contains report_id "
                             f"{adopted.report_id!r}, expected {report.report_id!r}")
     return adopted, path, None
+
+
+def build_intelligence(report, history, demo=False):
+    """Derive historical context and write it as its own artifact. Never fatal.
+
+    Historical context is an enhancement, not part of market-data validation: if the history
+    database cannot be read the day's recap still publishes, simply without context. What
+    must never happen is fabricating context to fill the gap, so a failure produces an empty
+    snapshot and a recorded warning rather than a plausible-looking statement.
+
+    Reads the canonical report and canonical history; writes neither.
+    """
+    try:
+        snapshot = intelligence.build_snapshot(report, history, include_demo=demo)
+        path = intelligence.save_snapshot(snapshot, OUT_DIR, demo=demo)
+        print(f"      intelligence: {intelligence.describe(snapshot)} "
+              f"-> {os.path.basename(path)}")
+        for warning in snapshot.warnings[:3]:
+            print(f"      intelligence note: {warning}")
+        return snapshot
+    except Exception as exc:
+        print(f"      intelligence: skipped after {type(exc).__name__}: {exc}")
+        return None
+
+
+def context_lines(snapshot):
+    """(label, statement) pairs for the context scene, content-checked before display.
+
+    The statements are deterministic templates and should always be safe, but they are
+    published text and so go through the same Phase 1.1 scan as everything else - a rule that
+    only applies to text you expect to be unsafe is not a rule.
+    """
+    if snapshot is None:
+        return []
+    lines = []
+    for insight in snapshot.selected():
+        clean, result = sanitize_field(insight.statement, fallback="")
+        if not clean or result.status is SafetyStatus.BLOCKED:
+            print(f"      intelligence: dropped unsafe statement {insight.insight_id}")
+            continue
+        lines.append((_context_label(insight), clean))
+    return lines
+
+
+# Categories whose subject is already the clearest label (FII, DII, IT, a stock symbol).
+# The rest get a fixed word, because "NIFTY 50"/"INDIA VIX" are longer than the chip needs.
+_FIXED_LABELS = {"INDEX_MOVE": "NIFTY", "VOLATILITY": "VIX"}
+
+
+def _context_label(insight) -> str:
+    fixed = _FIXED_LABELS.get(insight.category.value)
+    if fixed:
+        return fixed
+    return (insight.subject or "CONTEXT").upper()[:12]
 
 
 def video_qa(out, meta_path, report_path, expected_duration, upload_requested):
@@ -606,15 +680,20 @@ def run(args):
             return None
         _stage(history, run_id, "DATA_QA_PASSED", data_qa_status="PASSED")
 
+        # Derived historical context, read from canonical history after it was persisted.
+        # It cannot alter the report or its rows, and its absence never blocks the run.
+        snapshot = build_intelligence(report, history, demo=args.demo)
+        context = context_lines(snapshot)
+
         pres = ReportPresentation(report)
         info = {"today_str": today.strftime("%A, %d %B %Y"),
                 "today_short": today.strftime("%a %d %b"),
                 "recap_str": pres.session_date.strftime("%a, %d %b %Y")}
-        dur = durations(pres.present())
+        dur = durations(pres.present(), context=bool(context))
         tag = today.strftime("%Y-%m-%d")
         charts = chart.make_chart(pres.m, os.path.join(OUT_DIR, f"nifty_chart_{tag}"))
         uni = UNIVERSE_LABEL.get(UNIVERSE, UNIVERSE)
-        scenes = build_scenes(pres, info, dur, charts, uni)
+        scenes = build_scenes(pres, info, dur, charts, uni, context=context)
 
         total = sum(s.dur for s in scenes)
         print(f"[6/7] Rendering {total:.1f}s video ({len(scenes)} scenes)...")

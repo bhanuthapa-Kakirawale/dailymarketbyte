@@ -27,6 +27,9 @@ MarketReport         the authoritative, dated contract - built BEFORE anything i
       v
 Publication Gate     report.publication_ready - an unfit report renders nothing
       |
+      +---> Intelligence       canonical history + today -> IntelligenceSnapshot (derived)
+      |                        output/intelligence/ - deterministic, never canonical
+      |
       v
 Presentation Adapter presentation/ - reshapes the report into renderer structures
       |
@@ -69,6 +72,7 @@ not fetch anything or compute a new market fact.
 | Domain         | `core/`                            | `sources.py`, independence-aware validation, content safety |
 | Report build   | `adapters/`                        | builds from provider output         |
 | Persistence    | `storage/`                         | Phase 3 - SQLite historical index   |
+| Intelligence   | `intelligence/`                    | Phase 4.1 - deterministic historical context |
 | Presentation   | `presentation/`                    | the renderer boundary               |
 | Rendering      | `video.py`, `chart.py`, `music.py` | unchanged                           |
 | Artifact QA    | `qa/`                              | Phase 3 - deterministic video checks |
@@ -121,6 +125,11 @@ intelligence.
 SQLite is not in the rendering path either - the renderer consumes the current MarketReport
 through `ReportPresentation`, so a database problem can never change what a video looks like.
 See `docs/STORAGE.md` and `docs/PRODUCTION_QA.md`.
+
+A third kind of artifact joined them in Phase 4.1: the **IntelligenceSnapshot**, which is
+*derived* - a deterministic function of the canonical report and canonical history that can be
+regenerated from them at any time. It is written to `output/intelligence/`, never folded back
+into the report, and never inserted into `facts`. See `docs/INTELLIGENCE.md`.
 
 ## Still deliberately absent
 

@@ -162,6 +162,85 @@ def test_upload_is_never_attempted_without_an_upload_flag(offline_pipeline, monk
     assert main.run(_Args(upload=False)) is not None
 
 
+def test_cold_start_renders_without_a_context_scene(offline_pipeline, tmp_path):
+    """With no prior sessions the Short is exactly what it was before Phase 4."""
+    main.run(_Args())
+    names = [type(s).__name__ for s in offline_pipeline["scenes"]]
+    assert "ContextScene" not in names
+    assert sum(s.dur for s in offline_pipeline["scenes"]) == pytest.approx(75.0)
+    assert os.listdir(tmp_path / "intelligence"), "the artifact is written even when empty"
+
+
+def test_intelligence_artifact_is_written_every_run(offline_pipeline, tmp_path):
+    main.run(_Args())
+    files = os.listdir(tmp_path / "intelligence")
+    payload = json.loads((tmp_path / "intelligence" / files[0]).read_text(encoding="utf-8"))
+    assert payload["report_id"] == "20260921_PRE_MARKET"
+    assert payload["intelligence_schema_version"] == "1.0"
+
+
+def test_context_scene_appears_once_history_exists(offline_pipeline, tmp_path):
+    """Second run of a different session, with the first already in history."""
+    from conftest_intelligence import seed, session_report, trading_sessions
+
+    main.run(_Args())
+    with MarketHistory(str(tmp_path / "data" / "market_history.db")) as history:
+        sessions = trading_sessions(8, last=dt.date(2026, 9, 17))
+        seed(history, [session_report(s, pct=0.1, fii=-100.0, dii=50.0, vix=12.0)
+                       for s in sessions])
+
+    main.run(_Args())
+    names = [type(s).__name__ for s in offline_pipeline["scenes"]]
+    assert "ContextScene" in names
+    assert sum(s.dur for s in offline_pipeline["scenes"]) == pytest.approx(75.0), \
+        "context is carved from the stretch scenes, never added to the runtime"
+
+
+def test_context_scene_duration_comes_out_of_the_stretch_scenes():
+    present = {"intro", "nifty", "gainers", "losers", "events", "outro", "global", "fii",
+               "sector"}
+    without = main.durations(present)
+    with_context = main.durations(present | {"context"}, context=True)
+
+    assert sum(without.values()) == pytest.approx(75.0)
+    assert sum(with_context.values()) == pytest.approx(75.0)
+    assert with_context["context"] == pytest.approx(main.CONTEXT_DUR)
+    for key in main.STRETCH:
+        assert with_context[key] < without[key]
+    for key in ("intro", "global", "fii", "sector", "events", "outro"):
+        assert with_context[key] == pytest.approx(without[key])
+
+
+def test_unsafe_intelligence_statement_is_dropped_before_display():
+    """Statements are templated and safe, but they are published text and get scanned."""
+    from intelligence import IntelligenceInsight, InsightCategory, IntelligenceSnapshot
+
+    snapshot = IntelligenceSnapshot(report_id="x")
+    snapshot.insights = [
+        IntelligenceInsight(insight_id="safe", category=InsightCategory.INDEX_MOVE,
+                            subject="NIFTY 50", sample_size=20,
+                            statement="Nifty's 1.2% move is larger than 17 of the previous 20 sessions.",
+                            metadata={"selection_score": 0.9}),
+        IntelligenceInsight(insight_id="unsafe", category=InsightCategory.MOVER_RECURRENCE,
+                            subject="ABC", sample_size=20,
+                            statement="Top stocks to buy tomorrow: ABC",
+                            metadata={"selection_score": 1.0}),
+    ]
+    lines = main.context_lines(snapshot)
+    assert [label for label, _ in lines] == ["NIFTY"]
+    assert all("to buy" not in text.lower() for _, text in lines)
+
+
+def test_intelligence_failure_does_not_stop_the_run(offline_pipeline, monkeypatch):
+    """Historical context is an enhancement; losing it must not cost a publication."""
+    monkeypatch.setattr(main.intelligence, "build_snapshot",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("history exploded")))
+    out = main.run(_Args())
+    assert out and os.path.exists(out)
+    names = [type(s).__name__ for s in offline_pipeline["scenes"]]
+    assert "ContextScene" not in names
+
+
 def test_unsafe_upstream_text_is_neutralised_and_never_reaches_the_report(
         offline_pipeline, monkeypatch, tmp_path):
     """Unsafe input does not block the run - it is removed before the report exists, so the

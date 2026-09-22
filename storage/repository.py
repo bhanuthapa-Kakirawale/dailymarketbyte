@@ -110,6 +110,29 @@ class StoredValidationResult:
 
 
 @dataclass
+class StoredMetricPoint:
+    """One historical reading of a metric, with the observation detail that qualifies it.
+
+    Some distinctions a historical comparison depends on live on the observation rather than
+    the fact - which relative-volume definition produced a number, or whether a stock was
+    listed as a gainer or a loser - so this joins the two rather than making callers fetch
+    observations one fact at a time.
+    """
+    report_id: str
+    fact_id: str
+    metric: str
+    instrument: str
+    value: float | None
+    unit: str | None
+    market_date: str
+    validation_status: str
+    source_name: str | None
+    independence_group: str | None
+    observation_metadata: dict = field(default_factory=dict)
+    fact_metadata: dict = field(default_factory=dict)
+
+
+@dataclass
 class StoredRun:
     run_id: str
     report_id: str | None
@@ -353,6 +376,97 @@ class MarketHistory:
         sql += " ORDER BY f.market_date, f.instrument"
         return [self._fact(r) for r in self.conn.execute(sql, params).fetchall()]
 
+    def _recent_sessions_clause(self, metric: str, before_date, limit_sessions: int | None,
+                                include_demo: bool):
+        """Sub-select bounding a query to the most recent N distinct trading sessions.
+
+        Sessions, not rows and not calendar days: weekends and holidays simply have no
+        market_date, so "the last 20 sessions" means the last 20 that actually traded.
+        """
+        if not limit_sessions:
+            return "", []
+        sql = ("SELECT DISTINCT f.market_date FROM facts f "
+               "JOIN reports r ON r.report_id = f.report_id WHERE f.metric = ?")
+        params: list = [metric]
+        if before_date:
+            sql += " AND f.market_date < ?"
+            params.append(_iso(before_date))
+        if not include_demo:
+            sql += " AND r.is_demo = 0"
+        sql += " ORDER BY f.market_date DESC LIMIT ?"
+        params.append(limit_sessions)
+        return sql, params
+
+    def get_recent_facts(self, metric: str, instrument: str | None = None, before_date=None,
+                         statuses=None, limit_sessions: int | None = None,
+                         include_demo: bool = False) -> list:
+        """Facts for a metric from the most recent trading sessions strictly BEFORE a cutoff.
+
+        `before_date` is exclusive on purpose: a value must never be compared against a
+        window that already contains it. Retrieval only - no averaging, ranking or judgement
+        happens here.
+        """
+        sql = ("SELECT f.* FROM facts f JOIN reports r ON r.report_id = f.report_id "
+               "WHERE f.metric = ?")
+        params: list = [metric]
+        if instrument:
+            sql += " AND f.instrument = ?"
+            params.append(instrument)
+        if before_date:
+            sql += " AND f.market_date < ?"
+            params.append(_iso(before_date))
+        if statuses:
+            sql += f" AND f.validation_status IN ({','.join('?' * len(statuses))})"
+            params.extend(statuses)
+        if not include_demo:
+            sql += " AND r.is_demo = 0"
+        sub, sub_params = self._recent_sessions_clause(metric, before_date, limit_sessions,
+                                                       include_demo)
+        if sub:
+            sql += f" AND f.market_date IN ({sub})"
+            params.extend(sub_params)
+        sql += " ORDER BY f.market_date DESC, f.instrument"
+        return [self._fact(r) for r in self.conn.execute(sql, params).fetchall()]
+
+    def get_recent_metric_points(self, metric: str, instrument: str | None = None,
+                                 before_date=None, statuses=None,
+                                 limit_sessions: int | None = None,
+                                 include_demo: bool = False) -> list:
+        """Like `get_recent_facts`, but joined to observations so the caller can see the
+        qualifying detail (definition version, mover bucket) without an N+1 fetch."""
+        sql = ("SELECT f.report_id, f.fact_id, f.metric, f.instrument, f.value, f.unit, "
+               "f.market_date, f.validation_status, f.metadata_json AS fact_metadata_json, "
+               "o.source_name, o.independence_group, o.metadata_json AS obs_metadata_json "
+               "FROM facts f JOIN reports r ON r.report_id = f.report_id "
+               "LEFT JOIN observations o ON o.report_id = f.report_id AND o.fact_id = f.fact_id "
+               "WHERE f.metric = ?")
+        params: list = [metric]
+        if instrument:
+            sql += " AND f.instrument = ?"
+            params.append(instrument)
+        if before_date:
+            sql += " AND f.market_date < ?"
+            params.append(_iso(before_date))
+        if statuses:
+            sql += f" AND f.validation_status IN ({','.join('?' * len(statuses))})"
+            params.extend(statuses)
+        if not include_demo:
+            sql += " AND r.is_demo = 0"
+        sub, sub_params = self._recent_sessions_clause(metric, before_date, limit_sessions,
+                                                       include_demo)
+        if sub:
+            sql += f" AND f.market_date IN ({sub})"
+            params.extend(sub_params)
+        sql += " ORDER BY f.market_date DESC, f.instrument, o.observation_id"
+        return [StoredMetricPoint(
+            report_id=r["report_id"], fact_id=r["fact_id"], metric=r["metric"],
+            instrument=r["instrument"], value=r["value"], unit=r["unit"],
+            market_date=r["market_date"], validation_status=r["validation_status"],
+            source_name=r["source_name"], independence_group=r["independence_group"],
+            observation_metadata=_loads(r["obs_metadata_json"]),
+            fact_metadata=_loads(r["fact_metadata_json"]))
+            for r in self.conn.execute(sql, params).fetchall()]
+
     def get_observations(self, fact_id: str, report_id: str | None = None) -> list:
         sql = "SELECT * FROM observations WHERE fact_id = ?"
         params = [fact_id]
@@ -484,4 +598,4 @@ class MarketHistory:
 
 __all__ = ["MarketHistory", "default_db_path", "SchemaVersionError", "current_version",
            "StoredReport", "StoredFact", "StoredObservation", "StoredValidationResult",
-           "StoredRun", "DEFAULT_DB_RELPATH"]
+           "StoredRun", "StoredMetricPoint", "DEFAULT_DB_RELPATH"]

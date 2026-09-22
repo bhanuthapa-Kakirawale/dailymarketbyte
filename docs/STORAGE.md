@@ -156,8 +156,21 @@ start_run(mode, report_id=None) / update_run(run_id, **fields) / finish_run(...)
 get_publication_runs(report_id=None, limit=50) -> list
 ```
 
-Analytics are explicitly out of scope for Phase 3 — this is the storage and retrieval layer,
-not a research API.
+Phase 4.1 added two bulk retrievals for the intelligence layer:
+
+```python
+get_recent_facts(metric, instrument=None, before_date=None, statuses=None,
+                 limit_sessions=None, include_demo=False) -> list[StoredFact]
+get_recent_metric_points(...) -> list[StoredMetricPoint]   # facts joined to observations
+```
+
+`before_date` is **exclusive** so a value can never be retrieved into a window that already
+contains it, and `limit_sessions` bounds a query by distinct trading sessions rather than by
+rows. `get_recent_metric_points` joins observations so a caller can see qualifying detail
+(relative-volume definition version, mover bucket) without an N+1 fetch.
+
+Both are retrieval only. Analytics stay out of this layer: **the repository retrieves data,
+the intelligence layer calculates meaning.** See `docs/INTELLIGENCE.md`.
 
 ## Security
 

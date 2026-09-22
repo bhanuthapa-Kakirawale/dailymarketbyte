@@ -533,6 +533,45 @@ class EventsScene(Scene):
             y += h + 18
 
 
+class ContextScene(Scene):
+    """Historical context: how today compares with recent sessions.
+
+    `lines` are (label, statement) pairs already computed, selected and content-checked by
+    the intelligence layer - this scene only draws them. It follows EventsScene's card
+    layout so the Short keeps one visual language, and it breaks out of the loop rather than
+    overflow the safe zone if the statements run long.
+    """
+    def __init__(self, lines, dur=6.0):
+        super().__init__(dur, ["How today compares with recent sessions.",
+                               "Based only on previously recorded sessions."])
+        self.lines = lines[:3]
+
+    def key(self, t):
+        return anim_key(t, 1.8)
+
+    def draw(self, d, L, t):
+        self.section(d, "MARKET CONTEXT", ACCENT, "Versus recent recorded sessions")
+        y = TOP
+        ft, fx = font(24), font(32)
+        for i, (label, statement) in enumerate(self.lines):
+            a = ease((t - i * 0.25) / 0.45)
+            lines = wrap(statement, fx, 880)[:3]
+            # 20 top pad + 38 chip + 10 gap + text + 20 bottom pad, so text never overruns
+            # the card it sits in.
+            h = 88 + 42 * len(lines)
+            if y + h > 1195:
+                break
+            if a > 0:
+                dx = -(1 - a) * 160
+                d.rounded_rectangle((X0 + dx, y, X1 + dx, y + h), 22, fill=CARD)
+                tw = tlen(label, ft) + 28
+                d.rounded_rectangle((72 + dx, y + 20, 72 + tw + dx, y + 58), 19, fill=ACCENT)
+                d.text((86 + dx, y + 26), label, font=ft, fill=(10, 14, 30))
+                for j, line in enumerate(lines):
+                    d.text((72 + dx, y + 68 + j * 42), line, font=fx, fill=TEXT)
+            y += h + 18
+
+
 class OutroScene(Scene):
     def __init__(self, dur=3.0):
         super().__init__(dur, ["Subscribe for your daily market byte. See you next session!"])

@@ -175,8 +175,16 @@ class MarketHistory:
 
         Idempotent by design: an already-stored report_id is left exactly as it is and False
         is returned. Canonical history is not rewritten by a rerun, which keeps it consistent
-        with the immutable JSON artifact the run originally produced. `replace=True` is the
-        deliberate escape hatch for a corrected re-persist.
+        with the immutable JSON artifact the run originally produced.
+
+        **`replace=True` is an ADMINISTRATIVE RECOVERY TOOL, not a normal write.** It DELETES
+        the stored report and cascades that delete through its facts, observations, validation
+        results, catalysts and events, then re-inserts them - destroying canonical market
+        history for that report_id. It exists for manual correction of a known-bad record.
+
+        No production code path calls it. Video QA, the final content scan, upload results and
+        every other post-report outcome are operational facts recorded in `publication_runs`
+        and the QA artifact; none of them is a reason to rewrite what the market did.
         """
         report_id = report.report_id
         exists = self.report_exists(report_id)

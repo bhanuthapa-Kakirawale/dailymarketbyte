@@ -105,12 +105,22 @@ does not publish, because auditability is part of publication integrity.
 
 See `docs/PRODUCTION_QA.md`.
 
-## Two artifacts
+## Two artifacts, and the line between them
 
-The JSON report is the **immutable per-run record**; SQLite is a **queryable index across
-runs** that points back at those files. SQLite is not in the rendering path - the renderer
-consumes the current MarketReport through `ReportPresentation`, so a database problem can
-never change what a video looks like. See `docs/STORAGE.md`.
+| | Answers |
+| --- | --- |
+| MarketReport JSON + canonical SQLite rows | "What market information did this report contain?" |
+| `publication_runs` + QA artifact | "What happened when we tried to render and publish it?" |
+
+**Canonical market history is immutable during normal production execution.** The report is
+finalized before it is persisted; the JSON is written once and the canonical rows once. Video
+QA, the final content scan and the upload result are operational outcomes recorded alongside,
+never rewrites of what the market did. Post-report QA does not mutate canonical market
+intelligence.
+
+SQLite is not in the rendering path either - the renderer consumes the current MarketReport
+through `ReportPresentation`, so a database problem can never change what a video looks like.
+See `docs/STORAGE.md` and `docs/PRODUCTION_QA.md`.
 
 ## Still deliberately absent
 

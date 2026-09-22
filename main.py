@@ -24,6 +24,7 @@ import video
 from adapters import report_builder
 from adapters.news_adapter import NO_CATALYST_TEXT
 from config import OUT_DIR, ASSETS_DIR, UNIVERSE, UNIVERSE_LABEL, TOP_N, DURATION, now_ist, fmt_in
+from core import MarketReport
 from core.content_safety import CONTENT_SAFETY_VERSION, SafetyStatus, sanitize_field, scan_publication
 from presentation import ReportPresentation
 from providers import GeminiProvider, NewsProvider, NseProvider, YahooProvider
@@ -253,29 +254,35 @@ def collect_public_text(scenes, events, meta) -> dict:
     return fields
 
 
-def summarize_content_safety(pre_findings, final_scan=None) -> dict:
-    """Assemble the audit trail written into MarketReport.content_safety.
+def summarize_content_safety(pre_findings) -> dict:
+    """Stage A: what sanitisation did to the narrative BEFORE the report was finalized.
 
-    Called twice per run: once while building the report (final_scan is None, because
-    nothing has been rendered yet) and again after the pre-publication scan, which replaces
-    the placeholder with the real verdict.
+    This is canonical - it describes the content of the report itself, so it is written into
+    MarketReport.content_safety once and never revised. The final publication scan is
+    deliberately absent: that happens after the report exists, describes an execution rather
+    than the market, and belongs in publication_runs and the QA artifact instead.
     """
     findings = [{"field": label, **r.to_dict()} for label, r in pre_findings]
     sanitized = sum(1 for _, r in pre_findings if r.status is SafetyStatus.SANITIZED)
     blocked = sum(1 for _, r in pre_findings if r.status is SafetyStatus.BLOCKED)
-    if final_scan is None:
-        final = {"status": "PENDING", "blocked_fields": []}
-        status = "SANITIZED" if sanitized else "SAFE"
-    else:
-        blocked += len(final_scan.blocked_fields)
-        final = {"status": final_scan.status.value, "blocked_fields": final_scan.blocked_fields}
-        status = ("BLOCKED" if final_scan.status is not SafetyStatus.SAFE
-                  else "SANITIZED" if sanitized else "SAFE")
     return {
-        "status": status, "sanitized_count": sanitized, "blocked_count": blocked,
-        "findings": findings, "final_scan": final,
-        "version": CONTENT_SAFETY_VERSION,
+        "stage": "PRE_REPORT_SANITISATION",
+        "status": "SANITIZED" if sanitized else "SAFE",
+        "sanitized_count": sanitized, "blocked_count": blocked,
+        "findings": findings, "version": CONTENT_SAFETY_VERSION,
     }
+
+
+def operational_content_qa(scan) -> dict:
+    """Stage B: the final publication scan, as an operational result.
+
+    Never written into the canonical report - by the time this runs the report is persisted
+    and immutable, and whether an upload was allowed is not a fact about the market.
+    """
+    return {"stage": "FINAL_PUBLICATION_SCAN", "status": scan.status.value,
+            "passed": scan.status is SafetyStatus.SAFE,
+            "blocked_fields": list(scan.blocked_fields),
+            "version": CONTENT_SAFETY_VERSION}
 
 
 # ----------------------------------------------------------------------------- main
@@ -467,6 +474,45 @@ def persist_report(report, artifact_path, demo=False, history=None):
         return False, f"{type(exc).__name__}: {exc}"
 
 
+def adopt_existing_report(report, history):
+    """If this report_id is already canonical, reuse the stored artifact instead of rewriting.
+
+    Immutability has to hold across runs, not only within one. A rerun regenerates a report
+    in memory that can differ from the persisted one - a later `generated_at`, a source that
+    has since come back, a headline that has moved on - and writing that over the artifact
+    SQLite points at would leave the index describing a file that no longer matches it.
+
+    So on a rerun the stored artifact wins: it is loaded and used for rendering, so the video
+    is built from the same canonical data the history already records.
+
+    Returns `(report, path, error)`. `(None, None, None)` means this report has not been
+    stored before and the caller should write it normally. A non-None `error` means the
+    canonical record is unusable and the run must stop rather than paper over it.
+    """
+    if history is None:
+        return None, None, None
+    try:
+        stored = history.get_report(report.report_id)
+    except Exception as exc:
+        return None, None, f"could not read canonical history: {type(exc).__name__}: {exc}"
+    if stored is None:
+        return None, None, None
+
+    path = stored.json_artifact_path
+    if not path or not os.path.exists(path):
+        return None, None, (f"history records canonical report {report.report_id} but its JSON "
+                            f"artifact is missing: {path!r}")
+    try:
+        adopted = MarketReport.from_json(open(path, encoding="utf-8").read())
+    except Exception as exc:
+        return None, None, (f"canonical artifact {path} for {report.report_id} is unreadable: "
+                            f"{type(exc).__name__}: {exc}")
+    if adopted.report_id != report.report_id:
+        return None, None, (f"canonical artifact {path} contains report_id "
+                            f"{adopted.report_id!r}, expected {report.report_id!r}")
+    return adopted, path, None
+
+
 def video_qa(out, meta_path, report_path, expected_duration, upload_requested):
     """Deterministic artifact QA. Failure blocks publication but preserves every artifact."""
     result = check_video(out, expected_duration=expected_duration, metadata_path=meta_path,
@@ -516,21 +562,40 @@ def run(args):
                                                  raw["losers"], raw["events"])
 
         print("[5/7] Building validated market report...")
+        # The report is FINALIZED here: content safety has already run, and nothing after
+        # this point may alter its facts, observations, validation, catalysts or provenance.
         report = build_report(raw, today, demo=args.demo,
-                              content_safety=summarize_content_safety(safety_findings, None))
+                              content_safety=summarize_content_safety(safety_findings))
         print(f"      report: {report_builder.describe(report)}")
         _stage(history, run_id, "REPORT_BUILT", report_id=report.report_id)
 
-        # JSON artifact first, then the historical index: the file is the immutable record of
-        # what this run produced, and the database is an index over those files.
-        report_path = report_builder.save_report(report, OUT_DIR, demo=args.demo)
-        ok, error = persist_report(report, report_path, demo=args.demo, history=history)
-        if not ok:
-            _finish(history, run_id, "FAILED", "BLOCKED", failure_stage="PERSIST",
-                    failure_reason=error, artifact_path=report_path)
-            print("Publication blocked: the run could not be recorded in history.")
+        # A rerun of an already-canonical report adopts the stored artifact rather than
+        # regenerating over it; a first run writes the JSON and then indexes it. Either way
+        # the canonical artifact is written exactly once, ever.
+        adopted, adopted_path, artifact_error = adopt_existing_report(report, history)
+        if artifact_error:
+            print(f"Publication blocked: {artifact_error}")
+            _finish(history, run_id, "FAILED", "BLOCKED", failure_stage="CANONICAL_ARTIFACT",
+                    failure_reason=artifact_error)
             return None
-        _stage(history, run_id, "PERSISTED", artifact_path=report_path)
+
+        if adopted is not None:
+            report, report_path = adopted, adopted_path
+            print(f"      canonical report {report.report_id} already exists - rendering from "
+                  f"the stored artifact, not regenerating it")
+            _stage(history, run_id, "PERSISTED", report_id=report.report_id,
+                   artifact_path=report_path)
+        else:
+            # JSON artifact first, then the historical index: the file is the immutable record
+            # of what this run produced, and the database is an index over those files.
+            report_path = report_builder.save_report(report, OUT_DIR, demo=args.demo)
+            ok, error = persist_report(report, report_path, demo=args.demo, history=history)
+            if not ok:
+                _finish(history, run_id, "FAILED", "BLOCKED", failure_stage="PERSIST",
+                        failure_reason=error, artifact_path=report_path)
+                print("Publication blocked: the run could not be recorded in history.")
+                return None
+            _stage(history, run_id, "PERSISTED", artifact_path=report_path)
 
         # Gate 1 of 3: data validation.
         if not check_publication(report, demo=args.demo):
@@ -568,25 +633,24 @@ def run(args):
         _stage(history, run_id, "RENDERED", artifact_path=out)
 
         print("[7/7] Publication QA...")
-        # Gate 2 of 3: the rendered artifact itself.
+        # Gates 2 and 3 are operational: they decide whether this artifact may be published,
+        # and record that decision in the QA artifact and publication_runs. Neither reopens
+        # the canonical report, its JSON, or its rows.
         qa_result = video_qa(out, meta_path, report_path, total, args.upload)
+        scan = final_qa(scenes, pres.events, meta, out, args.upload)
+        content_ok = scan.status is SafetyStatus.SAFE
+
         qa_path = write_qa_artifact(qa_result, OUT_DIR, report, report_path=report_path,
-                                    video_path=out, demo=args.demo)
+                                    video_path=out, demo=args.demo,
+                                    content_qa=operational_content_qa(scan))
         print(f"      qa artifact: {os.path.basename(qa_path)}")
 
-        # Gate 3 of 3: nothing unsafe survived into the finalized public text.
-        scan = final_qa(scenes, pres.events, meta, out, args.upload)
-        report.content_safety = summarize_content_safety(safety_findings, scan)
-        # Re-save the JSON and refresh the stored row now that the final scan is known.
-        report_path = report_builder.save_report(report, OUT_DIR, demo=args.demo)
-        _refresh_history(history, report, report_path, demo=args.demo)
-
         cs = report.content_safety
-        print(f"      report: {os.path.basename(report_path)} | content safety: status={cs['status']} "
-              f"sanitized={cs['sanitized_count']} blocked={cs['blocked_count']}")
+        print(f"      report: {os.path.basename(report_path)} (unchanged) | sanitisation: "
+              f"{cs['status']} sanitized={cs['sanitized_count']} blocked={cs['blocked_count']} "
+              f"| final scan: {scan.status.value}")
         print(f"Done: {out}")
 
-        content_ok = scan.status is SafetyStatus.SAFE
         _stage(history, run_id, "VIDEO_QA_PASSED" if qa_result.passed else "VIDEO_QA_FAILED",
                video_qa_status=qa_result.status.value,
                content_qa_status="PASSED" if content_ok else "FAILED")
@@ -637,19 +701,9 @@ def _finish(history, run_id, stage, publication_status, **fields):
             print(f"[history] could not close run: {exc}")
 
 
-def _refresh_history(history, report, report_path, demo=False):
-    """Re-store the report once the final content-safety verdict is attached.
-
-    An explicit replace, because this is the same run correcting its own record rather than a
-    rerun: the JSON on disk was just rewritten with the final scan, and the index must match
-    the artifact it points at.
-    """
-    if not history:
-        return
-    try:
-        history.save_report(report, artifact_path=report_path, replace=True, is_demo=demo)
-    except Exception as exc:
-        print(f"[history] could not refresh stored report: {exc}")
+# Note: there is deliberately no "refresh the stored report" helper here. Canonical history
+# is written once per run and is immutable thereafter; MarketHistory.save_report(replace=True)
+# exists only as an administrative recovery tool and is never called by this orchestration.
 
 
 if __name__ == "__main__":

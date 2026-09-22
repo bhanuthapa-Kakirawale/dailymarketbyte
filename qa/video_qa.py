@@ -294,11 +294,17 @@ def _check_frames(result: VideoQAResult, video_path: str, duration: float, sampl
 
 # --------------------------------------------------------------------- artifact
 def write_qa_artifact(result: VideoQAResult, out_dir: str, report, report_path: str | None = None,
-                      video_path: str | None = None, demo: bool = False) -> str:
+                      video_path: str | None = None, demo: bool = False,
+                      content_qa: dict | None = None) -> str:
     """Write the QA record beside the run's other artifacts.
 
-    Points at the report rather than copying it: duplicating the MarketReport here would
-    create a second copy that could drift from the immutable original.
+    This is the operational half of the record: what happened when we tried to render and
+    publish the report. It POINTS AT the canonical report rather than copying it - a second
+    copy could drift from the immutable original - and it is where the final publication scan
+    is recorded, because that verdict describes an execution rather than the market.
+
+    `content_safety` here is the report's own pre-finalisation sanitisation summary, included
+    for context; `content_qa` is the final publication scan, which never enters the report.
     """
     directory = os.path.join(out_dir, "qa")
     os.makedirs(directory, exist_ok=True)
@@ -315,6 +321,7 @@ def write_qa_artifact(result: VideoQAResult, out_dir: str, report, report_path: 
         "blocking_issues": list(result.blocking_issues),
         "warnings": list(result.warnings),
         "content_safety": report.content_safety,
+        "final_content_qa": content_qa,
         "data_validation": report.validation_summary.to_dict(),
     }
     with open(path, "w", encoding="utf-8") as fh:

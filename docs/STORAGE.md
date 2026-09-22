@@ -12,12 +12,15 @@ MarketReport
 
 | | Question it answers |
 | --- | --- |
-| **JSON** | "What exactly did this run produce?" |
-| **SQLite** | "What has happened across many runs?" |
+| **MarketReport JSON + canonical SQLite rows** | "What market information did this report contain?" |
+| **`publication_runs` + QA artifact** | "What happened when we tried to render and publish it?" |
 
-The JSON file is the record of truth for any single run and is never rewritten after the
-fact. SQLite is an index over those files: every `reports` row carries
+The JSON file is the record of truth for any single run and is **written once and never
+rewritten**. SQLite is an index over those files: every `reports` row carries
 `json_artifact_path`, so the authoritative artifact is always locatable from a query result.
+
+Keeping these apart is the point. Execution state does not accumulate inside the canonical
+artifact; canonical market intelligence does not change because an execution went badly.
 
 **SQLite is not in the rendering path.** The renderer consumes the current `MarketReport`
 through `ReportPresentation`, exactly as in Phase 2. Nothing reads market data back out of
@@ -70,19 +73,40 @@ This matters more than it first appears: a *half-written* report is worse than a
 because it looks complete to every later query. `tests/test_storage.py` forces a failure
 midway through a real save and asserts nothing survives, then asserts a retry succeeds.
 
+## Canonical history is immutable
+
+> Once a canonical MarketReport has been persisted, normal production execution never
+> rewrites its facts, observations, validation results, catalysts, events or provenance.
+
+A report states **what the market did**. Video QA, the final publication scan and the upload
+result state **what happened when we tried to publish it**. The second must never rewrite the
+first — otherwise "what did the 22 Sep report say?" becomes unanswerable the moment anything
+downstream goes wrong.
+
+So, in one run: the JSON artifact is written **once**, `save_report` is called **once**, and
+every later outcome is recorded in `publication_runs` and the QA artifact instead.
+
 ## Idempotency
 
 The same report gets processed repeatedly — Actions retries, manual reruns, debugging,
 recovery. Default behaviour:
 
 - **Report already stored → no-op**, `save_report` returns `False` and nothing is touched.
-- **`replace=True`** deletes that one report (cascading to its children) and re-inserts it.
-  Used by the pipeline once per run, to refresh the row after the final content-safety
-  verdict is attached to the JSON, so the index matches the artifact it points at.
+  Not even `created_at` changes, which is the sharpest evidence no delete/reinsert happened.
 - **`publication_runs` always appends.** A run is a statement about one execution, so two
   runs of the same report are two rows, by design.
 
 Idempotency is never achieved by rebuilding the database.
+
+### `replace=True` is an administrative recovery tool
+
+It **deletes** the stored report and cascades that delete through its facts, observations,
+validation results, catalysts and events, then re-inserts them — destroying canonical market
+history for that `report_id`. It exists for manual correction of a known-bad record.
+
+**No production code path calls it.** `tests/test_immutability.py` parses `main.py` with `ast`
+and fails if any call there passes `replace=True`, so the guarantee is enforced rather than
+merely intended.
 
 ## Demo isolation
 

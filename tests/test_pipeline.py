@@ -176,7 +176,11 @@ def test_unsafe_upstream_text_is_neutralised_and_never_reaches_the_report(
     assert report.nifty["move_summary"] == ""
     assert all("to buy" not in (e["text"] or "").lower() for e in report.events)
     assert report.content_safety["blocked_count"] >= 1
-    assert report.content_safety["final_scan"]["status"] == "SAFE"
+    assert report.content_safety["stage"] == "PRE_REPORT_SANITISATION"
+
+    # The final publication scan's verdict is operational and lives outside the report.
+    qa_payload = json.loads(next((tmp_path / "qa").iterdir()).read_text(encoding="utf-8"))
+    assert qa_payload["final_content_qa"]["status"] == "SAFE"
 
 
 def test_report_persists_to_history_before_publication(offline_pipeline, tmp_path):

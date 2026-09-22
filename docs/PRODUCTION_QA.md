@@ -26,6 +26,31 @@ model — a publication gate has to give the same answer every time for the same
 Failure never deletes anything. Every artifact a failed run produced is left in place,
 because a failure you cannot inspect is a failure you cannot fix.
 
+## QA never mutates canonical history
+
+By the time video QA and the final content scan run, the report has been finalized, written
+to JSON and persisted. Neither gate may reopen any of that:
+
+- the MarketReport JSON is **not** rewritten to attach a QA verdict,
+- the canonical SQLite rows are **not** replaced,
+- `report.content_safety` keeps the pre-finalisation sanitisation summary it was built with.
+
+Both verdicts are recorded operationally instead — in `publication_runs` and in the QA
+artifact. A QA result describes an execution, not the market, and mixing the two would mean
+the canonical record of a session changes depending on whether that day's render happened to
+succeed.
+
+### Two content-safety stages
+
+| | When | Where recorded | May change the report? |
+| --- | --- | --- | --- |
+| **Stage A** — sanitisation | Before the report is finalized | `report.content_safety`, `stage: PRE_REPORT_SANITISATION` | Yes — the report does not exist yet |
+| **Stage B** — final publication scan | After render, before upload | `publication_runs.content_qa_status`, QA artifact `final_content_qa` | **No** |
+
+Stage A is unchanged from Phase 1.1 and remains binding: `"Strong BUY with target Rs 500"`
+still never becomes canonical report content. Stage B is unchanged as a gate — it still blocks
+the upload — it simply no longer writes back into the report.
+
 ## Video QA checks
 
 Measured with the ffmpeg binary the video stack already depends on — no new media dependency.
@@ -79,13 +104,18 @@ demo runs):
   "checks": [{"name": "...", "status": "...", "expected": "...", "actual": "...", "message": "..."}],
   "blocking_issues": [],
   "warnings": [],
-  "content_safety": {...},
+  "content_safety": {"stage": "PRE_REPORT_SANITISATION", ...},
+  "final_content_qa": {"stage": "FINAL_PUBLICATION_SCAN", "status": "SAFE", "passed": true,
+                       "blocked_fields": []},
   "data_validation": {...}
 }
 ```
 
 It **points at** the report rather than copying it. Duplicating the MarketReport here would
 create a second copy that could drift from the immutable original.
+
+`content_safety` is the report's own Stage A summary, included for context.
+`final_content_qa` is Stage B — the operational verdict that never enters the report.
 
 ## Publication run history
 

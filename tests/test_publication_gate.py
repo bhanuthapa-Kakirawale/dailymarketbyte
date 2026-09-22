@@ -108,11 +108,23 @@ def test_blocked_catalyst_loses_its_original_attribution(market_dict):
     assert gainers[0]["reason_publisher"] is None
 
 
-def test_safety_summary_records_counts_before_the_final_scan():
-    findings = []
-    summary = main.summarize_content_safety(findings, None)
-    assert summary["final_scan"]["status"] == "PENDING"
+def test_canonical_safety_summary_covers_only_pre_report_sanitisation():
+    """Stage A is canonical and belongs in the report; the final publication scan is an
+    operational outcome and deliberately has no place here."""
+    summary = main.summarize_content_safety([])
+    assert summary["stage"] == "PRE_REPORT_SANITISATION"
     assert summary["status"] == "SAFE"
+    assert "final_scan" not in summary
+
+
+def test_operational_content_qa_is_reported_separately():
+    from core.content_safety import scan_publication
+
+    scan = scan_publication({"youtube_title": "Top stocks to buy tomorrow"})
+    operational = main.operational_content_qa(scan)
+    assert operational["stage"] == "FINAL_PUBLICATION_SCAN"
+    assert operational["passed"] is False
+    assert operational["blocked_fields"] == ["youtube_title"]
 
 
 # --------------------------------------------------------------------- ordering

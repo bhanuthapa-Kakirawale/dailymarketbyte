@@ -52,13 +52,17 @@ def get_universe(name: str) -> dict:
     return dict(FALLBACK_NIFTY50)
 
 
-def _clean(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.dropna(subset=["Close"]).copy()
+def _normalize_index(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
     idx = pd.to_datetime(df.index)
     if idx.tz is not None:
         idx = idx.tz_convert(IST).tz_localize(None)
     df.index = idx.normalize()
-    df = df[~df.index.duplicated(keep="last")]
+    return df[~df.index.duplicated(keep="last")]
+
+
+def _clean(df: pd.DataFrame) -> pd.DataFrame:
+    df = _normalize_index(df.dropna(subset=["Close"]))
     now = now_ist()
     # never use a session that is still running
     if len(df) and df.index[-1].date() == now.date() and now.time() < dt.time(15, 40):
@@ -112,27 +116,58 @@ def get_movers(universe: dict, recap_date: dt.date, prev_date: dt.date, n: int =
     yfinance can silently drop a day for a specific stock (verified 2026-09-18: ADANIGREEN's
     history skipped 17 Sep entirely, so close[-1]/close[-2] quietly became a 2-day change
     mislabeled as 1-day, +5.06% shown vs the real +4.73%) - without this check that kind of
-    gap is invisible, so a stock whose dates don't line up is dropped rather than mismeasured."""
+    gap is invisible, so a stock whose dates don't line up is dropped rather than mismeasured.
+
+    Separately, the bulk `yf.download()` endpoint can return the latest session's row with
+    Open/High/Low/Volume populated but Close still NaN (verified 2026-09-22: effectively the
+    whole NIFTY100 universe showed this for 21 Sep, about an hour after that session closed -
+    Yahoo's official-close backfill for the batch endpoint evidently hadn't finished). That
+    silently pushed every stock's "latest row" back to the prior session, so recap_date
+    matched nothing and the run aborted with zero movers. `_clean()` correctly drops a
+    row with no Close, but this signature (recap_date's row exists pre-dropna, just with a
+    NaN Close) is a backfill lag, not missing data, so it gets a few retries with a wait
+    before giving up - a plain re-request, not `retry()`, since the fetch itself didn't
+    raise anything."""
     import yfinance as yf
     syms = list(universe)
-    raw = retry(lambda: yf.download([s + ".NS" for s in syms], period="1mo", interval="1d", group_by="ticker",
-                                    auto_adjust=False, progress=False, threads=True))
-    rows, skipped_gap = [], []
-    for s in syms:
-        try:
-            d = _clean(raw[s + ".NS"][["Open", "High", "Low", "Close", "Volume"]])
-        except Exception:
-            continue
-        if len(d) < 3 or d.index[-1].date() != recap_date:
-            continue
-        if d.index[-2].date() != prev_date:
-            skipped_gap.append(s)
-            continue
-        c, v = d.Close, d.Volume
-        avgv = v.iloc[-11:-1].mean()
-        rows.append({"symbol": s, "name": universe[s], "close": float(c.iloc[-1]),
-                     "pct": float((c.iloc[-1] / c.iloc[-2] - 1) * 100),
-                     "volx": float(v.iloc[-1] / avgv) if avgv and avgv > 0 else None})
+
+    def _fetch():
+        return yf.download([s + ".NS" for s in syms], period="1mo", interval="1d", group_by="ticker",
+                           auto_adjust=False, progress=False, threads=True)
+
+    raw = retry(_fetch)
+    rows, skipped_gap, pending_backfill = [], [], []
+    for attempt in range(3):
+        rows, skipped_gap, pending_backfill = [], [], []
+        for s in syms:
+            try:
+                full = raw[s + ".NS"][["Open", "High", "Low", "Close", "Volume"]]
+            except Exception:
+                continue
+            has_recap_row = recap_date in {ts.date() for ts in _normalize_index(full).index}
+            try:
+                d = _clean(full)
+            except Exception:
+                continue
+            if len(d) < 3 or d.index[-1].date() != recap_date:
+                if has_recap_row:
+                    pending_backfill.append(s)
+                continue
+            if d.index[-2].date() != prev_date:
+                skipped_gap.append(s)
+                continue
+            c, v = d.Close, d.Volume
+            avgv = v.iloc[-11:-1].mean()
+            rows.append({"symbol": s, "name": universe[s], "close": float(c.iloc[-1]),
+                         "pct": float((c.iloc[-1] / c.iloc[-2] - 1) * 100),
+                         "volx": float(v.iloc[-1] / avgv) if avgv and avgv > 0 else None})
+        if len(rows) >= 2 * n or not pending_backfill or attempt == 2:
+            break
+        wait = 30 * (attempt + 1)
+        print(f"[market] {len(pending_backfill)} stocks have a {recap_date} row with Close not yet "
+              f"backfilled by Yahoo - retrying in {wait}s (attempt {attempt + 1}/3)")
+        time.sleep(wait)
+        raw = _fetch()
     if skipped_gap:
         print(f"[market] dropped {len(skipped_gap)} stocks with a data gap vs {prev_date}: {skipped_gap}")
     if len(rows) < 2 * n:

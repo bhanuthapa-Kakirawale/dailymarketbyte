@@ -138,7 +138,7 @@ def test_report_serialises_to_json(market_dict, movers, sectors, tiles, ai_facts
                      ai_facts=ai_facts, events=events, fd={"fii": -1240.5, "dii": 2105.3,
                                                            "source": "NSE"})
     payload = json.loads(report.to_json())
-    assert payload["report_schema_version"] == "1.0"
+    assert payload["report_schema_version"] == "1.1"
     assert payload["validation_summary"]["total_facts"] == len(report.facts)
     assert payload["facts"][0]["observations"][0]["source_type"] in {
         "PRIMARY", "SECONDARY", "AI", "DERIVED", "NEWS", "BROKER"}

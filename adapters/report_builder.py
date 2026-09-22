@@ -75,7 +75,8 @@ def build_premarket_report(m: dict, tiles: list, fd: dict, sec: list, gainers: l
                            losers: list, events: list, nifty_reason: str,
                            ai_facts: dict, nse_idx: dict, report_date: dt.date,
                            universe_label: str = "", demo: bool = False,
-                           now: dt.datetime | None = None) -> MarketReport:
+                           now: dt.datetime | None = None,
+                           content_safety: dict | None = None) -> MarketReport:
     """Build the PRE_MARKET report for `report_date` describing session `m["recap_date"]`."""
     now = now or _now_ist()
     session_date = m["recap_date"]
@@ -136,6 +137,7 @@ def build_premarket_report(m: dict, tiles: list, fd: dict, sec: list, gainers: l
         gainers=_movers_section(gainers, facts, news_ad),
         losers=_movers_section(losers, facts, news_ad),
         events=news_ad.describe_events(events),
+        content_safety=content_safety or {},
         metadata={
             "builder_version": BUILDER_VERSION,
             "demo": bool(demo),
@@ -202,6 +204,10 @@ def build_and_save_report(out_dir: str, **kwargs) -> str | None:
               f"| publication_ready={summary.publication_ready}")
         for issue in summary.blocking_issues:
             print(f"      report issue: {issue}")
+        cs = report.content_safety
+        if cs:
+            print(f"      content safety: status={cs.get('status')} "
+                  f"sanitized={cs.get('sanitized_count', 0)} blocked={cs.get('blocked_count', 0)}")
         return path
     except Exception as exc:                                  # never break video production
         print(f"[report] skipped: {type(exc).__name__}: {exc}")

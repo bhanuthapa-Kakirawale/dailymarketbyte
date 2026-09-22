@@ -22,7 +22,9 @@ import music
 import news
 import video
 from adapters import report_builder
+from adapters.news_adapter import NO_CATALYST_TEXT
 from config import OUT_DIR, ASSETS_DIR, UNIVERSE, UNIVERSE_LABEL, TOP_N, DURATION, now_ist, fmt_in
+from core.content_safety import CONTENT_SAFETY_VERSION, SafetyStatus, sanitize_field, scan_publication
 
 RS = video.RS
 BASE_DUR = {"intro": 2.0, "global": 7.0, "fii": 5.0, "nifty": 16.0, "sector": 8.0,
@@ -189,6 +191,68 @@ def demo_data():
     return m, g, l_, events, "Sample Nifty reason for demo only.", tiles, fd, sec
 
 
+# ----------------------------------------------------------------------------- content safety
+def apply_content_safety(nifty_reason, gainers, losers, events):
+    """Sanitize every free-text field before it reaches a caption, scene or metadata field.
+
+    Runs deterministically (no Gemini) on whatever text explain_moves/ai_pass produced,
+    including the raw Google News fallback path - the pipeline must not republish
+    recommendation-style headlines just because no AI reason was available for a mover.
+    Returns the (possibly rewritten) fields plus every non-SAFE finding for the audit trail.
+    """
+    findings = []
+
+    def _track(label, text, fallback):
+        clean, result = sanitize_field(text or "", fallback=fallback)
+        if result.status is not SafetyStatus.SAFE:
+            findings.append((label, result))
+        return clean
+
+    nifty_reason = _track("nifty_reason", nifty_reason, "")
+
+    for row in gainers + losers:
+        row["reason"] = _track(f"mover:{row.get('symbol')}", row.get("reason"), NO_CATALYST_TEXT)
+
+    safe_events = []
+    for e in events:
+        text = _track(f"event:{e.get('tag', '')}", e.get("text"), "")
+        if text:                     # an event with nothing safe to say is dropped, not shown blank
+            safe_events.append({**e, "text": text})
+    events = safe_events or [{"tag": "INFO", "text": "No major scheduled events; track global cues"}]
+
+    return nifty_reason, gainers, losers, events, findings
+
+
+def collect_public_text(scenes, events, meta) -> dict:
+    """Every string that will actually appear to a viewer: on-screen captions (via each
+    scene's own `captions()`, since MoversScene builds its per-row text dynamically rather
+    than storing it in `.texts`), the event cards EventsScene draws directly, and the
+    YouTube title/description."""
+    fields = {"youtube_title": meta["title"], "youtube_description": meta["description"]}
+    for e in events:
+        fields[f"event:{e.get('tag', '')}"] = e.get("text", "")
+    for scene in scenes:
+        for i, (_, _, text) in enumerate(scene.captions()):
+            fields[f"{type(scene).__name__}.caption[{i}]"] = text
+    return fields
+
+
+def summarize_content_safety(pre_findings, final_scan) -> dict:
+    """Assemble the audit trail written into MarketReport.content_safety."""
+    findings = [{"field": label, **r.to_dict()} for label, r in pre_findings]
+    sanitized = sum(1 for _, r in pre_findings if r.status is SafetyStatus.SANITIZED)
+    blocked = sum(1 for _, r in pre_findings if r.status is SafetyStatus.BLOCKED)
+    blocked += len(final_scan.blocked_fields)
+    status = ("BLOCKED" if final_scan.status is not SafetyStatus.SAFE
+              else "SANITIZED" if sanitized else "SAFE")
+    return {
+        "status": status, "sanitized_count": sanitized, "blocked_count": blocked,
+        "findings": findings,
+        "final_scan": {"status": final_scan.status.value, "blocked_fields": final_scan.blocked_fields},
+        "version": CONTENT_SAFETY_VERSION,
+    }
+
+
 # ----------------------------------------------------------------------------- main
 def durations(present: set) -> dict:
     dur = {k: v for k, v in BASE_DUR.items() if k in present}
@@ -249,6 +313,11 @@ def run(args):
             tiles.append({"label": "BRENT CRUDE", "value": facts["brent"]["value"],
                           "pct": facts["brent"]["pct"], "dec": 2, "prefix": "$"})
 
+    # Content safety: neutralize/drop recommendation-style language (own reasoning or a raw
+    # Google News fallback headline) before it can reach a caption, scene or metadata field.
+    nifty_reason, gainers, losers, events, safety_findings = apply_content_safety(
+        nifty_reason, gainers, losers, events)
+
     info = {"today_str": today.strftime("%A, %d %B %Y"),
             "today_short": today.strftime("%a %d %b"),
             "recap_str": m["recap_date"].strftime("%a, %d %b %Y")}
@@ -287,12 +356,28 @@ def run(args):
     with open(out.replace(".mp4", ".json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2, ensure_ascii=False)
 
+    # Final publication safety gate: re-scan every finalized public-facing text artifact
+    # (captions, event cards, YouTube title/description) immediately before upload. Text is
+    # already burned into video frames or written into metadata by this point, so anything
+    # that is not SAFE here blocks publication rather than being silently rewritten.
+    final_scan = scan_publication(collect_public_text(scenes, events, meta))
+    if final_scan.status is not SafetyStatus.SAFE:
+        print("Content-safety QA FAILED - the following fields still contain unsafe text:")
+        for field_name in final_scan.blocked_fields:
+            r = final_scan.results[field_name]
+            print(f"  - {field_name}: {r.status.value} ({r.reason})")
+        print(f"Local artifacts preserved for inspection: {out}")
+        if args.upload:
+            print("Upload blocked by content-safety QA.")
+        args.upload = False
+
     # Canonical market-intelligence artifact (Phase 1 strangler seam). Built from the data
     # already collected above, written after the video so it can never affect publication.
     report_builder.build_and_save_report(
         OUT_DIR, m=m, tiles=tiles, fd=fd, sec=sec, gainers=gainers, losers=losers,
         events=events, nifty_reason=nifty_reason, ai_facts=facts, nse_idx=idx,
-        report_date=today, universe_label=uni, demo=args.demo)
+        report_date=today, universe_label=uni, demo=args.demo,
+        content_safety=summarize_content_safety(safety_findings, final_scan))
     print(f"Done: {out}")
 
     if args.upload and not args.demo:

@@ -2,4 +2,8 @@ output/
 token.json
 client_secret.json
 .venv/
+venv/
+.env
+.env.*
 __pycache__/
+.pytest_cache/

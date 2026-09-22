@@ -151,27 +151,56 @@ class RangeValidator:
 
 # --------------------------------------------------------------------- cross-source
 class CrossSourceValidator:
-    """Decides how much independent support a fact actually has.
+    """Decides how much genuinely independent support a fact actually has.
 
-    Verdicts: MISSING (nothing usable), CONFLICT (sources disagree beyond tolerance),
-    VERIFIED (>=2 agreeing sources, at least one non-AI), PROVISIONAL (only AI behind a
-    critical numeric fact), SINGLE_SOURCE (exactly one acceptable non-AI source).
+    Corroboration is counted in INDEPENDENCE GROUPS, not in observations. Two Yahoo readings
+    of the same close are one witness however they were fetched, and two Google News items
+    syndicating one wire story are one publisher. Counting observations instead of groups
+    would let a single source appear to confirm itself - the exact illusion this validator
+    exists to prevent.
 
-    The comparison values and computed difference are always recorded in `details`, so an
-    archived CONFLICT can be re-argued later without re-fetching anything.
+    Verdicts:
+      MISSING       nothing usable
+      CONFLICT      any two usable observations disagree beyond tolerance
+      VERIFIED      >=2 independent groups agree, at least one of them non-AI
+      PROVISIONAL   only AI groups stand behind a critical numeric fact
+      SINGLE_SOURCE one independent group (however many observations it contains)
+
+    `details` always records the groups compared and the values behind them, so an archived
+    verdict can be re-argued later without re-fetching anything.
     """
     name = "cross_source"
 
     def __init__(self, tolerance_pct: float | None = 0.2, tolerance_abs: float | None = None):
         self.tolerance_pct, self.tolerance_abs = tolerance_pct, tolerance_abs
 
+    def _agrees(self, difference: float, difference_pct: float) -> bool:
+        if self.tolerance_abs is not None and difference <= self.tolerance_abs:
+            return True
+        if self.tolerance_pct is not None and difference_pct <= self.tolerance_pct:
+            return True
+        return False
+
     def validate(self, observations: list[Observation], metric: Metric,
                  checked_at: dt.datetime | None = None) -> ValidationResult:
         usable = [o for o in observations if o.value is not None]
         critical = is_critical(metric)
+
+        groups: dict[str, list[Observation]] = {}
+        for obs in usable:
+            groups.setdefault(obs.independence_group, []).append(obs)
+
         details = {
             "values": {o.source_name: o.value for o in usable},
             "source_types": {o.source_name: o.source_type.value for o in usable},
+            "source_identities": [
+                {"source_name": o.source_name, "source_type": o.source_type.value,
+                 "independence_group": o.independence_group, "observation_id": o.observation_id,
+                 "value": o.value}
+                for o in usable],
+            "independence_groups": sorted(groups),
+            "groups_compared": len(groups),
+            "group_values": {g: [o.value for o in members] for g, members in groups.items()},
             "tolerance_pct": self.tolerance_pct,
             "tolerance_abs": self.tolerance_abs,
             "critical_metric": critical,
@@ -181,20 +210,14 @@ class CrossSourceValidator:
             return _result(self.name, ValidationStatus.MISSING,
                            f"no usable observation for {metric.value}", checked_at, **details)
 
-        ai_only = all(o.is_ai for o in usable)
+        non_ai_groups = sorted({g for g, members in groups.items() if any(not o.is_ai for o in members)})
+        ai_only = not non_ai_groups
         details["ai_only"] = ai_only
+        details["non_ai_groups"] = non_ai_groups
 
-        if len(usable) == 1:
-            only = usable[0]
-            if only.is_ai and critical:
-                return _result(self.name, ValidationStatus.PROVISIONAL,
-                               f"{metric.value} rests on the AI source {only.source_name} alone; "
-                               "an LLM cannot verify a critical numeric fact",
-                               checked_at, **details)
-            return _result(self.name, ValidationStatus.SINGLE_SOURCE,
-                           f"{metric.value} has one source ({only.source_name}), uncorroborated",
-                           checked_at, **details)
-
+        # Disagreement is checked across every usable observation, including within a single
+        # group: two readings of one number that do not match is a data problem regardless of
+        # whether they were ever going to count as corroboration.
         values = [o.value for o in usable]
         lo, hi = min(values), max(values)
         difference = hi - lo
@@ -203,26 +226,37 @@ class CrossSourceValidator:
         details.update({"min": lo, "max": hi, "difference": difference,
                         "difference_pct": difference_pct})
 
-        agrees = False
-        if self.tolerance_abs is not None and difference <= self.tolerance_abs:
-            agrees = True
-        if self.tolerance_pct is not None and difference_pct <= self.tolerance_pct:
-            agrees = True
-
-        if not agrees:
+        if len(usable) > 1 and not self._agrees(difference, difference_pct):
             return _result(self.name, ValidationStatus.CONFLICT,
                            f"{metric.value} sources disagree: {details['values']} "
                            f"(difference {difference:.4f}, {difference_pct:.3f}%)",
                            checked_at, **details)
 
+        if len(groups) < 2:
+            only_group = details["independence_groups"][0]
+            names = sorted({o.source_name for o in usable})
+            if ai_only and critical:
+                return _result(self.name, ValidationStatus.PROVISIONAL,
+                               f"{metric.value} rests on AI group {only_group} alone "
+                               f"({', '.join(names)}); an LLM cannot verify a critical numeric fact",
+                               checked_at, **details)
+            extra = ("" if len(usable) == 1 else
+                     f" - {len(usable)} observations, but all from {only_group}, so they are "
+                     "one witness rather than corroboration")
+            return _result(self.name, ValidationStatus.SINGLE_SOURCE,
+                           f"{metric.value} has one independent source group ({only_group}){extra}",
+                           checked_at, **details)
+
         if ai_only and critical:
             return _result(self.name, ValidationStatus.PROVISIONAL,
-                           f"{metric.value} is supported only by AI sources; agreement between "
+                           f"{metric.value} is supported only by AI groups "
+                           f"({', '.join(details['independence_groups'])}); agreement between "
                            "LLM answers is not independent corroboration",
                            checked_at, **details)
 
         return _result(self.name, ValidationStatus.VERIFIED,
-                       f"{metric.value} corroborated by {len(usable)} sources within tolerance",
+                       f"{metric.value} corroborated across {len(groups)} independent groups "
+                       f"({', '.join(details['independence_groups'])}) within tolerance",
                        checked_at, **details)
 
 

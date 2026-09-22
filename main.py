@@ -25,6 +25,8 @@ from adapters import report_builder
 from adapters.news_adapter import NO_CATALYST_TEXT
 from config import OUT_DIR, ASSETS_DIR, UNIVERSE, UNIVERSE_LABEL, TOP_N, DURATION, now_ist, fmt_in
 from core.content_safety import CONTENT_SAFETY_VERSION, SafetyStatus, sanitize_field, scan_publication
+from presentation import ReportPresentation
+from providers import GeminiProvider, NewsProvider, NseProvider, YahooProvider
 
 RS = video.RS
 BASE_DUR = {"intro": 2.0, "global": 7.0, "fii": 5.0, "nifty": 16.0, "sector": 8.0,
@@ -193,11 +195,14 @@ def demo_data():
 
 # ----------------------------------------------------------------------------- content safety
 def apply_content_safety(nifty_reason, gainers, losers, events):
-    """Sanitize every free-text field before it reaches a caption, scene or metadata field.
+    """Sanitize every free-text field before it enters the report.
 
-    Runs deterministically (no Gemini) on whatever text explain_moves/ai_pass produced,
-    including the raw Google News fallback path - the pipeline must not republish
-    recommendation-style headlines just because no AI reason was available for a mover.
+    Runs deterministically (no Gemini) on whatever text ai_pass produced, including the raw
+    Google News fallback path - the pipeline must not republish recommendation-style
+    headlines just because no AI reason was available for a mover. In Phase 2 this happens
+    before the report is built, so the report stores publishable text and the presentation
+    layer inherits it rather than being cleaned separately.
+
     Returns the (possibly rewritten) fields plus every non-SAFE finding for the audit trail.
     """
     findings = []
@@ -208,17 +213,26 @@ def apply_content_safety(nifty_reason, gainers, losers, events):
             findings.append((label, result))
         return clean
 
-    nifty_reason = _track("nifty_reason", nifty_reason, "")
+    # ai_pass returns the Nifty summary with its provenance attached; demo fixtures pass a
+    # plain string. Either way only the text is sanitized, never the provenance.
+    if isinstance(nifty_reason, dict):
+        nifty_reason = {**nifty_reason, "text": _track("nifty_reason", nifty_reason.get("text"), "")}
+    else:
+        nifty_reason = _track("nifty_reason", nifty_reason, "")
 
     for row in gainers + losers:
         row["reason"] = _track(f"mover:{row.get('symbol')}", row.get("reason"), NO_CATALYST_TEXT)
+        if row["reason"] == NO_CATALYST_TEXT:
+            row["reason_source"] = news.ORIGIN_NONE      # blocked text is no longer that source's
+            row["reason_publisher"] = None
 
     safe_events = []
     for e in events:
         text = _track(f"event:{e.get('tag', '')}", e.get("text"), "")
         if text:                     # an event with nothing safe to say is dropped, not shown blank
             safe_events.append({**e, "text": text})
-    events = safe_events or [{"tag": "INFO", "text": "No major scheduled events; track global cues"}]
+    events = safe_events or [{"tag": "INFO", "text": "No major scheduled events; track global cues",
+                              "source": news.ORIGIN_RULE_PLACEHOLDER, "publisher": None}]
 
     return nifty_reason, gainers, losers, events, findings
 
@@ -237,18 +251,27 @@ def collect_public_text(scenes, events, meta) -> dict:
     return fields
 
 
-def summarize_content_safety(pre_findings, final_scan) -> dict:
-    """Assemble the audit trail written into MarketReport.content_safety."""
+def summarize_content_safety(pre_findings, final_scan=None) -> dict:
+    """Assemble the audit trail written into MarketReport.content_safety.
+
+    Called twice per run: once while building the report (final_scan is None, because
+    nothing has been rendered yet) and again after the pre-publication scan, which replaces
+    the placeholder with the real verdict.
+    """
     findings = [{"field": label, **r.to_dict()} for label, r in pre_findings]
     sanitized = sum(1 for _, r in pre_findings if r.status is SafetyStatus.SANITIZED)
     blocked = sum(1 for _, r in pre_findings if r.status is SafetyStatus.BLOCKED)
-    blocked += len(final_scan.blocked_fields)
-    status = ("BLOCKED" if final_scan.status is not SafetyStatus.SAFE
-              else "SANITIZED" if sanitized else "SAFE")
+    if final_scan is None:
+        final = {"status": "PENDING", "blocked_fields": []}
+        status = "SANITIZED" if sanitized else "SAFE"
+    else:
+        blocked += len(final_scan.blocked_fields)
+        final = {"status": final_scan.status.value, "blocked_fields": final_scan.blocked_fields}
+        status = ("BLOCKED" if final_scan.status is not SafetyStatus.SAFE
+                  else "SANITIZED" if sanitized else "SAFE")
     return {
         "status": status, "sanitized_count": sanitized, "blocked_count": blocked,
-        "findings": findings,
-        "final_scan": {"status": final_scan.status.value, "blocked_fields": final_scan.blocked_fields},
+        "findings": findings, "final_scan": final,
         "version": CONTENT_SAFETY_VERSION,
     }
 
@@ -263,129 +286,222 @@ def durations(present: set) -> dict:
     return dur
 
 
+def collect(args, today):
+    """Acquisition. Returns the raw session pieces, or None when the run should be skipped.
+
+    This is the only place provider output exists as loose dictionaries; everything after
+    build_report() reads the canonical report instead.
+    """
+    if args.demo:
+        m, gainers, losers, events, nifty_reason, tiles, fd, sec = demo_data()
+        return {"m": m, "gainers": gainers, "losers": losers, "events": events,
+                "nifty_reason": nifty_reason, "tiles": tiles, "fd": fd, "sec": sec,
+                "ai_facts": {}, "nse_idx": {}}
+
+    print("[1/6] Fetching Nifty data...")
+    m = market.get_market()
+    prev_wd = today - dt.timedelta(days={0: 3, 6: 2}.get(today.weekday(), 1))
+    state_file = os.path.join(OUT_DIR, "last_session.txt")
+    if args.upload and not args.force:
+        if m["recap_date"] != prev_wd:
+            print(f"Latest session is {m['recap_date']}, expected {prev_wd} (market holiday?). Skipping.")
+            return None
+        if os.path.exists(state_file) and open(state_file).read().strip() == str(m["recap_date"]):
+            print(f"Session {m['recap_date']} already posted. Skipping.")
+            return None
+    print(f"      session {m['recap_date']}: Nifty {m['close']:.2f} ({m['pct']:+.2f}%)")
+
+    print("[2/6] NSE data, sectors, global cues...")
+    nse = market.NSE()
+    idx = market.nse_all_indices(nse, m["recap_date"])
+    fd = market.fii_dii_nse(nse, m["recap_date"])
+    sec = market.get_sectors(m["recap_date"], m["prev_date"], idx)
+    tiles = market.get_globals()
+
+    print("[3/6] Top gainers & losers...")
+    universe = market.get_universe(UNIVERSE)
+    gainers, losers = market.get_movers(universe, m["recap_date"], m["prev_date"], TOP_N)
+
+    print("[4/6] AI cross-check, reasons & events (single Gemini call)...")
+    ai_facts, nifty_reason, events = news.ai_pass(m["recap_date"], today, m["close"],
+                                                  gainers, losers, m)
+    # Legacy cross-check, kept as defence in depth. The authoritative verdict on whether
+    # these sources agree is now the INDEX_CLOSE fact's CrossSourceValidator result.
+    ref = idx.get("NIFTY 50", {}).get("last") or ai_facts.get("nifty_close")
+    if ref:
+        diff = abs(ref / m["close"] - 1) * 100
+        print(f"      Nifty check: yahoo {m['close']:.2f} vs {ref:.2f} ({diff:.2f}% diff)")
+        if diff > 0.2:
+            raise RuntimeError("Nifty close mismatch between sources - not posting wrong numbers")
+    else:
+        print("      WARNING: no second source for Nifty close available today")
+    fd = fd or ai_facts.get("fii_dii")
+    if ai_facts.get("gift"):
+        tiles.insert(0, {"label": "GIFT NIFTY", "value": ai_facts["gift"]["value"],
+                         "pct": ai_facts["gift"]["pct"], "dec": 0, "prefix": ""})
+    if ai_facts.get("brent"):
+        tiles.append({"label": "BRENT CRUDE", "value": ai_facts["brent"]["value"],
+                      "pct": ai_facts["brent"]["pct"], "dec": 2, "prefix": "$"})
+    return {"m": m, "gainers": gainers, "losers": losers, "events": events,
+            "nifty_reason": nifty_reason, "tiles": tiles, "fd": fd, "sec": sec,
+            "ai_facts": ai_facts, "nse_idx": idx}
+
+
+def build_report(raw, today, demo=False, content_safety=None):
+    """Providers -> observations -> facts -> validation -> MarketReport."""
+    now = now_ist()
+    session_date = raw["m"]["recap_date"]
+    yahoo = YahooProvider(session_date, today, now, demo=demo)
+    nse = NseProvider(session_date, today, now, demo=demo)
+    gemini = GeminiProvider(session_date, today, now, demo=demo)
+    narrator = NewsProvider(session_date, today, now, demo=demo)
+
+    ai_labels = frozenset({label for label, key in (("GIFT NIFTY", "gift"), ("BRENT CRUDE", "brent"))
+                           if (raw["ai_facts"] or {}).get(key)})
+
+    session_result = yahoo.from_market_dict(raw["m"])
+    # Order matters: the source the renderer will display is observed first, so it supplies
+    # each fact's published value (see report_builder.facts_from).
+    results = [session_result,
+               nse.indices(raw["nse_idx"]),
+               yahoo.globals(raw["tiles"], ai_labels=ai_labels),
+               yahoo.sectors(raw["sec"], raw["nse_idx"]),
+               nse.fii_dii(raw["fd"]),
+               yahoo.movers(raw["gainers"], raw["losers"]),
+               gemini.facts(raw["ai_facts"])]
+    observations = [o for r in results for o in r.observations]
+
+    narrative = narrator.from_ai_pass(raw["nifty_reason"], raw["events"],
+                                      raw["gainers"], raw["losers"], raw["ai_facts"]
+                                      ).payload["narrative"]
+
+    return report_builder.build_report(
+        session=session_result.payload["index_session"], narrative=narrative,
+        observations=observations, tiles=raw["tiles"], flows=raw["fd"], sectors=raw["sec"],
+        gainers=raw["gainers"], losers=raw["losers"], report_date=today,
+        universe_label=UNIVERSE_LABEL.get(UNIVERSE, UNIVERSE), demo=demo, now=now,
+        content_safety=content_safety)
+
+
+def check_publication(report, demo=False) -> bool:
+    """The authoritative publication decision: the report's own validation verdict.
+
+    Phase 2 makes this binding. A report that says it is not fit to publish now stops the
+    run before anything is rendered, rather than being written afterwards as a note nobody
+    acted on. Demo runs are exempt: synthetic data is never published anywhere.
+    """
+    summary = report.validation_summary
+    if summary.publication_ready or demo:
+        return True
+    print("Publication BLOCKED by report validation:")
+    for issue in summary.blocking_issues:
+        print(f"  - {issue}")
+    return False
+
+
+def build_scenes(pres, info, dur, charts, uni):
+    """Scene construction, reading only from the presentation view of the report."""
+    present = pres.present()
+    scenes = [video.IntroScene(info, hook_line(pres.m, pres.fd, pres.sec), dur["intro"])]
+    if "global" in present:
+        scenes.append(video.GlobalScene(pres.tiles, global_captions(pres.tiles), dur["global"]))
+    if "fii" in present:
+        scenes.append(video.FiiDiiScene(pres.fd, info["recap_str"], fii_captions(pres.fd), dur["fii"]))
+    scenes.append(video.NiftyScene(pres.m, charts, nifty_captions(pres.m, pres.nifty_reason),
+                                   dur["nifty"]))
+    if "sector" in present:
+        scenes.append(video.SectorScene(pres.sec, info["recap_str"], sector_captions(pres.sec),
+                                        dur["sector"]))
+    scenes += [video.MoversScene("gainers", pres.gainers, uni, info["recap_str"], dur["gainers"]),
+               video.MoversScene("losers", pres.losers, uni, info["recap_str"], dur["losers"]),
+               video.EventsScene(pres.events, info, dur["events"]),
+               video.OutroScene(dur["outro"])]
+    return scenes
+
+
+def final_qa(scenes, events, meta, out, upload_requested):
+    """Re-scan every finalized public-facing string immediately before publication.
+
+    Text is already burned into video frames and written into metadata by this point, so
+    nothing is rewritten here - anything not SAFE blocks publication instead.
+    """
+    scan = scan_publication(collect_public_text(scenes, events, meta))
+    if scan.status is not SafetyStatus.SAFE:
+        print("Content-safety QA FAILED - the following fields still contain unsafe text:")
+        for field_name in scan.blocked_fields:
+            r = scan.results[field_name]
+            print(f"  - {field_name}: {r.status.value} ({r.reason})")
+        print(f"Local artifacts preserved for inspection: {out}")
+        if upload_requested:
+            print("Upload blocked by content-safety QA.")
+    return scan
+
+
+def publish(out, meta, session_date):
+    import upload
+    vid = upload.upload(out, meta)
+    print(f"Uploaded: https://youtube.com/shorts/{vid}")
+    with open(os.path.join(OUT_DIR, "last_session.txt"), "w") as f:
+        f.write(str(session_date))
+    return vid
+
+
 def run(args):
     os.makedirs(OUT_DIR, exist_ok=True)
     today = now_ist().date()
 
-    facts, idx = {}, {}      # AI fact set and NSE index snapshot; empty in demo mode
-    if args.demo:
-        m, gainers, losers, events, nifty_reason, tiles, fd, sec = demo_data()
-    else:
-        print("[1/5] Fetching Nifty data...")
-        m = market.get_market()
-        prev_wd = today - dt.timedelta(days={0: 3, 6: 2}.get(today.weekday(), 1))
-        state_file = os.path.join(OUT_DIR, "last_session.txt")
-        if args.upload and not args.force:
-            if m["recap_date"] != prev_wd:
-                print(f"Latest session is {m['recap_date']}, expected {prev_wd} (market holiday?). Skipping.")
-                return None
-            if os.path.exists(state_file) and open(state_file).read().strip() == str(m["recap_date"]):
-                print(f"Session {m['recap_date']} already posted. Skipping.")
-                return None
-        print(f"      session {m['recap_date']}: Nifty {m['close']:.2f} ({m['pct']:+.2f}%)")
+    raw = collect(args, today)
+    if raw is None:
+        return None
 
-        print("[2/5] NSE data, sectors, global cues...")
-        nse = market.NSE()
-        idx = market.nse_all_indices(nse, m["recap_date"])
-        fd = market.fii_dii_nse(nse, m["recap_date"])
-        sec = market.get_sectors(m["recap_date"], m["prev_date"], idx)
-        tiles = market.get_globals()
+    # Content safety runs before the report is built, so the report stores publishable text
+    # and presentation inherits it rather than being cleaned separately downstream.
+    (raw["nifty_reason"], raw["gainers"], raw["losers"], raw["events"],
+     safety_findings) = apply_content_safety(raw["nifty_reason"], raw["gainers"],
+                                             raw["losers"], raw["events"])
 
-        print("[3/5] Top gainers & losers...")
-        universe = market.get_universe(UNIVERSE)
-        gainers, losers = market.get_movers(universe, m["recap_date"], m["prev_date"], TOP_N)
+    print("[5/6] Building validated market report...")
+    report = build_report(raw, today, demo=args.demo,
+                          content_safety=summarize_content_safety(safety_findings, None))
+    print(f"      report: {report_builder.describe(report)}")
 
-        print("[4/5] AI cross-check, reasons & events (single Gemini call)...")
-        facts, nifty_reason, events = news.ai_pass(m["recap_date"], today, m["close"], gainers, losers, m)
-        ref = idx.get("NIFTY 50", {}).get("last") or facts.get("nifty_close")
-        if ref:
-            diff = abs(ref / m["close"] - 1) * 100
-            print(f"      Nifty check: yahoo {m['close']:.2f} vs {ref:.2f} ({diff:.2f}% diff)")
-            if diff > 0.2:
-                raise RuntimeError("Nifty close mismatch between sources - not posting wrong numbers")
-        else:
-            print("      WARNING: no second source for Nifty close available today")
-        fd = fd or facts.get("fii_dii")
-        if facts.get("gift"):
-            tiles.insert(0, {"label": "GIFT NIFTY", "value": facts["gift"]["value"],
-                             "pct": facts["gift"]["pct"], "dec": 0, "prefix": ""})
-        if facts.get("brent"):
-            tiles.append({"label": "BRENT CRUDE", "value": facts["brent"]["value"],
-                          "pct": facts["brent"]["pct"], "dec": 2, "prefix": "$"})
+    if not check_publication(report, demo=args.demo):
+        path = report_builder.save_report(report, OUT_DIR, demo=args.demo)
+        print(f"Report written for diagnosis (no video rendered): {path}")
+        return None
 
-    # Content safety: neutralize/drop recommendation-style language (own reasoning or a raw
-    # Google News fallback headline) before it can reach a caption, scene or metadata field.
-    nifty_reason, gainers, losers, events, safety_findings = apply_content_safety(
-        nifty_reason, gainers, losers, events)
-
+    pres = ReportPresentation(report)
     info = {"today_str": today.strftime("%A, %d %B %Y"),
             "today_short": today.strftime("%a %d %b"),
-            "recap_str": m["recap_date"].strftime("%a, %d %b %Y")}
-    present = {"intro", "nifty", "gainers", "losers", "events", "outro"}
-    if len(tiles) >= 3:
-        present.add("global")
-    if fd:
-        present.add("fii")
-    if len(sec) >= 6:
-        present.add("sector")
-    dur = durations(present)
+            "recap_str": pres.session_date.strftime("%a, %d %b %Y")}
+    dur = durations(pres.present())
     tag = today.strftime("%Y-%m-%d")
-    charts = chart.make_chart(m, os.path.join(OUT_DIR, f"nifty_chart_{tag}"))
+    charts = chart.make_chart(pres.m, os.path.join(OUT_DIR, f"nifty_chart_{tag}"))
     uni = UNIVERSE_LABEL.get(UNIVERSE, UNIVERSE)
+    scenes = build_scenes(pres, info, dur, charts, uni)
 
-    scenes = [video.IntroScene(info, hook_line(m, fd, sec), dur["intro"])]
-    if "global" in present:
-        scenes.append(video.GlobalScene(tiles, global_captions(tiles), dur["global"]))
-    if "fii" in present:
-        scenes.append(video.FiiDiiScene(fd, info["recap_str"], fii_captions(fd), dur["fii"]))
-    scenes.append(video.NiftyScene(m, charts, nifty_captions(m, nifty_reason), dur["nifty"]))
-    if "sector" in present:
-        scenes.append(video.SectorScene(sec, info["recap_str"], sector_captions(sec), dur["sector"]))
-    scenes += [video.MoversScene("gainers", gainers, uni, info["recap_str"], dur["gainers"]),
-               video.MoversScene("losers", losers, uni, info["recap_str"], dur["losers"]),
-               video.EventsScene(events, info, dur["events"]),
-               video.OutroScene(dur["outro"])]
-
-    print(f"[5/5] Rendering {sum(s.dur for s in scenes):.1f}s video ({len(scenes)} scenes)...")
+    print(f"[6/6] Rendering {sum(s.dur for s in scenes):.1f}s video ({len(scenes)} scenes)...")
     swells = list(np.cumsum([s.dur for s in scenes])[:-1])
-    mus = music.get_music(ASSETS_DIR, OUT_DIR, DURATION, swells, date=m["recap_date"])
+    mus = music.get_music(ASSETS_DIR, OUT_DIR, DURATION, swells, date=pres.session_date)
     out = os.path.join(OUT_DIR, f"daily_byte_{tag}{'_DEMO' if args.demo else ''}.mp4")
-    video.render(scenes, info, ticker_items(m, tiles, sec, gainers, losers), mus, out, demo=args.demo)
+    video.render(scenes, info, ticker_items(pres.m, pres.tiles, pres.sec, pres.gainers, pres.losers),
+                 mus, out, demo=args.demo)
 
-    meta = build_metadata(m, gainers, losers, events, info, fd, sec, tiles)
+    meta = build_metadata(pres.m, pres.gainers, pres.losers, pres.events, info,
+                          pres.fd, pres.sec, pres.tiles)
     with open(out.replace(".mp4", ".json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2, ensure_ascii=False)
 
-    # Final publication safety gate: re-scan every finalized public-facing text artifact
-    # (captions, event cards, YouTube title/description) immediately before upload. Text is
-    # already burned into video frames or written into metadata by this point, so anything
-    # that is not SAFE here blocks publication rather than being silently rewritten.
-    final_scan = scan_publication(collect_public_text(scenes, events, meta))
-    if final_scan.status is not SafetyStatus.SAFE:
-        print("Content-safety QA FAILED - the following fields still contain unsafe text:")
-        for field_name in final_scan.blocked_fields:
-            r = final_scan.results[field_name]
-            print(f"  - {field_name}: {r.status.value} ({r.reason})")
-        print(f"Local artifacts preserved for inspection: {out}")
-        if args.upload:
-            print("Upload blocked by content-safety QA.")
-        args.upload = False
-
-    # Canonical market-intelligence artifact (Phase 1 strangler seam). Built from the data
-    # already collected above, written after the video so it can never affect publication.
-    report_builder.build_and_save_report(
-        OUT_DIR, m=m, tiles=tiles, fd=fd, sec=sec, gainers=gainers, losers=losers,
-        events=events, nifty_reason=nifty_reason, ai_facts=facts, nse_idx=idx,
-        report_date=today, universe_label=uni, demo=args.demo,
-        content_safety=summarize_content_safety(safety_findings, final_scan))
+    scan = final_qa(scenes, pres.events, meta, out, args.upload)
+    report.content_safety = summarize_content_safety(safety_findings, scan)
+    path = report_builder.save_report(report, OUT_DIR, demo=args.demo)
+    cs = report.content_safety
+    print(f"      report: {os.path.basename(path)} | content safety: status={cs['status']} "
+          f"sanitized={cs['sanitized_count']} blocked={cs['blocked_count']}")
     print(f"Done: {out}")
 
-    if args.upload and not args.demo:
-        import upload
-        vid = upload.upload(out, meta)
-        print(f"Uploaded: https://youtube.com/shorts/{vid}")
-        with open(os.path.join(OUT_DIR, "last_session.txt"), "w") as f:
-            f.write(str(m["recap_date"]))
+    if args.upload and not args.demo and scan.status is SafetyStatus.SAFE:
+        publish(out, meta, pres.session_date)
     return out
 
 

@@ -1,22 +1,21 @@
-"""Assembles a validated MarketReport from the data the existing pipeline already collected.
+"""Assembles the validated MarketReport from provider output.
 
-This is the strangler seam. It makes no network calls of its own: everything here comes from
-dicts main.py is already holding by the time the video is built. The renderer keeps consuming
-those same dicts, so the report can be wrong, empty or absent without changing a single frame.
+Phase 2 inverts the old dependency. The report is no longer a record written after the video
+from whatever the pipeline happened to be holding; it is built first, from Observations the
+providers produced, and the renderer is fed from it. Nothing here fetches anything - it
+takes provider results, groups them into Facts, validates, and assembles.
 """
 from __future__ import annotations
 
 import datetime as dt
 import os
 
-from core import (Fact, MarketReport, Metric, Observation, ReportType, validate_fact)
+from core import Fact, MarketReport, Metric, Observation, ReportType, validate_fact
+from core.sources import registry_snapshot
 from core.validation import policy_for
 
-from .market_adapter import MarketAdapter
-from .news_adapter import NewsAdapter
-
 REPORT_DIR = "reports"
-BUILDER_VERSION = "phase1"
+BUILDER_VERSION = "phase2"
 
 
 def _now_ist() -> dt.datetime:
@@ -49,9 +48,9 @@ def facts_from(observations: list[Observation], now: dt.datetime | None = None) 
     """Group observations by (metric, instrument) and validate each resulting fact.
 
     The first observation of a group supplies the fact's published value. Collection order
-    is arranged so that the source the video actually displayed comes first: the report
-    documents what was published, and shows the alternatives beside it, rather than quietly
-    substituting a number no viewer ever saw.
+    is arranged so that the source the video displays comes first: the report documents what
+    is published, and shows the alternatives beside it, rather than quietly substituting a
+    number no viewer ever saw.
     """
     groups: dict[tuple, list[Observation]] = {}
     for obs in _dedupe(observations):
@@ -71,103 +70,76 @@ def _ids(facts: list[Fact], metric: Metric, instrument: str) -> str | None:
                  if f.metric == metric and f.instrument == instrument), None)
 
 
-def build_premarket_report(m: dict, tiles: list, fd: dict, sec: list, gainers: list,
-                           losers: list, events: list, nifty_reason: str,
-                           ai_facts: dict, nse_idx: dict, report_date: dt.date,
-                           universe_label: str = "", demo: bool = False,
-                           now: dt.datetime | None = None,
-                           content_safety: dict | None = None) -> MarketReport:
-    """Build the PRE_MARKET report for `report_date` describing session `m["recap_date"]`."""
+def build_report(session, narrative, observations: list[Observation], tiles: list,
+                 flows: dict, sectors: list, gainers: list, losers: list,
+                 report_date: dt.date, universe_label: str = "", demo: bool = False,
+                 now: dt.datetime | None = None,
+                 content_safety: dict | None = None) -> MarketReport:
+    """Build the PRE_MARKET report for `report_date` describing `session.session_date`.
+
+    `session` is a providers.IndexSession, `narrative` a providers.NarrativeBundle - typed
+    provider output, not raw dictionaries. Everything displayed downstream is derived from
+    what this function puts into the report.
+    """
     now = now or _now_ist()
-    session_date = m["recap_date"]
-    ai_facts = ai_facts or {}
-
-    market_ad = MarketAdapter(session_date, now, demo=demo, report_date=report_date)
-    news_ad = NewsAdapter(session_date, report_date, now, demo=demo)
-
-    # Order matters: the source the renderer displayed is observed first (see facts_from).
-    observations: list[Observation] = []
-    observations += market_ad.observe_nifty(m)
-    observations += market_ad.observe_nse_indices(nse_idx)
-    observations += market_ad.observe_technicals(m)
-    observations += market_ad.observe_globals(tiles, ai_labels=_ai_tile_labels(ai_facts))
-    observations += market_ad.observe_sectors(sec, nse_idx)
-    observations += market_ad.observe_fii_dii(fd)
-    observations += market_ad.observe_movers(gainers, "gainer")
-    observations += market_ad.observe_movers(losers, "loser")
-    observations += news_ad.observe_facts(ai_facts)
-
     facts = facts_from(observations, now=now)
+
+    nifty = session.nifty_section()
+    nifty["move_summary"] = narrative.nifty_reason
+    nifty["move_summary_provenance"] = narrative.nifty_reason_dict()
+    nifty["fact_ids"] = [i for i in (_ids(facts, Metric.INDEX_CLOSE, "NIFTY 50"),
+                                     _ids(facts, Metric.INDEX_CHANGE_PCT, "NIFTY 50")) if i]
 
     report = MarketReport(
         report_date=report_date,
         report_type=ReportType.PRE_MARKET,
-        session_date=session_date,
+        session_date=session.session_date,
         generated_at=now,
         facts=facts,
-        nifty={
-            "close": m.get("close"), "change_points": m.get("chg"), "change_pct": m.get("pct"),
-            "open": m.get("open"), "high": m.get("high"), "low": m.get("low"),
-            "previous_close": m.get("prev"), "bank_nifty_change_pct": m.get("bank_pct"),
-            "india_vix": m.get("vix"), "move_summary": nifty_reason or "",
-            "fact_ids": [i for i in (_ids(facts, Metric.INDEX_CLOSE, "NIFTY 50"),
-                                     _ids(facts, Metric.INDEX_CHANGE_PCT, "NIFTY 50")) if i],
-        },
-        technicals={
-            "ema20": m.get("ema20"), "ema50": m.get("ema50"), "rsi14": m.get("rsi"),
-            "support": (m.get("levels") or {}).get("sup", []),
-            "resistance": (m.get("levels") or {}).get("res", []),
-            "trendline": m.get("trend"), "pivot": m.get("pivot"),
-            "basis": "computed from Yahoo daily candles; no external source corroborates these",
-        },
+        nifty=nifty,
+        technicals=session.technicals_section(),
         global_cues=[{
             "label": t.get("label"), "value": t.get("value"), "change_pct": t.get("pct"),
+            "decimals": t.get("dec", 0), "prefix": t.get("prefix", ""),
             "fact_id": next((f.fact_id for f in facts if f.instrument == t.get("label")), None),
         } for t in tiles or []],
         institutional_flows=({
-            "fii_net_cash_cr": fd.get("fii"), "dii_net_cash_cr": fd.get("dii"),
-            "legacy_source_tag": fd.get("source"),
+            "fii_net_cash_cr": flows.get("fii"), "dii_net_cash_cr": flows.get("dii"),
+            "legacy_source_tag": flows.get("source"),
             "fact_ids": [i for i in (_ids(facts, Metric.FII_NET_CASH, "FII"),
                                      _ids(facts, Metric.DII_NET_CASH, "DII")) if i],
-        } if fd else {}),
+        } if flows else {}),
         sectors=[{
             "name": s.get("name"), "change_pct": s.get("pct"),
             "fact_id": _ids(facts, Metric.SECTOR_CHANGE_PCT, s.get("name")),
-        } for s in sec or []],
-        gainers=_movers_section(gainers, facts, news_ad),
-        losers=_movers_section(losers, facts, news_ad),
-        events=news_ad.describe_events(events),
+        } for s in sectors or []],
+        gainers=_movers_section(gainers, facts, narrative),
+        losers=_movers_section(losers, facts, narrative),
+        events=[e.to_dict() for e in narrative.events],
         content_safety=content_safety or {},
+        sources=registry_snapshot(o.source_name for o in observations),
         metadata={
             "builder_version": BUILDER_VERSION,
             "demo": bool(demo),
             "universe": universe_label,
-            "session_date": session_date.isoformat(),
-            "notes": ("Phase 1 strangler artifact: the renderer still consumes the legacy dicts. "
-                      "Fact values record what was published, with alternative sources beside them."),
+            "session_date": session.session_date.isoformat(),
+            "previous_session_date": (session.prev_date.isoformat() if session.prev_date else None),
+            "notes": ("Phase 2: this report is the authoritative input to presentation. Every "
+                      "number rendered in the video is derived from these facts and sections."),
         },
     )
     return report
 
 
-def _ai_tile_labels(ai_facts: dict) -> frozenset:
-    """Tiles main.py inserted from the Gemini fact set, so they are attributed to AI."""
-    labels = set()
-    if (ai_facts or {}).get("gift"):
-        labels.add("GIFT NIFTY")
-    if (ai_facts or {}).get("brent"):
-        labels.add("BRENT CRUDE")
-    return frozenset(labels)
-
-
-def _movers_section(rows: list, facts: list[Fact], news_ad: NewsAdapter) -> list:
+def _movers_section(rows: list, facts: list[Fact], narrative) -> list:
     out = []
     for row in rows or []:
         symbol = row.get("symbol")
+        catalyst = narrative.catalysts.get(symbol)
         out.append({
             "symbol": symbol, "name": row.get("name"), "close": row.get("close"),
             "change_pct": row.get("pct"), "relative_volume": row.get("volx"),
-            "catalyst": news_ad.classify_catalyst(row),
+            "catalyst": catalyst.to_dict() if catalyst else None,
             "fact_ids": [i for i in (_ids(facts, Metric.STOCK_CLOSE, symbol),
                                      _ids(facts, Metric.STOCK_CHANGE_PCT, symbol),
                                      _ids(facts, Metric.STOCK_RELATIVE_VOLUME, symbol)) if i],
@@ -186,32 +158,11 @@ def save_report(report: MarketReport, out_dir: str, demo: bool = False) -> str:
     return path
 
 
-def build_and_save_report(out_dir: str, **kwargs) -> str | None:
-    """Build and persist the report, swallowing any failure.
-
-    Phase 1 runs alongside a working video pipeline: the canonical layer is new code on a
-    path that already produces the day's Short, so a defect here must never cost a
-    publication. Failures are reported and the run continues.
-    """
-    demo = bool(kwargs.get("demo"))
-    try:
-        report = build_premarket_report(**kwargs)
-        path = save_report(report, out_dir, demo=demo)
-        summary = report.validation_summary
-        print(f"      report: {os.path.basename(path)} | {summary.total_facts} facts "
-              f"({summary.verified_count} verified, {summary.single_source_count} single-source, "
-              f"{summary.provisional_count} provisional, {summary.conflict_count} conflict) "
-              f"| publication_ready={summary.publication_ready}")
-        for issue in summary.blocking_issues:
-            print(f"      report issue: {issue}")
-        cs = report.content_safety
-        if cs:
-            print(f"      content safety: status={cs.get('status')} "
-                  f"sanitized={cs.get('sanitized_count', 0)} blocked={cs.get('blocked_count', 0)}")
-        return path
-    except Exception as exc:                                  # never break video production
-        print(f"[report] skipped: {type(exc).__name__}: {exc}")
-        return None
+def describe(report: MarketReport) -> str:
+    s = report.validation_summary
+    return (f"{s.total_facts} facts ({s.verified_count} verified, {s.single_source_count} "
+            f"single-source, {s.provisional_count} provisional, {s.conflict_count} conflict) "
+            f"| publication_ready={s.publication_ready}")
 
 
-__all__ = ["build_premarket_report", "build_and_save_report", "save_report", "facts_from"]
+__all__ = ["build_report", "save_report", "facts_from", "describe", "REPORT_DIR"]

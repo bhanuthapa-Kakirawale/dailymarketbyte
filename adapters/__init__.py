@@ -6,7 +6,7 @@ the canonical layer can exist before any provider is rewritten.
 """
 from .market_adapter import MarketAdapter
 from .news_adapter import NewsAdapter
-from .report_builder import build_and_save_report, build_premarket_report, facts_from, save_report
+from .report_builder import build_report, describe, facts_from, save_report
 
-__all__ = ["MarketAdapter", "NewsAdapter", "build_premarket_report",
-           "build_and_save_report", "save_report", "facts_from"]
+__all__ = ["MarketAdapter", "NewsAdapter", "build_report", "save_report", "facts_from",
+           "describe"]

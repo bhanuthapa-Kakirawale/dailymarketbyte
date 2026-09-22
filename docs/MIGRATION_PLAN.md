@@ -45,21 +45,45 @@ What this bought:
 - **Relative volume uses a 10-session lookback**, not the 20 the product spec describes. The
   definition is now recorded in observation metadata rather than silently implied.
 
-## Phase 2 candidates (not started - awaiting approval)
+## Phase 1.1 (complete): content safety
 
-Ordered by value per unit of risk:
+`core/content_safety.py` - deterministic recommendation-language filter, applied before the
+report is built and re-scanned before upload. See `docs/CONTENT_SAFETY.md`.
 
-1. **Compliance linter.** Block render/upload if any caption, title or description contains
-   recommendation language (BUY/SELL/TARGET/MULTIBAGGER). Currently only a disclaimer exists,
-   with no enforcement. Cheapest meaningful risk reduction available.
-2. **Post-render QA gate.** Verify duration, resolution, audio track and non-blank frames
-   before upload.
-3. **Record provenance at the source.** Have `news.ai_pass` return which path produced each
-   reason and event, and `nse_all_indices` return NSE's timestamp. Removes the two inference
-   hacks above and populates `observed_at`.
-4. **Make `publication_ready` authoritative**, replacing the ad-hoc `RuntimeError` in
-   `main.py` with the validation gate.
-5. **Provider abstraction.** Only worthwhile once a second provider actually exists.
+## Phase 2 (complete): the report becomes authoritative
+
+The Phase 1 tee is gone. The report is now built *before* rendering, decides whether
+publication may proceed, and feeds the renderer through a presentation boundary.
+
+What changed:
+
+- **`providers/`** wraps the existing `market.py` / `news.py` fetching. Above that line
+  everything is an Observation or a typed payload, never a raw provider dict.
+- **`core/sources.py`** models `SourceMetadata` and, separately, `independence_group`.
+- **`CrossSourceValidator`** counts independence groups rather than observations, so one
+  source can no longer appear to confirm itself.
+- **Provenance is recorded at acquisition.** `news.ai_pass` stamps every reason and event
+  with the branch that produced it; `nse_all_indices` keeps NSE's market timestamp, which now
+  reaches `Observation.observed_at`. The Phase 1 string-matching reconstruction is deleted.
+- **`presentation/report_adapter.py`** converts the report into the structures `video.py` and
+  `chart.py` already accept. Neither renderer module was changed.
+- **`main.check_publication`** makes `publication_ready` binding: an unfit report writes its
+  JSON for diagnosis and renders nothing.
+- **Schema 2.0** adds `sources`, `independence_group`, `source_metadata` and
+  `technicals.candles`.
+
+### Phase 2 compromises
+
+- **The legacy Nifty `RuntimeError` remains** in `collect()` as defence in depth, so that
+  check now exists in two places. The report's `CONFLICT` verdict is the authoritative one;
+  the older guard fires first and is redundant but harmless.
+- **News independence is approximated by publisher.** One story syndicated across genuinely
+  different publishers still counts as two groups.
+- **`display_rights_status` is a placeholder** (`UNREVIEWED` for every external source). Phase
+  2 models provenance, not licensing - a full rights system is explicitly out of scope.
+- **`main.collect()` still holds loose dictionaries** briefly between the legacy fetchers and
+  the providers. The providers consume them immediately, but the seam is visible.
+- **Relative volume still uses a 10-session lookback**, not the 20 the product spec describes.
 
 ## Phase 3+ (explicitly deferred)
 
@@ -68,7 +92,8 @@ scoring for stock selection, post-market edition, adaptive video duration.
 
 These are deferred on the product spec's own reasoning: the YouTube channel is an unvalidated
 experiment, and this infrastructure would multiply the codebase without changing a single
-frame. Phase 1 exists so that building them later does not mean rebuilding the foundation.
+frame. Phases 1 and 2 exist so that building them later does not mean rebuilding the
+foundation.
 
 ## Rules for contributors
 

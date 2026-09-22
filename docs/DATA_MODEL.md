@@ -19,9 +19,17 @@ not in an edit to the record of what the provider actually returned.
 | `observed_at`      | When the source says it was true (often unknown -> `None`)   |
 | `retrieved_at`     | When we fetched it. Timezone-aware, IST                      |
 | `source_name`      | Stable id: `nse_website`, `yahoo_finance`, `gemini`          |
-| `source_type`      | `SourceType` enum - drives the trust rules                   |
+| `source_type`      | `SourceType` enum - authority: how much its word is worth    |
+| `independence_group` | Which body of evidence this belongs to; resolved from the source registry, or set explicitly (a news publisher) |
 | `source_reference` | Endpoint, URL or ticker where available                      |
 | `metadata`         | Anything source-specific worth keeping                       |
+
+`observed_at` is populated wherever the source publishes a market timestamp - in practice NSE
+only. Everything else records `None` honestly and falls back to `retrieved_at`.
+
+`source_metadata` resolves the full `SourceMetadata` record, completing the
+Fact → Observation → SourceMetadata traceability chain. See `docs/SOURCE_PROVENANCE.md` for
+why authority and independence are stored separately.
 
 Ids are deterministic so the same reading arriving by two routes collapses to one
 observation instead of masquerading as two agreeing sources.
@@ -72,6 +80,22 @@ The contract between market intelligence and any presentation layer.
   `sectors`, `gainers`, `losers`, `events` - shaped close to what the renderer uses, each
   carrying `fact_id`/`fact_ids` back-references into `facts`
 - **`validation_summary`**: status counts, `publication_ready`, `blocking_issues`
+- **`content_safety`**: the Phase 1.1 audit trail (schema 1.1+)
+- **`sources`**: the `SourceMetadata` record for every source that contributed, so an
+  archived report is self-describing (schema 2.0+)
+- **`technicals.candles`**: the OHLC + EMA series the chart draws. These are displayed
+  numbers, so under the Phase 2 presentation invariant they live in the report rather than
+  only in an in-memory DataFrame.
+
+### Schema versions
+
+| Version | Change |
+| --- | --- |
+| 1.0 | Phase 1: facts, observations, validation, presentation sections |
+| 1.1 | adds `content_safety` |
+| 2.0 | Phase 2: report becomes authoritative - adds `sources`, per-observation `independence_group` and `source_metadata`, `technicals.candles`, and provenance recorded at acquisition on catalysts and events |
+
+Reading a 1.x report still works; the sections added in 2.0 come back empty.
 
 Serialise with `to_dict()` / `to_json()`, restore with `from_dict()` / `from_json()`.
 Round-tripping preserves provenance down to individual observations and validation details.

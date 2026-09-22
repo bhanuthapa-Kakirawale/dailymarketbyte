@@ -295,14 +295,31 @@ def _nse_date(txt):
     return dt.datetime.strptime(str(txt).strip()[:11], "%d-%b-%Y").date()
 
 
+def _nse_timestamp(txt):
+    """NSE's own 'as of' stamp, e.g. '18-Sep-2026 15:30:00', as an IST-aware datetime.
+
+    This is the only market timestamp any source in this pipeline actually publishes, so it
+    is kept rather than discarded: it becomes Observation.observed_at, which is what makes a
+    freshness check on NSE data meaningful instead of a check on when we happened to fetch."""
+    try:
+        return dt.datetime.strptime(str(txt).strip()[:20], "%d-%b-%Y %H:%M:%S").replace(tzinfo=IST)
+    except Exception:
+        return None
+
+
 def nse_all_indices(nse: NSE, recap_date) -> dict:
-    """{'NIFTY 50': {'last':..., 'pct':...}, ...} only if NSE's timestamp is the recap session."""
+    """{'NIFTY 50': {'last':..., 'pct':..., 'observed_at':...}, ...} only if NSE's timestamp
+    is the recap session. Each row carries NSE's published timestamp so the acquisition layer
+    does not have to reconstruct provenance it was given."""
     try:
         j = nse.get("/api/allIndices")
-        if _nse_date(j.get("timestamp", "")) != recap_date:
+        stamp = j.get("timestamp", "")
+        if _nse_date(stamp) != recap_date:
             print("[nse] allIndices timestamp is not the recap session, ignoring")
             return {}
-        return {row["index"]: {"last": float(row["last"]), "pct": float(row["percentChange"])}
+        observed_at = _nse_timestamp(stamp)
+        return {row["index"]: {"last": float(row["last"]), "pct": float(row["percentChange"]),
+                               "observed_at": observed_at, "source_timestamp": str(stamp).strip()}
                 for row in j.get("data", []) if row.get("index")}
     except Exception as e:
         print(f"[nse] allIndices unavailable: {e}")

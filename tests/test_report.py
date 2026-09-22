@@ -2,25 +2,25 @@
 import datetime as dt
 import json
 
-from conftest import NOW, REPORT_DATE, SESSION, observation
+from conftest import NOW, REPORT_DATE, SESSION, build_test_report, observation
 
-from adapters.report_builder import build_premarket_report, facts_from, save_report
+from adapters.report_builder import facts_from, save_report
 from core import (Fact, MarketReport, Metric, ReportType, SourceType, ValidationStatus,
                   summarize)
 
 
 def _report(**over):
-    """Build a report from the standard fixtures, with per-test overrides."""
-    kwargs = dict(m=over.pop("m"), tiles=over.pop("tiles", []), fd=over.pop("fd", None),
-                  sec=over.pop("sec", []), gainers=over.pop("gainers", []),
-                  losers=over.pop("losers", []), events=over.pop("events", []),
+    """Build a report from the standard fixtures, through the real provider path."""
+    kwargs = dict(market_dict=over.pop("m"), tiles=over.pop("tiles", []),
+                  flows=over.pop("fd", None), sectors=over.pop("sec", []),
+                  gainers=over.pop("gainers", []), losers=over.pop("losers", []),
+                  events=over.pop("events", []),
                   nifty_reason=over.pop("nifty_reason", "Broad-based buying lifted the index."),
                   ai_facts=over.pop("ai_facts", {}), nse_idx=over.pop("nse_idx", {}),
                   report_date=over.pop("report_date", REPORT_DATE),
-                  universe_label=over.pop("universe_label", "Nifty 100"),
-                  demo=over.pop("demo", False), now=NOW)
+                  demo=over.pop("demo", False))
     kwargs.update(over)
-    return build_premarket_report(**kwargs)
+    return build_test_report(**kwargs)
 
 
 # --------------------------------------------------------------------- assembly
@@ -74,10 +74,15 @@ def test_gift_nifty_is_not_double_counted_as_two_sources(market_dict, tiles, ai_
     assert gift.validation_status is ValidationStatus.PROVISIONAL
 
 
-def test_catalysts_reach_the_report(market_dict, movers):
+def test_catalysts_reach_the_report_with_recorded_provenance(market_dict, movers):
+    """Provenance now travels with the text from acquisition, so the report states where a
+    catalyst came from rather than reconstructing it downstream."""
     gainers, losers = movers
     report = _report(m=market_dict, gainers=gainers, losers=losers)
-    assert report.gainers[0]["catalyst"]["source"] == "google_news_rss"
+    gainer = report.gainers[0]["catalyst"]
+    assert gainer["source"] == "google_news_rss"
+    assert gainer["origin"] == "GOOGLE_NEWS_RSS"
+    assert gainer["inferred"] is False
     assert report.losers[0]["catalyst"]["type"] == "NO_VERIFIED_CATALYST"
 
 
@@ -138,7 +143,7 @@ def test_report_serialises_to_json(market_dict, movers, sectors, tiles, ai_facts
                      ai_facts=ai_facts, events=events, fd={"fii": -1240.5, "dii": 2105.3,
                                                            "source": "NSE"})
     payload = json.loads(report.to_json())
-    assert payload["report_schema_version"] == "1.1"
+    assert payload["report_schema_version"] == "2.0"
     assert payload["validation_summary"]["total_facts"] == len(report.facts)
     assert payload["facts"][0]["observations"][0]["source_type"] in {
         "PRIMARY", "SECONDARY", "AI", "DERIVED", "NEWS", "BROKER"}

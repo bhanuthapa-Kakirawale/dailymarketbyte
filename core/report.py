@@ -17,7 +17,11 @@ from dataclasses import dataclass, field
 from .enums import REQUIRED_METRICS, Metric, ReportType, ValidationStatus, is_critical
 from .models import Fact
 
-REPORT_SCHEMA_VERSION = "1.1"   # 1.1 adds content_safety (Phase 1.1); additive, old readers ignore it
+# 1.1 added content_safety (Phase 1.1). 2.0 makes the report authoritative (Phase 2): it now
+# carries the source registry, per-observation independence groups, the candle series the
+# chart draws, and provenance recorded at acquisition. Reading a 1.x report still works -
+# the added sections simply come back empty.
+REPORT_SCHEMA_VERSION = "2.0"
 
 
 @dataclass
@@ -112,6 +116,7 @@ class MarketReport:
     events: list = field(default_factory=list)
     technicals: dict = field(default_factory=dict)
     content_safety: dict = field(default_factory=dict)
+    sources: dict = field(default_factory=dict)      # source_name -> SourceMetadata.to_dict()
     report_id: str = ""
     metadata: dict = field(default_factory=dict)
 
@@ -158,6 +163,7 @@ class MarketReport:
             "events": self.events,
             "technicals": self.technicals,
             "content_safety": self.content_safety,
+            "sources": self.sources,
             "facts": [f.to_dict() for f in self.facts],
             "metadata": dict(self.metadata),
         }
@@ -182,6 +188,7 @@ class MarketReport:
             events=d.get("events") or [],
             technicals=d.get("technicals") or {},
             content_safety=dict(d.get("content_safety") or {}),
+            sources=dict(d.get("sources") or {}),
             report_id=d.get("report_id", ""),
             metadata=dict(d.get("metadata") or {}),
         )

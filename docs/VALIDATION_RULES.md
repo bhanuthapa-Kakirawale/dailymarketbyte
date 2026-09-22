@@ -44,19 +44,39 @@ sanity ranges `news.py` already enforced (FII/DII within +/-60,000 crore, and so
 **Passing a range check is explicitly not verification.** A plausible wrong number passes.
 This is the reason the LLM rule below cannot be satisfied by range-checking alone.
 
-## 5. Cross-source verification
+## 5. Cross-source verification — counted in independence groups
+
+**Corroboration is counted in independence groups, not in observations.** Two readings from
+one source are one witness however they were fetched, so counting observations would let a
+single source appear to confirm itself. See `docs/SOURCE_PROVENANCE.md`.
 
 Given the observations that survived the checks above:
 
-| Situation                                                     | Status          |
-| ------------------------------------------------------------- | --------------- |
-| No usable observation                                          | `MISSING`       |
-| One non-AI source                                              | `SINGLE_SOURCE` |
-| One AI source, **critical** metric                             | `PROVISIONAL`   |
-| One AI source, non-critical metric                             | `SINGLE_SOURCE` |
-| Two or more sources, disagreeing beyond tolerance              | `CONFLICT`      |
-| Two or more sources agreeing, at least one non-AI              | `VERIFIED`      |
-| Two or more sources agreeing, **all AI**, critical metric      | `PROVISIONAL`   |
+| Situation                                                          | Status          |
+| ------------------------------------------------------------------ | --------------- |
+| No usable observation                                               | `MISSING`       |
+| Any two usable observations disagree beyond tolerance               | `CONFLICT`      |
+| One independent group, non-AI (any number of observations)          | `SINGLE_SOURCE` |
+| One independent group, AI, **critical** metric                      | `PROVISIONAL`   |
+| One independent group, AI, non-critical metric                      | `SINGLE_SOURCE` |
+| Two or more groups agreeing, at least one non-AI                    | `VERIFIED`      |
+| Two or more groups agreeing, **all AI**, critical metric            | `PROVISIONAL`   |
+
+Worked examples:
+
+- NSE + Yahoo agreeing → **VERIFIED** (two groups, one non-AI)
+- Yahoo index endpoint + Yahoo bulk endpoint agreeing → **SINGLE_SOURCE** (one group)
+- Gemini response A + Gemini response B agreeing → **PROVISIONAL** for a critical metric
+- Two Google News items from the same publisher → one group, so **not** corroboration
+- Yahoo + Gemini agreeing → **VERIFIED** (AI corroborated by an acceptable non-AI source)
+
+Disagreement is checked across *all* usable observations, including within one group: two
+readings of one number that do not match is a data problem regardless of whether they were
+ever going to count as corroboration.
+
+`details` records `independence_groups`, `groups_compared`, `group_values`,
+`source_identities`, `values`, `min`/`max`, `difference`, `difference_pct` and the tolerances,
+so an archived verdict can be re-argued without re-fetching anything.
 
 ### Tolerances
 
@@ -80,9 +100,12 @@ changes, sector changes, FII/DII, commodity prices, FX rates:
 
 - An AI-only fact **can never** reach `VERIFIED`. Its ceiling is `PROVISIONAL`.
 - Two agreeing AI observations are still `PROVISIONAL`. Agreement between LLM answers is not
-  independent corroboration.
+  independent corroboration - and because every Gemini answer shares the `GEMINI`
+  independence group, the group rule enforces this structurally rather than by special case.
 - An AI observation **may** form part of a `VERIFIED` fact once an acceptable non-AI source
   independently agrees inside tolerance.
+- Grounded Google Search does **not** make Gemini a primary source. It remains
+  `AI_DISCOVERY`.
 
 In today's pipeline this means GIFT Nifty and Brent - which only Gemini can source - are
 correctly recorded as `PROVISIONAL` rather than verified, while Gemini's Nifty close is
@@ -102,6 +125,14 @@ forget it.
 An optional fact being `MISSING` never blocks. NSE blocking cloud IPs and Gemini returning
 nothing is an ordinary day on GitHub Actions, not a failure.
 
-**Phase 1 records this verdict; it does not enforce it.** The legacy safeguards in `main.py`
-still do the actual blocking and run earlier. Making `publication_ready` authoritative is a
-Phase 2 decision, because it changes production behaviour.
+**Phase 2 makes this verdict authoritative.** `main.check_publication` runs immediately after
+the report is built and before anything is rendered: a report that is not fit to publish stops
+the run, writes its JSON for diagnosis, and produces no video and no upload. Demo runs are
+exempt, because synthetic data is never published anywhere.
+
+The legacy >0.2% Nifty `RuntimeError` in `main.collect` remains as defence in depth, but the
+authoritative verdict on whether sources agree is now the `INDEX_CLOSE` fact's
+`CrossSourceValidator` result.
+
+Content safety (`docs/CONTENT_SAFETY.md`) is a **separate and equally binding** gate. Data
+validation and content safety both have to pass; neither can override the other.

@@ -150,12 +150,25 @@ def _num(x):
         return None
 
 
+# Where a narrative item actually came from. Recorded at acquisition, never inferred later by
+# string-matching the finished text against candidate headlines - only this layer can still
+# see which branch produced a reason, and a reconstruction downstream is a guess.
+ORIGIN_GEMINI = "GEMINI"
+ORIGIN_GEMINI_SEARCH = "GEMINI_SEARCH"
+ORIGIN_GOOGLE_NEWS = "GOOGLE_NEWS_RSS"
+ORIGIN_RULE_EXPIRY = "RULE_FNO_EXPIRY"
+ORIGIN_RULE_PLACEHOLDER = "RULE_NO_EVENTS_FOUND"
+ORIGIN_FIXTURE = "DEMO_FIXTURE"
+ORIGIN_NONE = "NO_VERIFIED_CATALYST"
+
+
 # ----------------------------------------------------------------------------- events (rules/fallback)
 def _rule_events(today: dt.date) -> list:
     if today.weekday() != EXPIRY_WEEKDAY:
         return []
     monthly = (today + dt.timedelta(days=7)).month != today.month
-    return [{"tag": "F&O", "text": f"Nifty {'monthly' if monthly else 'weekly'} F&O expiry today"}]
+    return [{"tag": "F&O", "text": f"Nifty {'monthly' if monthly else 'weekly'} F&O expiry today",
+             "source": ORIGIN_RULE_EXPIRY, "publisher": None}]
 
 
 _GENERIC_ROUNDUP = re.compile(
@@ -188,7 +201,8 @@ def _fallback_events(today: dt.date) -> list:
             key = h["title"].lower()
             if key not in seen:
                 seen.add(key)
-                out.append({"tag": tag, "text": clip_words(h["title"], 11)})
+                out.append({"tag": tag, "text": clip_words(h["title"], 11),
+                            "source": ORIGIN_GOOGLE_NEWS, "publisher": h.get("source") or None})
                 break
     return out
 
@@ -279,28 +293,52 @@ Reply with JSON only:
     print(f"[gemini] facts accepted: {list(facts)}")
 
     # --- reasons ---
+    # Each mover records HOW its reason was obtained, at the moment the branch is taken.
+    # Downstream cannot tell a Gemini sentence from a clipped headline by looking at the
+    # text, so provenance that is not captured here is provenance that is lost.
     reasons = data.get("stock_reasons") if isinstance(data.get("stock_reasons"), dict) else {}
     for r in movers:
         reason = reasons.get(r["symbol"])
+        origin, publisher, headline_date = ORIGIN_GEMINI, None, None
         # no-key/no-answer fallback: only trust Google's top result if it's actually dated
         # to this session - otherwise an old or forward-looking headline would misattribute
         # the move, so admit we don't have a verified reason instead of guessing.
         if not reason and r["_same_day_count"]:
-            reason = r["headlines"][0]["title"]
-        r["reason"] = clip_words(reason or "No major company-specific news; moved with sector trend.", 13)
+            head = r["headlines"][0]
+            reason = head["title"]
+            origin, publisher = ORIGIN_GOOGLE_NEWS, head.get("source") or None
+            headline_date = head.get("date")
+        if not reason:
+            origin, publisher = ORIGIN_NONE, None
+            reason = "No major company-specific news; moved with sector trend."
+        r["reason"] = clip_words(reason, 13)
+        r["reason_source"] = origin
+        r["reason_publisher"] = publisher
+        r["reason_headline_date"] = str(headline_date) if headline_date else None
         del r["_same_day_count"]
-    nifty_reason_raw = data.get("nifty_reason") or (nifty_same_day[0]["title"] if nifty_same_day else "")
-    nifty_reason = clip_words(nifty_reason_raw, 15) if nifty_reason_raw else ""
+
+    nifty_text = data.get("nifty_reason")
+    nifty_origin, nifty_publisher = ORIGIN_GEMINI, None
+    if not nifty_text and nifty_same_day:
+        nifty_text = nifty_same_day[0]["title"]
+        nifty_origin = ORIGIN_GOOGLE_NEWS
+        nifty_publisher = nifty_same_day[0].get("source") or None
+    if not nifty_text:
+        nifty_origin = ORIGIN_NONE
+    nifty_reason = {"text": clip_words(nifty_text, 15) if nifty_text else "",
+                    "source": nifty_origin, "publisher": nifty_publisher}
 
     # --- events ---
     events = _rule_events(today)
-    llm = [{"tag": str(e.get("tag", "EVENT"))[:8].upper(), "text": clip_words(str(e.get("text", "")), 11)}
+    llm = [{"tag": str(e.get("tag", "EVENT"))[:8].upper(), "text": clip_words(str(e.get("text", "")), 11),
+            "source": ORIGIN_GEMINI_SEARCH, "publisher": None}
            for e in data.get("events", []) if isinstance(e, dict) and e.get("text")]
     if not llm:
         llm = _fallback_events(today)
     if any("expiry" in e["text"].lower() for e in llm):
         events = []
     events = (events + llm)[:5]
-    events = events or [{"tag": "INFO", "text": "No major scheduled events; track global cues"}]
+    events = events or [{"tag": "INFO", "text": "No major scheduled events; track global cues",
+                         "source": ORIGIN_RULE_PLACEHOLDER, "publisher": None}]
 
     return facts, nifty_reason, events

@@ -62,6 +62,7 @@ class Observation:
     observed_at: dt.datetime | None = None
     source_reference: str | None = None
     observation_id: str = ""
+    independence_group: str = ""
     metadata: dict = field(default_factory=dict)
 
     def __post_init__(self):
@@ -69,10 +70,27 @@ class Observation:
             ident = "-".join(_slug(x) for x in
                              (self.metric.value, self.instrument, self.source_name, self.market_date))
             object.__setattr__(self, "observation_id", f"obs_{ident}")
+        if not self.independence_group:
+            # Resolved once, at construction, from the source registry. Callers with better
+            # information (a news item's publisher, say) pass it explicitly instead.
+            from .sources import independence_group_for
+            object.__setattr__(self, "independence_group", independence_group_for(self.source_name))
 
     @property
     def is_ai(self) -> bool:
         return self.source_type == SourceType.AI
+
+    @property
+    def source_metadata(self):
+        """The registry record for this source - the SourceMetadata half of the
+        Fact -> Observation -> SourceMetadata traceability chain."""
+        from .sources import source_metadata
+        meta = source_metadata(self.source_name)
+        if meta.independence_group == self.independence_group:
+            return meta
+        # A per-observation group (news publisher) overrides the registry default.
+        from dataclasses import replace as _replace
+        return _replace(meta, independence_group=self.independence_group)
 
     def to_dict(self) -> dict:
         return {
@@ -86,7 +104,9 @@ class Observation:
             "retrieved_at": _iso(self.retrieved_at),
             "source_name": self.source_name,
             "source_type": self.source_type.value,
+            "independence_group": self.independence_group,
             "source_reference": self.source_reference,
+            "source_metadata": self.source_metadata.to_dict(),
             "metadata": dict(self.metadata),
         }
 
@@ -104,6 +124,7 @@ class Observation:
             observed_at=_parse_dt(d.get("observed_at")),
             source_reference=d.get("source_reference"),
             observation_id=d.get("observation_id", ""),
+            independence_group=d.get("independence_group", ""),
             metadata=dict(d.get("metadata") or {}),
         )
 

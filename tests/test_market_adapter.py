@@ -148,46 +148,13 @@ def test_empty_ai_facts_yield_nothing():
     assert _news().observe_facts(None) == []
 
 
-def test_catalyst_from_headline_is_attributed_to_news(movers):
-    gainers, _ = movers
-    catalyst = _news().classify_catalyst(gainers[0])
-    assert catalyst["source"] == "google_news_rss"
-    assert catalyst["source_type"] == SourceType.NEWS.value
-
-
-def test_missing_catalyst_is_reported_as_such(movers):
-    _, losers = movers
-    catalyst = _news().classify_catalyst(losers[0])
-    assert catalyst["type"] == "NO_VERIFIED_CATALYST"
-    assert catalyst["source"] is None
-
-
-def test_ai_written_catalyst_is_attributed_to_gemini():
-    row = {"reason": "Brokerage upgrade drove buying interest.", "headlines": []}
-    catalyst = _news().classify_catalyst(row)
-    assert catalyst["source"] == "gemini" and catalyst["source_type"] == SourceType.AI.value
-
-
-def test_catalyst_classification_is_marked_inferred(movers):
-    """ai_pass() does not record which path produced a reason, so this is reconstruction."""
-    gainers, _ = movers
-    assert _news().classify_catalyst(gainers[0])["inferred"] is True
-
-
 def test_no_catalyst_sentinel_still_matches_the_news_module():
-    """Catalyst classification recognises "no catalyst" by comparing against a literal copied
-    from news.py. If that fallback text is ever reworded, this fails loudly instead of
-    silently re-labelling every uncatalysed move as an AI-written reason."""
+    """main.apply_content_safety substitutes this literal when a reason is blocked, and
+    news.ai_pass emits it when no catalyst was found. If either copy is reworded without the
+    other, this fails loudly rather than the two drifting apart silently."""
     import inspect
 
     import news
     assert NO_CATALYST_TEXT in inspect.getsource(news.ai_pass)
     assert news.clip_words(NO_CATALYST_TEXT, 13) == NO_CATALYST_TEXT, \
         "sentinel must survive clip_words unchanged, or reasons will never match it"
-
-
-def test_rule_based_expiry_event_is_identifiable(events):
-    described = _news().describe_events(events)
-    expiry, ipo = described[0], described[1]
-    assert expiry["source"] == "expiry_calendar_rule" and expiry["provenance_resolved"] is True
-    assert ipo["source"] is None and ipo["provenance_resolved"] is False

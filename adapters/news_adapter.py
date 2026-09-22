@@ -1,10 +1,13 @@
-"""Translates news.ai_pass() output into canonical Observations and catalyst records.
+"""Translates news.ai_pass()'s numeric fact set into canonical AI Observations.
 
 Everything Gemini returns is SourceType.AI, without exception. That single classification is
 what lets validation refuse to mark a critical number VERIFIED on an LLM's say-so, while
 still letting the same number corroborate a Yahoo or NSE reading.
 
-news.py is untouched: it still returns the same (facts, nifty_reason, events) triple.
+Catalyst and event provenance used to be reconstructed here by string-matching finished text
+against candidate headlines. Phase 2 removed that: news.ai_pass now records which branch
+produced each reason and event as it happens, and providers/news.py carries it through, so
+there is nothing left to infer.
 """
 from __future__ import annotations
 
@@ -22,7 +25,7 @@ NO_CATALYST_TEXT = "No major company-specific news; moved with sector trend."
 
 
 class NewsAdapter:
-    """Observations and catalysts from the AI/news layer for one session."""
+    """Observations for the AI-sourced numeric facts of one session."""
 
     def __init__(self, session_date: dt.date, report_date: dt.date,
                  retrieved_at: dt.datetime, demo: bool = False):
@@ -81,66 +84,6 @@ class NewsAdapter:
                                  self.session_date, basis="net cash market, provisional"))
 
         return [o for o in out if o]
-
-    # ------------------------------------------------------------------ catalysts
-    def classify_catalyst(self, row: dict) -> dict:
-        """Work out where a mover's on-screen reason actually came from.
-
-        news.ai_pass() writes r["reason"] from one of three paths without recording which,
-        so the origin is recovered by replaying its own rule: the no-catalyst sentinel, an
-        RSS headline it clipped, or Gemini. Reconstructed, not stored - hence `inferred`.
-        """
-        reason = (row or {}).get("reason") or ""
-        if not reason:
-            return {"type": "NO_VERIFIED_CATALYST", "source": None,
-                    "source_type": None, "text": "", "inferred": True}
-
-        if reason.strip() == NO_CATALYST_TEXT:
-            return {"type": "NO_VERIFIED_CATALYST", "source": None, "source_type": None,
-                    "text": reason, "inferred": True}
-
-        for headline in row.get("headlines") or []:
-            title = headline.get("title") or ""
-            if title and (title == reason or _clip(title) == reason):
-                return {"type": "POSSIBLE_CATALYST", "source": SRC_GOOGLE_NEWS,
-                        "source_type": SourceType.NEWS.value, "text": reason,
-                        "headline_date": str(headline.get("date")) if headline.get("date") else None,
-                        "publisher": headline.get("source"), "inferred": True}
-
-        source = SRC_DEMO if self.demo else SRC_GEMINI
-        kind = SourceType.DERIVED.value if self.demo else SourceType.AI.value
-        return {"type": "POSSIBLE_CATALYST", "source": source, "source_type": kind,
-                "text": reason, "inferred": True,
-                "note": "AI-written summary; not an independently verified catalyst"}
-
-    def describe_events(self, events: list) -> list:
-        """Scheduled events with whatever provenance can be established.
-
-        The rule-based F&O expiry entry is identifiable; Gemini answers and the Google News
-        fallback are not distinguishable from ai_pass()'s return value, so those are marked
-        unresolved rather than attributed to either.
-        """
-        out = []
-        for event in events or []:
-            text, tag = event.get("text", ""), event.get("tag", "")
-            if tag == "F&O" and "expiry" in text.lower():
-                source, kind = "expiry_calendar_rule", SourceType.DERIVED.value
-            elif self.demo:
-                source, kind = SRC_DEMO, SourceType.DERIVED.value
-            else:
-                source, kind = None, None
-            out.append({"tag": tag, "text": text, "source": source, "source_type": kind,
-                        "provenance_resolved": source is not None})
-        return out
-
-
-def _clip(title: str) -> str:
-    """Apply news.clip_words the same way ai_pass did, so headline matching is exact."""
-    try:
-        import news
-        return news.clip_words(title, 13)
-    except Exception:
-        return title
 
 
 __all__ = ["NewsAdapter", "SRC_GEMINI", "SRC_GOOGLE_NEWS", "NO_CATALYST_TEXT"]

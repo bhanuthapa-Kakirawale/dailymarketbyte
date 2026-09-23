@@ -10,6 +10,11 @@ from PIL import Image, ImageDraw, ImageFont
 
 from config import (W, H, FPS, ASSETS_DIR, BG1, BG2, CARD, CARD_ACTIVE, TEXT, SUB,
                     ACCENT, GREEN, RED, YELLOW, MUSIC_VOLUME, fmt_in)
+from editorial import HEATMAP_CLIP_PCT, HEATMAP_COLUMNS, HEATMAP_MAX_BG_MIX, SceneType
+
+# Ranked-mover scan list (Top 5 Gainers / Top 5 Losers): how far a row's magnitude bar may
+# extend, in pixels, reserved at the right edge of each row alongside the printed percentage.
+RANKED_MOVER_BAR_W = 220
 
 # Layout (inside the Shorts safe zone: bottom ~20% and right edge are covered by YouTube UI)
 X0, X1 = 50, 1030
@@ -218,12 +223,19 @@ def caption_layer(text, frac):
 
 # ----------------------------------------------------------------------------- scenes
 class Scene:
+    """One scene. `show_ticker` is per-scene so a viewer reading a number is not also being
+    asked to track a scrolling strip - competing motion during reading time is the cheapest
+    thing to remove."""
+    show_ticker = True
+
     def __init__(self, dur, texts):
         self.dur, self.texts = dur, texts
         self._cache = OrderedDict()
 
     def captions(self):
         k = len(self.texts)
+        if not k:
+            return []
         return [(i * self.dur / k, self.dur / k, c) for i, c in enumerate(self.texts)]
 
     def caption(self, t):
@@ -260,106 +272,552 @@ def anim_key(t, until):
     return int(min(t, until) * FPS)
 
 
-class IntroScene(Scene):
-    def __init__(self, info, hook, dur=2.0):
-        super().__init__(dur, [f"Your daily market byte for {info['recap_str']}."])
-        self.hook = hook
+class HookScene(Scene):
+    """The opening three seconds: one dominant fact, branding kept small and secondary.
+
+    A viewer scrolling past does not care what the channel is called yet - they care whether
+    anything happened. So the number is the biggest thing on screen; the wordmark is left to
+    the header, where it already appears on every frame.
+    """
+    show_ticker = True
+
+    def __init__(self, plan, dur=3.0):
+        super().__init__(dur, [])
+        self.plan = plan
 
     def key(self, t):
-        return anim_key(t, 0.8)
+        return anim_key(t, 1.0)
 
     def draw(self, d, L, t):
-        e = ease(t / 0.7)
-        f = font(100 + 30 * e)
-        y1 = 500 - 60 * e
-        tw1 = tlen("DAILY MARKET", f)
-        d.text(((W - tw1) / 2, y1), "DAILY MARKET", font=f, fill=TEXT)
-        y2 = y1 + 130
-        tw2 = tlen("BYTE", f)
-        d.text(((W - tw2) / 2, y2), "BYTE", font=f, fill=ACCENT)
-        s = "Indian Stock Market Recap"
-        d.text(((W - tlen(s, font(50))) / 2, 830), s, font=font(50), fill=TEXT)
-        if self.hook:
-            fh = fit(self.hook, 880, 40)
-            hw = tlen(self.hook, fh)
-            d.rounded_rectangle(((W - hw) / 2 - 30, 930, (W + hw) / 2 + 30, 1010), 22, outline=YELLOW, width=3,
-                                fill=(40, 36, 10, int(200 * e)))
-            d.text(((W - hw) / 2, 947), self.hook, font=fh, fill=YELLOW)
-        items = [("GLOBAL", ACCENT), ("NIFTY", TEXT), ("SECTORS", YELLOW), ("GAINERS", GREEN), ("LOSERS", RED)]
-        fs = font(28)
-        widths = [tlen(i, fs) + 36 for i, _ in items]
-        x = (W - sum(widths) - 14 * 4) / 2
-        for k, ((it, c), w) in enumerate(zip(items, widths)):
-            if t > 0.1 + k * 0.08:
-                d.rounded_rectangle((x, 1060, x + w, 1114), 27, outline=c, width=3)
-                d.text((x + 18, 1071), it, font=fs, fill=c)
-            x += w + 14
+        p = self.plan
+        e = ease(t / 0.55)
+        colour = TEXT if p.primary_positive is None else pct_color(1 if p.primary_positive else -1)
+
+        label = p.primary_text
+        if label:
+            fl = fit(label, 960, 66)
+            d.text(((W - tlen(label, fl)) / 2, 470 - 30 * (1 - e)), label, font=fl, fill=SUB)
+
+        if p.primary_value:
+            fv = fit(p.primary_value, 980, 168, min_size=96)
+            d.text(((W - tlen(p.primary_value, fv)) / 2, 560), p.primary_value, font=fv, fill=colour)
+
+        if p.secondary_text:
+            fs = fit(p.secondary_text, 940, 50, min_size=34)
+            lines = wrap(p.secondary_text, fs, 940)[:2]
+            y = 790
+            for line in lines:
+                d.text(((W - tlen(line, fs)) / 2, y), line, font=fs, fill=TEXT)
+                y += int(fs.size * 1.25)
+
+        # No wordmark here: `render` already draws it across the top of every frame, so a
+        # second copy was both redundant and a hardcoded string the plan never saw - outside
+        # `public_text()`, and so outside the content scan and the reading budget.
 
 
-class GlobalScene(Scene):
-    def __init__(self, tiles, texts, dur=7.0):
-        super().__init__(dur, texts)
-        self.tiles = tiles[:6]
+BAND_BOTTOM = 1195   # bottom of the safe zone content sits above (see CLAUDE.md safe-zone note)
+
+
+# ----------------------------------------------------------------------------- heatmap grid
+def heatmap_intensity(pct) -> float:
+    """Deterministic colour intensity in [-1, 1] for one heatmap cell's percent move.
+
+    The move is CLIPPED to +/-HEATMAP_CLIP_PCT before scaling, not compressed - clipping
+    keeps the mapping linear and easy to reason about, and stops a single outlier cell from
+    washing every other cell's colour toward a uniform pale shade. A move this large is rare;
+    when it happens, that cell simply reads as fully saturated rather than stretching the
+    whole grid's scale around it. No randomness, no model - the same input always maps to the
+    same intensity.
+    """
+    if pct is None:
+        return 0.0
+    clipped = max(-HEATMAP_CLIP_PCT, min(HEATMAP_CLIP_PCT, float(pct)))
+    return clipped / HEATMAP_CLIP_PCT
+
+
+def heatmap_cell_colour(pct) -> tuple:
+    """A cell's background: neutral CARD blended toward GREEN/RED by `heatmap_intensity`,
+    capped at HEATMAP_MAX_BG_MIX so even the most extreme cell keeps enough contrast for its
+    text to stay readable. The background carries magnitude; it is never the only carrier of
+    sign - the cell's percentage text is always drawn too, with its own +/- sign."""
+    intensity = heatmap_intensity(pct)
+    if intensity >= 0:
+        return mix(CARD, GREEN, intensity * HEATMAP_MAX_BG_MIX)
+    return mix(CARD, RED, -intensity * HEATMAP_MAX_BG_MIX)
+
+
+def draw_heatmap_grid(d, items, x0, x1, top, bottom, t, columns=HEATMAP_COLUMNS,
+                      max_row_h=190, gap=14):
+    """A reusable scan grid: `columns`-wide, rows sized from item count, each cell coloured by
+    `heatmap_cell_colour` and always labelled with its name and signed percentage.
+
+    Built generically over anything shaped like an `EditorialItem` (title/value/numeric/
+    positive) rather than tied to sectors, so it is a genuinely reusable component - any
+    small, glanceable set of labelled percentages can use it. Items are drawn in the order
+    given (row-major, left to right, top to bottom); the caller decides that order - here,
+    sectors are already sorted strongest to weakest, so the grid reads the same direction a
+    narrative list would, just all at once instead of one row at a time.
+
+    No explanatory text is drawn per cell - a name and a signed percentage, nothing else -
+    text density stays low regardless of how many cells are shown.
+    """
+    n = len(items)
+    if n == 0:
+        return
+    rows = math.ceil(n / columns)
+    cell_w = (x1 - x0 - gap * (columns - 1)) / columns
+    row_h = min(max_row_h, (bottom - top - gap * (rows - 1)) / rows)
+    row_h = max(row_h, 100)
+
+    for i, item in enumerate(items):
+        row, col = divmod(i, columns)
+        e = ease((t - col * 0.05 - row * 0.12) / 0.4)
+        if e <= 0:
+            continue
+        dy = (1 - e) * 24
+
+        cx0 = x0 + col * (cell_w + gap)
+        cy0 = top + row * (row_h + gap)
+        cx1, cy1 = cx0 + cell_w, cy0 + row_h
+        if cy1 > bottom + row_h:      # a stray extra row would run off the safe zone
+            continue
+
+        bg = heatmap_cell_colour(item.numeric)
+        value_colour = TEXT if item.positive is None else pct_color(1 if item.positive else -1)
+
+        d.rounded_rectangle((cx0, cy0 + dy, cx1, cy1 + dy), 14, fill=bg)
+
+        fn = fit(item.title, cell_w - 24, 30, min_size=18)
+        d.text((cx0 + 14, cy0 + dy + 14), item.title, font=fn, fill=TEXT)
+
+        fv = fit(item.value, cell_w - 24, 42, min_size=22)
+        d.text((cx0 + 14, cy0 + dy + row_h - fv.size - 16), item.value, font=fv,
+               fill=value_colour)
+
+
+def draw_global_grid(d, items, x0, x1, top, bottom, t, gap=20):
+    """A compact scan grid for GLOBAL cues - up to 4 cells, name + signed percentage, nothing
+    else. Balanced by count rather than forcing a fixed column count: 2 or 3 cues get one row
+    that wide (a clean 2-up or 3-up layout), 4 get a 2x2 grid, so there is never a half-empty
+    row. Unlike `draw_heatmap_grid` the cell background stays neutral (CARD) with a coloured
+    accent stripe, matching GLOBAL's existing card look - only the count and layout changed,
+    not the visual language; positive/negative is still carried by both colour and the +/-
+    sign already in the printed value, never colour alone.
+    """
+    n = len(items)
+    if n == 0:
+        return
+    columns = n if n <= 3 else 2
+    rows = math.ceil(n / columns)
+    cell_w = (x1 - x0 - gap * (columns - 1)) / columns
+    cell_h = min(230, (bottom - top - gap * (rows - 1)) / rows)
+    cell_h = max(cell_h, 150)
+
+    for i, item in enumerate(items):
+        row, col = divmod(i, columns)
+        e = ease((t - col * 0.06 - row * 0.14) / 0.4)
+        if e <= 0:
+            continue
+        dy = (1 - e) * 26
+
+        cx0 = x0 + col * (cell_w + gap)
+        cy0 = top + row * (cell_h + gap)
+        cx1, cy1 = cx0 + cell_w, cy0 + cell_h
+        if cy1 > bottom + cell_h:
+            continue
+
+        colour = TEXT if item.positive is None else pct_color(1 if item.positive else -1)
+
+        d.rounded_rectangle((cx0, cy0 + dy, cx1, cy1 + dy), 22, fill=CARD)
+        d.rounded_rectangle((cx0, cy0 + dy, cx1, cy0 + dy + 6), 4, fill=colour)
+
+        ft = fit(item.title, cell_w - 44, 40, min_size=22)
+        d.text((cx0 + 22, cy0 + dy + 26), item.title, font=ft, fill=TEXT)
+
+        fv = fit(item.value, cell_w - 44, 66, min_size=32)
+        d.text((cx0 + 22, cy0 + dy + cell_h - fv.size - 26), item.value, font=fv, fill=colour)
+
+
+def draw_ranked_mover_list(d, items, x0, x1, top, bottom, t, max_abs_pct=None, columns=1,
+                           max_row_h=180, gap=16, bar_w=RANKED_MOVER_BAR_W):
+    """A reusable ranked-mover scan list: rank, symbol and signed percentage, plus a
+    deterministic magnitude bar - the same "many small facts scanned at once" grammar as
+    `draw_heatmap_grid`, built generically over anything shaped like an `EditorialItem`
+    (title/value/rank/numeric/positive) rather than tied to gainers or losers specifically.
+
+    Rows are drawn in the order given - the caller (`gainers_scene`/`losers_scene`) has
+    already ranked them, largest move first - top to bottom, one row per item.
+
+    The bar is a SECONDARY encoding: its length is `abs(item.numeric) / max_abs_pct` (the
+    largest move actually shown in this scene, so the scale is always local and deterministic
+    for the same items), scaled within the reserved `bar_w` pixels. The percentage itself is
+    always printed too, and its sign is always in the text - direction is never conveyed by
+    colour alone.
+    """
+    n = len(items)
+    if n == 0:
+        return
+    row_h = min(max_row_h, (bottom - top - gap * (n - 1)) / n)
+    row_h = max(row_h, 92)
+    max_abs = max_abs_pct if max_abs_pct else max((abs(i.numeric or 0) for i in items), default=1.0)
+    max_abs = max_abs or 1.0
+
+    for i, item in enumerate(items):
+        e = ease((t - i * 0.12) / 0.4)
+        if e <= 0:
+            continue
+        dx = -(1 - e) * 90
+        y0 = top + i * (row_h + gap)
+        y1 = y0 + row_h
+        if y1 > bottom + row_h:
+            continue
+
+        colour = TEXT if item.positive is None else pct_color(1 if item.positive else -1)
+
+        d.rounded_rectangle((x0 + dx, y0, x1 + dx, y1), 18, fill=CARD)
+        d.rounded_rectangle((x0 + dx, y0, x0 + 8 + dx, y1), 4, fill=colour)
+
+        chip = min(row_h - 24, 58)
+        cy = y0 + (row_h - chip) / 2
+        cx = x0 + dx + 26
+        d.rounded_rectangle((cx, cy, cx + chip, cy + chip), chip / 2, fill=ACCENT)
+        rank_text = str(item.rank or (i + 1))
+        fr = fit(rank_text, chip - 12, 34, min_size=18)
+        d.text((cx + (chip - tlen(rank_text, fr)) / 2, cy + (chip - fr.size) / 2 - 2),
+              rank_text, font=fr, fill=(10, 14, 30))
+
+        value_font = fit(item.value, 150, 46, min_size=26) if item.value else None
+        value_w = (tlen(item.value, value_font) + 24) if value_font else 0
+        bar_x1 = x1 + dx
+        bar_x0 = bar_x1 - bar_w
+        name_x0 = cx + chip + 24
+        name_x1 = bar_x0 - value_w - 24
+
+        fn = fit(item.title, max(20, name_x1 - name_x0), 46, min_size=24)
+        d.text((name_x0, y0 + (row_h - fn.size) / 2), item.title, font=fn, fill=TEXT)
+
+        if value_font:
+            d.text((bar_x0 - value_w + 12, y0 + (row_h - value_font.size) / 2), item.value,
+                  font=value_font, fill=colour)
+
+        bar_h = min(24, row_h * 0.22)
+        by = y0 + (row_h - bar_h) / 2
+        d.rounded_rectangle((bar_x0, by, bar_x1, by + bar_h), bar_h / 2, fill=mix(CARD, colour, 0.18))
+        frac = max(0.0, min(1.0, abs(item.numeric or 0) / max_abs))
+        filled = max(bar_h, bar_w * frac) if frac > 0 else 0
+        if filled > 0:
+            d.rounded_rectangle((bar_x0, by, bar_x0 + filled, by + bar_h), bar_h / 2, fill=colour)
+
+
+def _distribute(n, heights, top, bottom, gap=22, max_gap=None):
+    """Y positions for `n` stacked blocks of the given heights, spreading any leftover room
+    in the band as extra gap between them (and a little above the first one) instead of
+    leaving it all as dead space below the last block.
+
+    This is deliberately not "vertically centre the stack": the first block still starts
+    close to the section heading, so the heading and its content keep reading as one group.
+
+    `max_gap` caps how much of that leftover becomes gap between items - unset it behaves as
+    before; capped, anything past the cap is simply left as trailing space below the last
+    block instead of stretching two cards apart into a canyon.
+    """
+    if n == 0:
+        return []
+    total = sum(heights) + gap * max(n - 1, 0)
+    extra = max(0.0, (bottom - top) - total)
+    lead = extra * 0.12 if n == 1 else 0.0       # a single block gets a little air above it
+    extra_gap = (extra - lead) / max(n - 1, 1) if n > 1 else 0.0
+    if max_gap is not None:
+        extra_gap = min(extra_gap, max_gap)
+    ys, y = [], top + lead
+    for h in heights:
+        ys.append(y)
+        y += h + gap + extra_gap
+    return ys
+
+
+class RowsScene(Scene):
+    """Draws a ScenePlan's items. The layout is chosen by scene type, but every layout draws
+    exactly the items the plan already selected - low information density, higher visual
+    density: the same small set of facts is made to occupy more of the usable canvas through
+    size, spacing and hierarchy, never through more words or more cards.
+
+    SECTORS gets a strongest-vs-weakest side-by-side comparison, or - once there are enough
+    sectors for it to be worth it - a scannable heatmap grid (`draw_heatmap_grid`); GAINERS
+    and LOSERS get a ranked scan list (`draw_ranked_mover_list`); GLOBAL gets a compact scan
+    grid (`draw_global_grid`, 2-4 cells, balanced by count); MOVERS and FLOWS get large
+    stacked panels; CONTEXT and EVENTS keep the card style but spread their (still capped)
+    cards across the vertical band with `_distribute` instead of stacking them under the
+    heading and leaving everything below empty.
+    """
+    show_ticker = False
+
+    def __init__(self, plan, dur=5.0):
+        super().__init__(dur, [])
+        self.plan = plan
 
     def key(self, t):
-        return anim_key(t, 1.8)
+        return anim_key(t, 1.2)
 
     def draw(self, d, L, t):
-        self.section(d, "GLOBAL CUES", ACCENT, "Overnight markets & commodities | morning IST")
-        tw, th, gap = 480, 216, 20
-        for i, tl in enumerate(self.tiles):
-            st = i * 0.12
-            e = ease((t - st) / 0.45)
+        p = self.plan
+        self.section(d, p.primary_text, ACCENT, p.secondary_text or None)
+        y0 = TOP + (30 if p.secondary_text else 0)
+        if not p.items:
+            return
+        if p.scene_type is SceneType.SECTORS and p.metadata.get("presentation") == "HEATMAP":
+            draw_heatmap_grid(d, p.items, X0, X1, y0, BAND_BOTTOM, t)
+        elif p.scene_type in (SceneType.GAINERS, SceneType.LOSERS):
+            draw_ranked_mover_list(d, p.items, X0, X1, y0, BAND_BOTTOM, t,
+                                   max_abs_pct=p.metadata.get("scan_max_abs_pct"))
+        elif p.scene_type is SceneType.GLOBAL and p.metadata.get("presentation") == "GLOBAL_SCAN":
+            draw_global_grid(d, p.items, X0, X1, y0, BAND_BOTTOM, t)
+        elif p.scene_type is SceneType.SECTORS and len(p.items) >= 2:
+            self._draw_comparison(d, p, t, y0)
+        elif p.scene_type in (SceneType.MOVERS, SceneType.FLOWS):
+            self._draw_panels(d, p, t, y0)
+        elif p.scene_type is SceneType.CONTEXT:
+            self._draw_context(d, p, t, y0)
+        else:
+            self._draw_cards(d, p, t, y0)
+
+    # ------------------------------------------------------------------ CONTEXT
+    def _draw_context(self, d, p, t, y0):
+        """Strong hierarchy, not a card: the subject (`item.label` - NIFTY/VIX/FII/DII, the
+        short tag the planner already attaches) is the large key element, and the already
+        glanceable interpretation (`context_line()`'s output) sits underneath it, smaller.
+
+        Panels are sized like FLOWS/MOVERS - one or two of them are meant to read as the
+        scene's main content, not as a card floating near the heading with the rest of the
+        canvas empty beneath it.
+        """
+        items = p.items
+        heights = [max(200, (BAND_BOTTOM - y0 - 22 * (len(items) - 1)) / len(items))
+                  for _ in items]
+        ys = _distribute(len(items), heights, y0, BAND_BOTTOM)
+        for i, (item, y, h) in enumerate(zip(items, ys, heights)):
+            e = ease((t - i * 0.2) / 0.5)
             if e <= 0:
                 continue
-            x = X0 + (i % 2) * (tw + gap)
-            y = TOP + (i // 2) * (th + gap) + (1 - e) * 40
-            d.rounded_rectangle((x, y, x + tw, y + th), 24, fill=CARD)
-            d.rounded_rectangle((x, y, x + 8, y + th), 4, fill=pct_color(tl["pct"]))
-            d.text((x + 30, y + 24), tl["label"], font=font(30), fill=SUB)
-            prev = tl["value"] / (1 + tl["pct"] / 100)
-            v = prev + (tl["value"] - prev) * ease((t - st) / 1.1)
-            d.text((x + 30, y + 70), fmt_val(v, tl["dec"], tl.get("prefix", "")), font=fit(
-                fmt_val(tl["value"], tl["dec"], tl.get("prefix", "")), tw - 60, 58), fill=TEXT)
-            up = tl["pct"] >= 0
-            triangle(d, x + 30, y + 156, 24, up, pct_color(tl["pct"]))
-            d.text((x + 66, y + 146), f"{tl['pct']:+.2f}%", font=font(38), fill=pct_color(tl["pct"]))
+            dy = (1 - e) * 50
+            colour = TEXT if item.positive is None else pct_color(1 if item.positive else -1)
 
+            d.rounded_rectangle((X0, y + dy, X1, y + h), 26, fill=CARD)
+            d.rounded_rectangle((X0, y + dy, X0 + 8, y + h), 4, fill=colour)
 
-class FiiDiiScene(Scene):
-    def __init__(self, fd, recap_str, texts, dur=5.0):
-        super().__init__(dur, texts)
-        self.fd, self.recap = fd, recap_str
+            ft = fit(item.title, X1 - X0 - 84, 42, min_size=28)
+            lines = wrap(item.title, ft, X1 - X0 - 84)[:2]
+            label_h = int(font(70).size * 1.15) if item.label else 0
+            block_h = label_h + 14 + int(ft.size * 1.28) * len(lines)
 
-    def key(self, t):
-        return anim_key(t, 1.4)
+            tx = X0 + 42
+            ty = y + dy + max(36, (h - block_h) / 2)
+            if item.label:
+                fl = font(70)
+                d.text((tx, ty), item.label, font=fl, fill=colour)
+                ty += int(fl.size * 1.15)
 
-    def draw(self, d, L, t):
-        src = "NSE" if self.fd.get("source") == "NSE" else "web sources"
-        self.section(d, "FII / DII FLOWS", YELLOW, f"Cash market | {self.recap} | provisional ({src})")
-        mx = max(abs(self.fd["fii"]), abs(self.fd["dii"]), 1)
-        for i, (lab, v) in enumerate([("FII / FPI", self.fd["fii"]), ("DII", self.fd["dii"])]):
-            y = TOP + 20 + i * 300
-            e = ease((t - i * 0.2) / 1.1)
-            d.rounded_rectangle((X0, y, X1, y + 270), 26, fill=CARD)
-            d.text((84, y + 28), lab, font=font(46), fill=TEXT)
-            col = pct_color(v)
-            pill = "NET BUY" if v >= 0 else "NET SELL"
-            pw = tlen(pill, font(28)) + 36
-            d.rounded_rectangle((X1 - 34 - pw, y + 32, X1 - 34, y + 82), 25, fill=col)
-            d.text((X1 - 34 - pw + 18, y + 40), pill, font=font(28), fill=(10, 14, 30))
-            d.text((84, y + 100), f"{'+' if v >= 0 else '-'}{RS}{fmt_in(abs(v) * e)} cr", font=font(70), fill=col)
-            bw = int((X1 - X0 - 68) * abs(v) / mx * e)
-            d.rounded_rectangle((84, y + 212, 84 + max(bw, 10), y + 236), 12, fill=col)
-        net = self.fd["fii"] + self.fd["dii"]
-        s = f"Combined net: {'+' if net >= 0 else '-'}{RS}{fmt_in(abs(net))} cr"
-        d.text((84, TOP + 640), s, font=font(36, False), fill=SUB)
+            ty += 14
+            for line in lines:
+                d.text((tx, ty), line, font=ft, fill=TEXT)
+                ty += int(ft.size * 1.28)
+
+    # ------------------------------------------------------------------ SECTORS
+    def _draw_comparison(self, d, p, t, y0):
+        """Strongest vs weakest, side by side. `_sectors_scene` (editorial/planner.py)
+        orders items [strongest, weakest, runner-up], so the first two panels are exactly
+        that comparison by construction - nothing is re-ranked here."""
+        pair = p.items[:2]
+        gap = 28
+        panel_w = (X1 - X0 - gap) / 2
+        bottom = BAND_BOTTOM - (90 if len(p.items) > 2 else 0)
+        tags = ("STRONGEST", "WEAKEST")
+        for i, (item, tag) in enumerate(zip(pair, tags)):
+            e = ease((t - i * 0.18) / 0.5)
+            if e <= 0:
+                continue
+            dy = (1 - e) * 60
+            x0 = X0 + i * (panel_w + gap)
+            x1 = x0 + panel_w
+            colour = TEXT if item.positive is None else pct_color(1 if item.positive else -1)
+
+            d.rounded_rectangle((x0, y0 + dy, x1, bottom), 28, fill=CARD)
+            d.rounded_rectangle((x0, y0 + dy, x1, y0 + dy + 8), 4, fill=colour)
+
+            ft = font(26)
+            tw = tlen(tag, ft) + 30
+            d.rounded_rectangle((x0 + (panel_w - tw) / 2, y0 + dy + 34, x0 + (panel_w + tw) / 2,
+                                 y0 + dy + 74), 20, fill=colour)
+            d.text((x0 + (panel_w - tlen(tag, ft)) / 2, y0 + dy + 40), tag, font=ft,
+                   fill=(10, 14, 30))
+
+            fv = fit(item.value, panel_w - 40, 128, min_size=64)
+            vy = y0 + dy + (bottom - (y0 + dy)) / 2 - fv.size * 0.55
+            d.text((x0 + (panel_w - tlen(item.value, fv)) / 2, vy), item.value, font=fv,
+                   fill=colour)
+
+            fn = fit(item.title, panel_w - 40, 42, min_size=28)
+            d.text((x0 + (panel_w - tlen(item.title, fn)) / 2, bottom - fn.size * 1.6),
+                   item.title, font=fn, fill=TEXT)
+
+        for i, item in enumerate(p.items[2:], start=2):
+            e = ease((t - i * 0.18) / 0.5)
+            if e <= 0:
+                continue
+            self._draw_card_row(d, item, e, X0, X1, bottom + 20, 60, small=True)
+
+    # ------------------------------------------------------------------ MOVERS / FLOWS
+    def _draw_panels(self, d, p, t, y0):
+        """Large stacked panels - one per item, direction (buy/sell, gain/loss) carried by
+        the label chip and colour exactly as the plan already states it."""
+        items = p.items
+        heights = [max(160, (BAND_BOTTOM - y0 - 22 * (len(items) - 1)) / len(items))
+                  for _ in items]
+        ys = _distribute(len(items), heights, y0, BAND_BOTTOM)
+        # Exactly two movers (best gainer, worst loser, no runner-up) already get the whole
+        # band split evenly between them - the panels were never small. What made them read
+        # as small was the content inside: default card fonts stayed top-pinned in a ~350px
+        # panel. The "big"/"hero" sizing and centring already built for a lone card apply
+        # here too, so the number and symbol fill the panel they're actually given.
+        pair = p.scene_type is SceneType.MOVERS and len(items) == 2
+        for i, (item, y) in enumerate(zip(items, ys)):
+            e = ease((t - i * 0.16) / 0.45)
+            if e <= 0:
+                continue
+            self._draw_card_row(d, item, e, X0, X1, y, heights[i], big=pair, hero=pair)
+
+    # ------------------------------------------------------------------ GLOBAL / CONTEXT / EVENTS
+    def _draw_cards(self, d, p, t, y0):
+        items = p.items
+        n = len(items)
+        big = n <= 2
+        # A lone card is common (a cold-start day with one global cue, one event) and is the
+        # exact pathological case this phase exists to fix: sized to its own text, it sits as
+        # a sliver under the heading with the rest of the canvas empty. So it gets a hero
+        # size - most of the band - and its content is centred inside that panel rather than
+        # pinned to the top of it. Two or three cards keep the plain card treatment and are
+        # spread across the band by `_distribute` instead.
+        hero = n == 1
+        laid = []
+        for item in items:
+            value_font = font(84 if hero else (72 if big else 58)) if item.value else None
+            value_w = tlen(item.value, value_font) + 44 if item.value else 0
+            size = 60 if hero else (50 if big else 40)
+            title_font = fit(item.title, X1 - X0 - 130 - value_w, size, min_size=28)
+            lines = wrap(item.title, title_font, X1 - X0 - 130 - value_w)[:2]
+            note_font = font(34 if hero else (30 if big else 26), False)
+            note_lines = (wrap(item.note, note_font, X1 - X0 - 140 - value_w)[:2]
+                          if item.note else [])
+            natural = (52 + int(title_font.size * 1.22) * len(lines)
+                      + sum(int(note_font.size * 1.3) for _ in note_lines))
+            h = max(natural, 150 if big else 118)
+            if hero:
+                h = max(h, (BAND_BOTTOM - y0) * 0.5)
+            laid.append(h)
+        # Exactly two GLOBAL cards is where the leftover band room used to become one large
+        # canyon between them - `_distribute` puts ALL unused space into the one gap between
+        # two items. Capped here; the remainder is left as trailing space below the pair
+        # instead, which reads as breathing room rather than a gap that looks like a mistake.
+        cap = 90 if (p.scene_type is SceneType.GLOBAL and n == 2) else None
+        ys = _distribute(n, laid, y0, BAND_BOTTOM, max_gap=cap)
+        for i, (item, y, h) in enumerate(zip(items, ys, laid)):
+            e = ease((t - i * 0.16) / 0.45)
+            if e <= 0:
+                continue
+            if hero and p.scene_type is SceneType.EVENTS:
+                self._draw_event_hero(d, item, e, X0, X1, y, h)
+            else:
+                self._draw_card_row(d, item, e, X0, X1, y, h, big=big, hero=hero)
+
+    # ------------------------------------------------------------------ single EVENTS hero
+    def _draw_event_hero(self, d, item, e, x0, x1, y, h):
+        """A single "watch next" item, dedicated rather than reusing the value-bearing card
+        layout: events never carry a `value` (no number to be dominant), so the tag and the
+        headline themselves are what get the emphasis - a bigger pill, a bigger headline,
+        both centred in the panel instead of pinned under it."""
+        dx = -(1 - e) * 120
+        avail = x1 - x0
+
+        title_font = fit(item.title, avail - 100, 66, min_size=34)
+        lines = wrap(item.title, title_font, avail - 100)[:3]
+        label_h = 0
+        fl = font(32)
+        if item.label:
+            label_h = int(fl.size * 1.3) + 22
+        block_h = label_h + int(title_font.size * 1.24) * len(lines)
+
+        d.rounded_rectangle((x0 + dx, y, x1 + dx, y + h), 26, fill=CARD)
+        d.rounded_rectangle((x0 + dx, y, x0 + 8 + dx, y + h), 4, fill=ACCENT)
+
+        tx = 50 + x0 + dx
+        ty = y + max(30, (h - block_h) / 2)
+        if item.label:
+            lw = tlen(item.label, fl) + 34
+            d.rounded_rectangle((tx, ty, tx + lw, ty + int(fl.size * 1.3)), 22, fill=ACCENT)
+            d.text((tx + 17, ty + 7), item.label, font=fl, fill=(10, 14, 30))
+            ty += label_h
+
+        for line in lines:
+            d.text((tx, ty), line, font=title_font, fill=TEXT)
+            ty += int(title_font.size * 1.24)
+
+    # ------------------------------------------------------------------ shared card renderer
+    def _draw_card_row(self, d, item, e, x0, x1, y, h, dx_amount=120, big=False, small=False,
+                       hero=False):
+        dx = -(1 - e) * dx_amount
+        colour = TEXT if item.positive is None else pct_color(1 if item.positive else -1)
+        avail = x1 - x0
+
+        value_font = None
+        value_w = 0
+        if item.value:
+            value_font = font(30 if small else (84 if hero else (72 if big else 58)))
+            value_w = tlen(item.value, value_font) + 44
+
+        title_size = 26 if small else (60 if hero else (50 if big else 40))
+        title_font = fit(item.title, avail - 130 - value_w, title_size, min_size=24)
+        lines = wrap(item.title, title_font, avail - 130 - value_w)[:2]
+        note_font = font(26 if small else (34 if hero else (30 if big else 26)), False)
+        note_lines = (wrap(item.note, note_font, avail - 140 - value_w)[:2 if big else 1]
+                      if item.note else [])
+
+        d.rounded_rectangle((x0 + dx, y, x1 + dx, y + h), 22, fill=CARD)
+        d.rounded_rectangle((x0 + dx, y, x0 + 8 + dx, y + h), 4, fill=colour)
+
+        label_h = (32 if small else 38) + 14 if item.label else 0
+        block_h = label_h + int(title_font.size * 1.22) * len(lines) \
+            + sum(int(note_font.size * 1.3) for _ in note_lines)
+        tx = 42 + x0 + dx
+        # A hero card centres its content in the panel; every other card stays pinned under
+        # its top edge so a viewer's eye lands in the same place scene to scene.
+        ty = y + max(22, (h - block_h) / 2) if hero else y + 22
+        if item.label:
+            fl = font(22 if small else 26)
+            lw = tlen(item.label, fl) + 26
+            d.rounded_rectangle((tx, ty, tx + lw, ty + (32 if small else 38)), 18, fill=ACCENT)
+            d.text((tx + 13, ty + 5), item.label, font=fl, fill=(10, 14, 30))
+            ty += (44 if small else 52)
+
+        for line in lines:
+            d.text((tx, ty), line, font=title_font, fill=TEXT)
+            ty += int(title_font.size * 1.22)
+        for line in note_lines:
+            d.text((tx, ty), line, font=note_font, fill=SUB)
+            ty += int(note_font.size * 1.3)
+
+        if item.value:
+            d.text((x1 - 32 - tlen(item.value, value_font) + dx, y + (h - value_font.size) / 2),
+                   item.value, font=value_font, fill=colour)
 
 
 class NiftyScene(Scene):
-    def __init__(self, m, chart_paths, texts, dur=16.0):
-        super().__init__(dur, texts)
-        self.m = m
+    """The index: one number, one observation, and the chart. No chip row of DMAs, RSI,
+    pivots and levels - all of that stays in the report, where it is still available."""
+    show_ticker = False
+
+    def __init__(self, plan, chart_paths, dur=6.0):
+        super().__init__(dur, [])
+        self.plan = plan
         self.layers = [Image.open(p).convert("RGB") for p in chart_paths]
 
     def key(self, t):
@@ -389,209 +847,118 @@ class NiftyScene(Scene):
         return big.crop((big.size[0] - cw, top, big.size[0], top + ch))
 
     def draw(self, d, L, t):
-        m = self.m
-        d.text((60, SECTION_Y), "NIFTY 50", font=font(62), fill=TEXT)
-        up = m["chg"] >= 0
-        col = pct_color(m["chg"])
-        v = m["prev"] + (m["close"] - m["prev"]) * ease(t / 1.0)
-        val = fmt_in(v, 2)
-        fv = font(56)
-        d.text((X1 - tlen(fmt_in(m["close"], 2), fv), SECTION_Y + 4), val, font=fv, fill=TEXT)
-        chs = f"{m['chg']:+.2f} ({m['pct']:+.2f}%)"
-        fc = font(34)
-        cx = X1 - tlen(chs, fc)
-        d.text((cx, SECTION_Y + 72), chs, font=fc, fill=col)
-        triangle(d, cx - 36, SECTION_Y + 80, 24, up, col)
-        chips = [f"H {fmt_in(m['high'])}", f"L {fmt_in(m['low'])}"]
-        if m.get("bank_pct") is not None:
-            chips.append(f"BankNifty {m['bank_pct']:+.2f}%")
-        if m.get("vix") is not None:
-            chips.append(f"VIX {m['vix']:.1f}")
-        fs = font(28)
-        x, y = 60, 446
-        for c in chips:
-            w = tlen(c, fs) + 32
-            d.rounded_rectangle((x, y, x + w, y + 46), 23, fill=CARD)
-            d.text((x + 16, y + 7), c, font=fs, fill=TEXT)
-            x += w + 14
+        p = self.plan
+        colour = TEXT if p.primary_positive is None else pct_color(1 if p.primary_positive else -1)
+        d.text((60, SECTION_Y), p.primary_text, font=font(62), fill=TEXT)
+
+        fv = fit(p.primary_value, 460, 104, min_size=72)
+        d.text((X1 - tlen(p.primary_value, fv), SECTION_Y - 14), p.primary_value, font=fv, fill=colour)
+
+        if p.secondary_text:
+            fs = fit(p.secondary_text, X1 - X0, 38, min_size=30)
+            d.text((60, SECTION_Y + 84), p.secondary_text, font=fs, fill=SUB)
+
         L.paste(self.chart_frame(t), (50, 508))
 
 
-class SectorScene(Scene):
-    def __init__(self, sectors, recap_str, texts, dur=8.0):
-        super().__init__(dur, texts)
-        self.sec, self.recap = sectors[:12], recap_str
-
-    def key(self, t):
-        pulse = int((math.sin(t * 6) + 1) * 2) if t > 1.4 else -1
-        return (anim_key(t, 1.4), pulse)
-
-    def draw(self, d, L, t):
-        self.section(d, "SECTOR HEATMAP", YELLOW, f"Nifty sectoral indices | {self.recap}")
-        cols = 3
-        tw, th, gap = (X1 - X0 - 2 * 16) / cols, 166, 16
-        n = len(self.sec)
-        pulse = self.key(t)[1]
-        for i, s in enumerate(self.sec):
-            e = ease((t - i * 0.07) / 0.4)
-            if e <= 0:
-                continue
-            x = X0 + (i % cols) * (tw + gap)
-            y = TOP + (i // cols) * (th + gap) + (1 - e) * 30
-            k = 0.2 + 0.8 * min(1.0, abs(s["pct"]) / 2.0)
-            fill = mix(CARD, (18, 150, 100) if s["pct"] >= 0 else (190, 40, 70), k)
-            special = pulse >= 0 and (i == 0 or i == n - 1)
-            d.rounded_rectangle((x, y, x + tw, y + th), 22, fill=fill,
-                                outline=YELLOW if special else None, width=3 + pulse if special else 0)
-            d.text((x + 22, y + 22), s["name"], font=fit(s["name"], tw - 40, 34), fill=TEXT)
-            d.text((x + 22, y + 84), f"{s['pct']:+.2f}%", font=font(48), fill=TEXT)
-
-
-class MoversScene(Scene):
-    def __init__(self, kind, rows, universe_label, recap_str, dur=13.5):
-        self.kind, self.rows = kind, rows
-        self.color = pct_color(1 if kind == "gainers" else -1)
-        self.uni, self.recap = universe_label, recap_str
-        self.maxabs = max(abs(r["pct"]) for r in rows) or 1
-        super().__init__(dur, [])
-
-    def captions(self):
-        word = "gainers" if self.kind == "gainers" else "losers"
-        step = (self.dur - 1.0) / len(self.rows)
-        caps = [(0, 1.0, f"Top 5 {word} in {self.uni}.")]
-        caps += [(1.0 + i * step, step, f"{r['symbol']} {r['pct']:+.1f}%: {r['reason']}")
-                 for i, r in enumerate(self.rows)]
-        return caps
-
-    def active(self, t):
-        if t < 1.0:
-            return None
-        return min(len(self.rows) - 1, int((t - 1.0) / ((self.dur - 1.0) / len(self.rows))))
-
-    def key(self, t):
-        a = self.active(t)
-        pulse = int((math.sin(t * 2 * math.pi * 1.2) + 1) * 2) if a is not None else 0
-        return (anim_key(t, 1.5), a, pulse)
-
-    def draw(self, d, L, t):
-        _, active, pulse = self.key(t)
-        title = "TOP 5 GAINERS" if self.kind == "gainers" else "TOP 5 LOSERS"
-        self.section(d, title, self.color, f"{self.uni}  |  {self.recap}")
-        for i, r in enumerate(self.rows):
-            e = ease((t - i * 0.12) / 0.45)
-            if e <= 0:
-                continue
-            dx = (1 - e) * 160
-            y = TOP + i * 145
-            act = i == active
-            d.rounded_rectangle((X0 + dx, y, X1 + dx, y + 131), 22, fill=CARD_ACTIVE if act else CARD,
-                                outline=self.color if act else None, width=3 + pulse if act else 0)
-            cx = 102 + dx
-            d.ellipse((cx - 30, y + 35, cx + 30, y + 95), fill=self.color if act else (44, 58, 104))
-            num = str(i + 1)
-            d.text((cx - tlen(num, font(34)) / 2, y + 44), num, font=font(34), fill=(10, 14, 30) if act else TEXT)
-            pct = f"{r['pct']:+.2f}%"
-            fp = font(50)
-            px = X1 - 26 - tlen(pct, fp) + dx
-            d.text((px, y + 16), pct, font=fp, fill=self.color)
-            d.text((152 + dx, y + 18), r["symbol"], font=fit(r["symbol"], px - 170 - dx, 46), fill=TEXT)
-            d.text((152 + dx, y + 76), ellipsize(r["name"], font(26, False), 440), font=font(26, False), fill=SUB)
-            meta = fmt_in(r["close"], 2) + (f"  |  Vol {r['volx']:.1f}x" if r.get("volx") else "")
-            fm = font(26, False)
-            d.text((X1 - 26 - tlen(meta, fm) + dx, y + 78), meta, font=fm, fill=SUB)
-            bw = int(300 * abs(r["pct"]) / self.maxabs * ease((t - 0.3 - i * 0.12) / 0.9))
-            d.rounded_rectangle((152 + dx, y + 116, 152 + dx + max(bw, 8), y + 122), 3, fill=self.color)
-
-
-class EventsScene(Scene):
-    def __init__(self, events, info, dur=7.0):
-        super().__init__(dur, [f"Key events to watch today, {info['today_short']}.",
-                               "Big news from these can move stocks sharply."])
-        self.events = events[:5]
-
-    def key(self, t):
-        return anim_key(t, 1.8)
-
-    def draw(self, d, L, t):
-        self.section(d, "EVENTS TODAY", YELLOW, "What traders are tracking")
-        y = TOP
-        ft, fx = font(24), font(36)
-        for i, e in enumerate(self.events):
-            a = ease((t - i * 0.25) / 0.45)
-            lines = wrap(e["text"], fx, 700)[:2]
-            h = 40 + 46 * len(lines)
-            if y + h > 1195:
-                break
-            if a > 0:
-                dx = -(1 - a) * 160
-                d.rounded_rectangle((X0 + dx, y, X1 + dx, y + h), 22, fill=CARD)
-                tw = tlen(e["tag"], ft) + 28
-                d.rounded_rectangle((72 + dx, y + 22, 72 + tw + dx, y + 62), 20, fill=YELLOW)
-                d.text((86 + dx, y + 28), e["tag"], font=ft, fill=(10, 14, 30))
-                for j, line in enumerate(lines):
-                    d.text((72 + max(tw, 150) + 22 + dx, y + 20 + j * 46), line, font=fx, fill=TEXT)
-            y += h + 18
-
-
-class ContextScene(Scene):
-    """Historical context: how today compares with recent sessions.
-
-    `lines` are (label, statement) pairs already computed, selected and content-checked by
-    the intelligence layer - this scene only draws them. It follows EventsScene's card
-    layout so the Short keeps one visual language, and it breaks out of the loop rather than
-    overflow the safe zone if the statements run long.
-    """
-    def __init__(self, lines, dur=6.0):
-        super().__init__(dur, ["How today compares with recent sessions.",
-                               "Based only on previously recorded sessions."])
-        self.lines = lines[:3]
-
-    def key(self, t):
-        return anim_key(t, 1.8)
-
-    def draw(self, d, L, t):
-        self.section(d, "MARKET CONTEXT", ACCENT, "Versus recent recorded sessions")
-        y = TOP
-        ft, fx = font(24), font(32)
-        for i, (label, statement) in enumerate(self.lines):
-            a = ease((t - i * 0.25) / 0.45)
-            lines = wrap(statement, fx, 880)[:3]
-            # 20 top pad + 38 chip + 10 gap + text + 20 bottom pad, so text never overruns
-            # the card it sits in.
-            h = 88 + 42 * len(lines)
-            if y + h > 1195:
-                break
-            if a > 0:
-                dx = -(1 - a) * 160
-                d.rounded_rectangle((X0 + dx, y, X1 + dx, y + h), 22, fill=CARD)
-                tw = tlen(label, ft) + 28
-                d.rounded_rectangle((72 + dx, y + 20, 72 + tw + dx, y + 58), 19, fill=ACCENT)
-                d.text((86 + dx, y + 26), label, font=ft, fill=(10, 14, 30))
-                for j, line in enumerate(lines):
-                    d.text((72 + dx, y + 68 + j * 42), line, font=fx, fill=TEXT)
-            y += h + 18
-
-
 class OutroScene(Scene):
-    def __init__(self, dur=3.0):
-        super().__init__(dur, ["Subscribe for your daily market byte. See you next session!"])
+    """A short sign-off. Branding does not need five seconds of a sixty-second Short."""
+    show_ticker = True
+
+    def __init__(self, plan=None, dur=2.0):
+        super().__init__(dur, [])
+        self.plan = plan
 
     def key(self, t):
         return int((math.sin(t * 5) + 1) * 3)
 
     def draw(self, d, L, t):
         lvl = self.key(t)
-        s1 = "Found this useful?"
-        d.text(((W - tlen(s1, font(52))) / 2, 520), s1, font=font(52), fill=TEXT)
-        f2 = font(96 + lvl * 2)
-        w2 = tlen("SUBSCRIBE", f2)
-        d.rounded_rectangle(((W - w2) / 2 - 50, 700 - 80 - lvl * 2, (W + w2) / 2 + 50, 700 + 80 + lvl * 2), 40,
+        # Drawn from the plan, not from literals here: text on screen that the plan does not
+        # know about would escape both the content scan and the readability budget.
+        cta = (self.plan.primary_text if self.plan else "SUBSCRIBE") or "SUBSCRIBE"
+        f2 = font(104 + lvl * 2)
+        w2 = tlen(cta, f2)
+        d.rounded_rectangle(((W - w2) / 2 - 50, 640 - 84 - lvl * 2, (W + w2) / 2 + 50, 640 + 84 + lvl * 2), 40,
                             fill=(230, 33, 23))
-        d.text(((W - w2) / 2, 700 - f2.size * 0.62), "SUBSCRIBE", font=f2, fill=(255, 255, 255))
-        s3 = "for your DAILY MARKET BYTE"
-        d.text(((W - tlen(s3, font(56))) / 2, 830), s3, font=font(56), fill=ACCENT)
-        s4 = "New recap every trading day  |  8 AM IST"
-        d.text(((W - tlen(s4, font(34, False))) / 2, 930), s4, font=font(34, False), fill=SUB)
+        d.text(((W - w2) / 2, 640 - f2.size * 0.62), cta, font=f2, fill=(255, 255, 255))
+        sub = (self.plan.secondary_text if self.plan else "") or ""
+        if sub:
+            fs = font(38, False)
+            d.text(((W - tlen(sub, fs)) / 2, 800), sub, font=fs, fill=SUB)
+
+
+# --------------------------------------------------------------------- plan -> scenes
+def scenes_from_plan(plan, chart_paths=None):
+    """Build the renderer's scenes from an editorial plan.
+
+    The plan decides what each scene says and how long it runs; this only chooses which of
+    the three layouts draws it. Every scene carries exactly one caption-free message, so
+    nothing cycles text while the viewer is reading.
+    """
+    scenes = []
+    for scene_plan in plan.scenes:
+        kind = scene_plan.scene_type.value
+        duration = scene_plan.planned_duration
+        if kind == "HOOK":
+            scene = HookScene(scene_plan, duration)
+        elif kind == "OUTRO":
+            scene = OutroScene(scene_plan, duration)
+        elif kind == "NIFTY" and chart_paths:
+            scene = NiftyScene(scene_plan, chart_paths, duration)
+        else:
+            scene = RowsScene(scene_plan, duration)
+        scene.show_ticker = scene_plan.show_ticker
+        scene.plan = scene_plan
+        scenes.append(scene)
+    return scenes
+
+
+# ----------------------------------------------------------------------------- layout density
+# Diagnostic only - not a publication gate, not wired into main.py. It exists to catch the
+# specific pathological layout Phase 4.1.2 shipped with: a scene whose cards all end in the
+# top third of the safe zone, leaving the rest of the canvas empty. It counts pixels, not
+# words or facts - no computer vision, no model, just "how far down did we actually paint."
+TOP_HEAVY_SCENE_TYPES = {"GLOBAL", "FLOWS", "SECTORS", "MOVERS", "GAINERS", "LOSERS",
+                         "CONTEXT", "EVENTS"}
+MIN_LAYOUT_DENSITY = 1 / 3
+
+
+def content_bbox(scene, t=None):
+    """Alpha-channel bounding box of everything a scene has painted, once its entrance
+    animation has settled (defaults to just before the scene ends). None if the scene drew
+    nothing at that instant."""
+    if t is None:
+        t = max(scene.dur - 0.05, 0.0)
+    return scene.layer(t).getchannel("A").getbbox()
+
+
+def layout_density(scene, band_top=TOP, band_bottom=BAND_BOTTOM, t=None):
+    """How far down the usable band (`band_top`..`band_bottom`) this scene's content reaches,
+    as a fraction (0..1). 1.0 means the content's lowest pixel is at the bottom of the band;
+    it does not mean the band is full end to end, only that it isn't stuck at the top."""
+    bbox = content_bbox(scene, t)
+    if not bbox:
+        return 0.0
+    bottom = bbox[3]
+    span = band_bottom - band_top
+    return max(0.0, min(1.0, (bottom - band_top) / span)) if span else 0.0
+
+
+def check_layout_density(scenes):
+    """One entry per scene whose type is expected to use the vertical band (HOOK, OUTRO and
+    NIFTY are exempt - they have their own, deliberate whitespace or are chart-dominated).
+    `top_heavy` flags the pathological case this metric exists to catch; it does not require
+    every scene to reach the same depth."""
+    findings = []
+    for scene in scenes:
+        kind = scene.plan.scene_type.value if hasattr(scene, "plan") else type(scene).__name__
+        if kind not in TOP_HEAVY_SCENE_TYPES:
+            continue
+        density = layout_density(scene)
+        findings.append({"scene": kind, "density": round(density, 3),
+                         "top_heavy": density < MIN_LAYOUT_DENSITY})
+    return findings
 
 
 # ----------------------------------------------------------------------------- render
@@ -633,7 +1000,10 @@ def render(scenes, info, ticker_items, music_path, out_path, demo=False):
             cur = i
         frame = bd.frame(t)
         frame.paste(head, (0, 0), head)
-        tick.paste(frame, t)
+        # Scenes the viewer has to read hide the ticker: a scrolling strip competing with a
+        # number someone is trying to take in is the cheapest distraction to remove.
+        if getattr(sc, "show_ticker", True):
+            tick.paste(frame, t)
         L = sc.layer(tl)
         if tl < 0.35:
             e = ease(tl / 0.35)

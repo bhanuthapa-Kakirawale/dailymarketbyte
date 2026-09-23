@@ -24,104 +24,18 @@ import video
 from adapters import report_builder
 from adapters.news_adapter import NO_CATALYST_TEXT
 from config import OUT_DIR, ASSETS_DIR, UNIVERSE, UNIVERSE_LABEL, TOP_N, DURATION, now_ist, fmt_in
+import editorial
 import intelligence
 from core import MarketReport
-from core.content_safety import CONTENT_SAFETY_VERSION, SafetyStatus, sanitize_field, scan_publication
+from core.content_safety import (CONTENT_SAFETY_VERSION, SafetyStatus, classify_text,
+                                 sanitize_field, scan_publication)
 from presentation import ReportPresentation
 from providers import GeminiProvider, NewsProvider, NseProvider, YahooProvider
 from qa import check_video, write_qa_artifact
+from qa.readability_qa import check_plan as check_readability
 from storage import MarketHistory, default_db_path
 
 RS = video.RS
-BASE_DUR = {"intro": 2.0, "global": 7.0, "fii": 5.0, "nifty": 16.0, "sector": 8.0,
-            "gainers": 13.5, "losers": 13.5, "events": 7.0, "outro": 3.0}
-STRETCH = ("nifty", "gainers", "losers")
-# Taken from the stretch scenes when historical context is available, never added on top -
-# see durations(). Deliberately short: context supplements the recap, it does not lead it.
-CONTEXT_DUR = 6.0
-
-
-# ----------------------------------------------------------------------------- captions
-def nifty_captions(m: dict, reason: str) -> list:
-    up = m["chg"] >= 0
-    caps = [f"Nifty 50 closed at {fmt_in(m['close'])}, {'up' if up else 'down'} "
-            f"{abs(m['chg']):.0f} points ({m['pct']:+.2f}%)."]
-    if reason:
-        caps.append(f"What moved it: {reason}")
-    rng = f"Day's range: {fmt_in(m['low'])} to {fmt_in(m['high'])}."
-    if m.get("vix") is not None:
-        rng += f" India VIX at {m['vix']:.1f}."
-    caps.append(rng)
-    c, e20, e50 = m["close"], m["ema20"], m["ema50"]
-    if c > e20 and c > e50:
-        ema = "Price is above its 20 and 50-day EMAs, short-term trend positive."
-    elif c < e20 and c < e50:
-        ema = "Price is below its 20 and 50-day EMAs, short-term trend weak."
-    else:
-        ema = "Price is between its 20 and 50-day EMAs, trend looks sideways."
-    caps.append(f"{ema} RSI at {m['rsi']:.0f}.")
-    lv = m["levels"]
-    parts = []
-    if lv["res"]:
-        parts.append(f"resistance near {fmt_in(lv['res'][0])}")
-    if lv["sup"]:
-        parts.append(f"support near {fmt_in(lv['sup'][0])}")
-    if parts:
-        caps.append("Chart shows " + " and ".join(parts) + ".")
-    t = m["trend"]
-    if t:
-        if t["kind"] == "support":
-            caps.append(f"Rising trendline from recent lows is near {fmt_in(t['now'])}"
-                        + (", price still above it." if c >= t["now"] else ", price slipped below it."))
-        else:
-            caps.append(f"Falling trendline from recent highs is near {fmt_in(t['now'])}"
-                        + (", price still below it." if c <= t["now"] else ", price broke above it."))
-    p = m["pivot"]
-    caps.append(f"Today's pivot {fmt_in(p['P'])}, R1 {fmt_in(p['R1'])}, S1 {fmt_in(p['S1'])}.")
-    if len(caps) > 6:  # keep the pivot line, drop the least important middle one
-        caps = caps[:5] + caps[-1:]
-    return caps
-
-
-def global_captions(tiles: list) -> list:
-    by = {t["label"]: t for t in tiles}
-    caps = []
-    us = [f"{k.title()} {by[k]['pct']:+.1f}%" for k in ("DOW JONES", "NASDAQ") if k in by]
-    if us:
-        caps.append("Overnight in the US: " + ", ".join(us) + ".")
-    if "GIFT NIFTY" in by:
-        g = by["GIFT NIFTY"]
-        caps.append(f"GIFT Nifty at {fmt_in(g['value'])} ({g['pct']:+.2f}%) signals a "
-                    f"{'positive' if g['pct'] > 0.1 else 'negative' if g['pct'] < -0.1 else 'flat'} start.")
-    extra = []
-    if "BRENT CRUDE" in by:
-        extra.append(f"Brent crude ${by['BRENT CRUDE']['value']:.1f}")
-    if "USD / INR" in by:
-        extra.append(f"rupee at {by['USD / INR']['value']:.2f} per dollar")
-    if extra:
-        caps.append(" and ".join(extra).capitalize() + ".")
-    return caps or ["Here's how global markets moved overnight."]
-
-
-def fii_captions(fd: dict) -> list:
-    f, d = fd["fii"], fd["dii"]
-    return [f"FIIs net {'bought' if f >= 0 else 'sold'} {RS}{fmt_in(abs(f))} crore in cash.",
-            f"DIIs net {'bought' if d >= 0 else 'sold'} {RS}{fmt_in(abs(d))} crore."]
-
-
-def sector_captions(sec: list) -> list:
-    up = sum(1 for s in sec if s["pct"] >= 0)
-    return [f"Best sector: {sec[0]['name']} {sec[0]['pct']:+.1f}%. Weakest: {sec[-1]['name']} {sec[-1]['pct']:+.1f}%.",
-            f"{up} of {len(sec)} sectors closed higher."]
-
-
-def hook_line(m, fd, sec):
-    parts = [f"Nifty {m['pct']:+.2f}%"]
-    if fd:
-        parts.append(f"FIIs {'bought' if fd['fii'] >= 0 else 'sold'} {RS}{fmt_in(abs(fd['fii']))} cr")
-    if sec:
-        parts.append(f"{sec[0]['name']} led")
-    return "  ·  ".join(parts)
 
 
 def ticker_items(m, tiles, sec, gainers, losers):
@@ -244,17 +158,15 @@ def apply_content_safety(nifty_reason, gainers, losers, events):
     return nifty_reason, gainers, losers, events, findings
 
 
-def collect_public_text(scenes, events, meta) -> dict:
-    """Every string that will actually appear to a viewer: on-screen captions (via each
-    scene's own `captions()`, since MoversScene builds its per-row text dynamically rather
-    than storing it in `.texts`), the event cards EventsScene draws directly, and the
-    YouTube title/description."""
+def collect_public_text(plan, meta) -> dict:
+    """Every string that will appear to a viewer, taken from the editorial plan itself.
+
+    The plan is the script, so it is the complete and authoritative list of on-screen text -
+    including the hook and every context statement. Reading it here rather than introspecting
+    rendered scenes means nothing can reach the screen without passing the safety scan.
+    """
     fields = {"youtube_title": meta["title"], "youtube_description": meta["description"]}
-    for e in events:
-        fields[f"event:{e.get('tag', '')}"] = e.get("text", "")
-    for scene in scenes:
-        for i, (_, _, text) in enumerate(scene.captions()):
-            fields[f"{type(scene).__name__}.caption[{i}]"] = text
+    fields.update(plan.public_text())
     return fields
 
 
@@ -290,23 +202,17 @@ def operational_content_qa(scan) -> dict:
 
 
 # ----------------------------------------------------------------------------- main
-def durations(present: set, context: bool = False) -> dict:
-    """Scene durations. The total is always sum(BASE_DUR) - currently 75.0s.
+def plan_short(report, snapshot, now=None):
+    """The editorial script for this Short: what is said, in what order, for how long.
 
-    The market-context scene is carved out of the three scenes already designed to flex
-    rather than added on top, so historical context never lengthens the Short. On a day with
-    no usable history the scene is absent and the timing is exactly as it was before Phase 4.
+    Durations come from how much there is to read, not from a fixed 75-second budget, and
+    every candidate hook and statement is content-checked here rather than after rendering.
+    Reads the report and snapshot; writes to neither.
     """
-    dur = {k: v for k, v in BASE_DUR.items() if k in present}
-    missing = sum(v for k, v in BASE_DUR.items() if k not in present)
-    base = sum(BASE_DUR[k] for k in STRETCH)
-    for k in STRETCH:
-        dur[k] += missing * BASE_DUR[k] / base
-    if context:
-        for k in STRETCH:
-            dur[k] -= CONTEXT_DUR * BASE_DUR[k] / base
-        dur["context"] = CONTEXT_DUR
-    return dur
+    def _is_safe(text):
+        return classify_text(text).status is not SafetyStatus.BLOCKED
+
+    return editorial.plan_short(report, snapshot, now=now, is_safe=_is_safe)
 
 
 def collect(args, today):
@@ -422,39 +328,30 @@ def check_publication(report, demo=False) -> bool:
     return False
 
 
-def build_scenes(pres, info, dur, charts, uni, context=()):
-    """Scene construction, reading only from the presentation view of the report.
-
-    `context` is the already-selected, already-content-checked historical statements; the
-    scene appears only when there are some, so a cold-start run is identical to a Phase 3 one.
-    """
-    present = pres.present()
-    scenes = [video.IntroScene(info, hook_line(pres.m, pres.fd, pres.sec), dur["intro"])]
-    if "global" in present:
-        scenes.append(video.GlobalScene(pres.tiles, global_captions(pres.tiles), dur["global"]))
-    if "fii" in present:
-        scenes.append(video.FiiDiiScene(pres.fd, info["recap_str"], fii_captions(pres.fd), dur["fii"]))
-    scenes.append(video.NiftyScene(pres.m, charts, nifty_captions(pres.m, pres.nifty_reason),
-                                   dur["nifty"]))
-    if "sector" in present:
-        scenes.append(video.SectorScene(pres.sec, info["recap_str"], sector_captions(pres.sec),
-                                        dur["sector"]))
-    scenes += [video.MoversScene("gainers", pres.gainers, uni, info["recap_str"], dur["gainers"]),
-               video.MoversScene("losers", pres.losers, uni, info["recap_str"], dur["losers"])]
-    if context:
-        scenes.append(video.ContextScene(list(context), dur["context"]))
-    scenes += [video.EventsScene(pres.events, info, dur["events"]),
-               video.OutroScene(dur["outro"])]
-    return scenes
+def readability_qa(plan, upload_requested):
+    """Could a viewer read this at normal speed? Deterministic, and a publication gate."""
+    result = check_readability(plan)
+    if result.passed:
+        note = f" ({len(result.warnings)} warning(s))" if result.warnings else ""
+        print(f"      readability QA: {result.status}{note}")
+    else:
+        print(f"      readability QA FAILED ({len(result.blocking_issues)} blocking):")
+        for issue in result.blocking_issues:
+            print(f"  - {issue}")
+        if upload_requested:
+            print("Upload blocked by readability QA.")
+    for warning in result.warnings:
+        print(f"      readability warning: {warning}")
+    return result
 
 
-def final_qa(scenes, events, meta, out, upload_requested):
+def final_qa(plan, meta, out, upload_requested):
     """Re-scan every finalized public-facing string immediately before publication.
 
     Text is already burned into video frames and written into metadata by this point, so
     nothing is rewritten here - anything not SAFE blocks publication instead.
     """
-    scan = scan_publication(collect_public_text(scenes, events, meta))
+    scan = scan_publication(collect_public_text(plan, meta))
     if scan.status is not SafetyStatus.SAFE:
         print("Content-safety QA FAILED - the following fields still contain unsafe text:")
         for field_name in scan.blocked_fields:
@@ -556,37 +453,6 @@ def build_intelligence(report, history, demo=False):
         return None
 
 
-def context_lines(snapshot):
-    """(label, statement) pairs for the context scene, content-checked before display.
-
-    The statements are deterministic templates and should always be safe, but they are
-    published text and so go through the same Phase 1.1 scan as everything else - a rule that
-    only applies to text you expect to be unsafe is not a rule.
-    """
-    if snapshot is None:
-        return []
-    lines = []
-    for insight in snapshot.selected():
-        clean, result = sanitize_field(insight.statement, fallback="")
-        if not clean or result.status is SafetyStatus.BLOCKED:
-            print(f"      intelligence: dropped unsafe statement {insight.insight_id}")
-            continue
-        lines.append((_context_label(insight), clean))
-    return lines
-
-
-# Categories whose subject is already the clearest label (FII, DII, IT, a stock symbol).
-# The rest get a fixed word, because "NIFTY 50"/"INDIA VIX" are longer than the chip needs.
-_FIXED_LABELS = {"INDEX_MOVE": "NIFTY", "VOLATILITY": "VIX"}
-
-
-def _context_label(insight) -> str:
-    fixed = _FIXED_LABELS.get(insight.category.value)
-    if fixed:
-        return fixed
-    return (insight.subject or "CONTEXT").upper()[:12]
-
-
 def video_qa(out, meta_path, report_path, expected_duration, upload_requested):
     """Deterministic artifact QA. Failure blocks publication but preserves every artifact."""
     result = check_video(out, expected_duration=expected_duration, metadata_path=meta_path,
@@ -683,17 +549,21 @@ def run(args):
         # Derived historical context, read from canonical history after it was persisted.
         # It cannot alter the report or its rows, and its absence never blocks the run.
         snapshot = build_intelligence(report, history, demo=args.demo)
-        context = context_lines(snapshot)
+
+        # The editorial plan is the video's script: what earns screen time, what opens it,
+        # and how long each scene needs to be readable. Derived from the report and the
+        # snapshot, it changes neither.
+        plan = plan_short(report, snapshot, now=now_ist())
+        print(f"      editorial: {len(plan.scenes)} scenes, {plan.total_duration:.1f}s "
+              f"| hook: {plan.hook.primary_text} {plan.hook.primary_value}".rstrip())
 
         pres = ReportPresentation(report)
         info = {"today_str": today.strftime("%A, %d %B %Y"),
                 "today_short": today.strftime("%a %d %b"),
                 "recap_str": pres.session_date.strftime("%a, %d %b %Y")}
-        dur = durations(pres.present(), context=bool(context))
         tag = today.strftime("%Y-%m-%d")
         charts = chart.make_chart(pres.m, os.path.join(OUT_DIR, f"nifty_chart_{tag}"))
-        uni = UNIVERSE_LABEL.get(UNIVERSE, UNIVERSE)
-        scenes = build_scenes(pres, info, dur, charts, uni, context=context)
+        scenes = video.scenes_from_plan(plan, charts)
 
         total = sum(s.dur for s in scenes)
         print(f"[6/7] Rendering {total:.1f}s video ({len(scenes)} scenes)...")
@@ -716,12 +586,15 @@ def run(args):
         # and record that decision in the QA artifact and publication_runs. Neither reopens
         # the canonical report, its JSON, or its rows.
         qa_result = video_qa(out, meta_path, report_path, total, args.upload)
-        scan = final_qa(scenes, pres.events, meta, out, args.upload)
+        read_result = readability_qa(plan, args.upload)
+        scan = final_qa(plan, meta, out, args.upload)
         content_ok = scan.status is SafetyStatus.SAFE
 
         qa_path = write_qa_artifact(qa_result, OUT_DIR, report, report_path=report_path,
                                     video_path=out, demo=args.demo,
-                                    content_qa=operational_content_qa(scan))
+                                    content_qa=operational_content_qa(scan),
+                                    readability=read_result.to_dict(),
+                                    editorial=plan.to_dict())
         print(f"      qa artifact: {os.path.basename(qa_path)}")
 
         cs = report.content_safety
@@ -734,11 +607,13 @@ def run(args):
                video_qa_status=qa_result.status.value,
                content_qa_status="PASSED" if content_ok else "FAILED")
 
-        if not (qa_result.passed and content_ok):
-            _finish(history, run_id, "FAILED", "BLOCKED",
-                    failure_stage="VIDEO_QA" if not qa_result.passed else "CONTENT_QA",
-                    failure_reason="; ".join(qa_result.blocking_issues or scan.blocked_fields),
-                    artifact_path=out)
+        if not (qa_result.passed and content_ok and read_result.passed):
+            stage = ("VIDEO_QA" if not qa_result.passed
+                     else "READABILITY_QA" if not read_result.passed else "CONTENT_QA")
+            reason = (qa_result.blocking_issues or read_result.blocking_issues
+                      or scan.blocked_fields)
+            _finish(history, run_id, "FAILED", "BLOCKED", failure_stage=stage,
+                    failure_reason="; ".join(reason), artifact_path=out)
             return out
 
         if args.upload and not args.demo:

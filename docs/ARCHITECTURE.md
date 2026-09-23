@@ -29,15 +29,17 @@ Publication Gate     report.publication_ready - an unfit report renders nothing
       |
       +---> Intelligence       canonical history + today -> IntelligenceSnapshot (derived)
       |                        output/intelligence/ - deterministic, never canonical
-      |
+      v
+Editorial Selection  editorial/ - report + snapshot -> ShortsPlan (derived, never canonical)
+      |                what is said, in what order, for how long. No LLM, no predictions.
       v
 Presentation Adapter presentation/ - reshapes the report into renderer structures
       |
       v
-Renderer             video.py / chart.py, unchanged; acquires nothing
+Renderer             video.py / chart.py; scenes are built from the plan, acquires nothing
       |
       v
-Publication QA       video QA (artifact) + content safety (finalized public strings)
+Publication QA       video QA (artifact) + readability QA (plan) + content safety (plan text)
       |
       v
 Publisher            upload.py
@@ -73,11 +75,12 @@ not fetch anything or compute a new market fact.
 | Report build   | `adapters/`                        | builds from provider output         |
 | Persistence    | `storage/`                         | Phase 3 - SQLite historical index   |
 | Intelligence   | `intelligence/`                    | Phase 4.1 - deterministic historical context |
+| Editorial      | `editorial/`                       | Phase 4.1.2 - selection, hook, readability, pacing |
 | Presentation   | `presentation/`                    | the renderer boundary               |
-| Rendering      | `video.py`, `chart.py`, `music.py` | unchanged                           |
-| Artifact QA    | `qa/`                              | Phase 3 - deterministic video checks |
+| Rendering      | `video.py`, `chart.py`, `music.py` | scenes built from the editorial plan |
+| Artifact QA    | `qa/`                              | deterministic video + readability checks |
 | Publication    | `upload.py`                        | unchanged                           |
-| Orchestration  | `main.py`                          | thin: collect → report → persist → gate → present → render → QA → publish |
+| Orchestration  | `main.py`                          | thin: collect → report → persist → gate → plan → present → render → QA → publish |
 
 ## What changed in Phase 2
 
@@ -90,22 +93,24 @@ The renderer itself was not rewritten. `presentation/report_adapter.py` produces
 structures `video.py` and `chart.py` have always consumed, so the migration moved the
 *source* of those structures without touching the code that draws them.
 
-## Three independent gates
+## Four independent gates
 
 ```
-DATA QA      report.publication_ready   - validation, corroboration, required facts
+DATA QA         report.publication_ready   - validation, corroboration, required facts
      AND
-CONTENT QA   core/content_safety.py     - deterministic, no model
+CONTENT QA      core/content_safety.py     - deterministic, no model
      AND
-VIDEO QA     qa/video_qa.py             - deterministic artifact inspection
+VIDEO QA        qa/video_qa.py             - deterministic artifact inspection
+     AND
+READABILITY QA  qa/readability_qa.py       - can the Short actually be read at its pace
         ↓
    publication allowed
 ```
 
-All three must pass, and none is advisory. Data QA failing stops the run before rendering;
-video and content QA failing stop the upload after it, preserving every artifact for
-diagnosis. Persistence is a fourth precondition: if the run cannot be recorded in history, it
-does not publish, because auditability is part of publication integrity.
+All four must pass, and none is advisory. Data QA failing stops the run before rendering;
+the rest stop the upload after it, preserving every artifact for diagnosis. Persistence is a
+further precondition: if the run cannot be recorded in history, it does not publish, because
+auditability is part of publication integrity.
 
 See `docs/PRODUCTION_QA.md`.
 
@@ -130,6 +135,13 @@ A third kind of artifact joined them in Phase 4.1: the **IntelligenceSnapshot**,
 *derived* - a deterministic function of the canonical report and canonical history that can be
 regenerated from them at any time. It is written to `output/intelligence/`, never folded back
 into the report, and never inserted into `facts`. See `docs/INTELLIGENCE.md`.
+
+Phase 4.1.2 added a fourth, derived the same way: the **ShortsPlan**. It is what the Short
+says, in what order and for how long - a deterministic function of the report and the
+snapshot, recorded inside the QA artifact rather than persisted on its own, and written back
+into neither input. The distinction it enforces is that a valid fact does not earn screen
+time: the canonical record keeps everything, and the plan chooses. See
+`docs/SHORTS_EDITORIAL.md`.
 
 ## Still deliberately absent
 

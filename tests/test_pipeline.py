@@ -105,19 +105,34 @@ def test_production_run_writes_report_and_renders(offline_pipeline, tmp_path):
     assert reports and all(not r.endswith("_DEMO.json") for r in reports)
 
 
+def _scene_types(rendered):
+    return [s.plan.scene_type.value for s in rendered["scenes"]]
+
+
+def _scene_of(rendered, scene_type):
+    return next(s for s in rendered["scenes"] if s.plan.scene_type.value == scene_type)
+
+
 def test_rendered_scenes_are_fed_from_the_report(offline_pipeline, tmp_path):
-    """Everything the renderer received must match what the report stored."""
+    """Everything the renderer received must match what the report stored.
+
+    The renderer now draws an editorial plan rather than the report's raw sections, so the
+    check follows the plan - which is still derived only from the report.
+    """
     main.run(_Args())
     report_path = next((tmp_path / "reports").iterdir())
     report = MarketReport.from_json(report_path.read_text(encoding="utf-8"))
 
-    nifty_scene = next(s for s in offline_pipeline["scenes"] if type(s).__name__ == "NiftyScene")
-    assert nifty_scene.m["close"] == report.nifty["close"]
-    assert nifty_scene.m["pct"] == report.nifty["change_pct"]
+    nifty = _scene_of(offline_pipeline, "NIFTY").plan
+    assert nifty.primary_numeric == report.nifty["change_pct"]
+    assert nifty.primary_value == f"{report.nifty['change_pct']:+.2f}%"
 
-    movers_scene = next(s for s in offline_pipeline["scenes"] if type(s).__name__ == "MoversScene")
-    assert [r["symbol"] for r in movers_scene.rows] == [r["symbol"] for r in report.gainers]
-    assert [r["pct"] for r in movers_scene.rows] == [r["change_pct"] for r in report.gainers]
+    gainers = _scene_of(offline_pipeline, "GAINERS").plan
+    losers = _scene_of(offline_pipeline, "LOSERS").plan
+    stored = {r["symbol"]: r["change_pct"] for r in report.gainers + report.losers}
+    for item in gainers.items + losers.items:
+        assert item.title in stored
+        assert item.numeric == stored[item.title]
 
 
 def test_nse_timestamp_survives_into_the_written_report(offline_pipeline, tmp_path):
@@ -163,11 +178,15 @@ def test_upload_is_never_attempted_without_an_upload_flag(offline_pipeline, monk
 
 
 def test_cold_start_renders_without_a_context_scene(offline_pipeline, tmp_path):
-    """With no prior sessions the Short is exactly what it was before Phase 4."""
+    """With no prior sessions there is no historical context to show, and the Short simply
+    becomes shorter rather than carrying an empty scene."""
+    from editorial import MAX_SHORT_DURATION, MIN_SHORT_DURATION
+
     main.run(_Args())
-    names = [type(s).__name__ for s in offline_pipeline["scenes"]]
-    assert "ContextScene" not in names
-    assert sum(s.dur for s in offline_pipeline["scenes"]) == pytest.approx(75.0)
+    assert "CONTEXT" not in _scene_types(offline_pipeline)
+    assert _scene_types(offline_pipeline)[0] == "HOOK", "the Short opens on the hook"
+    total = sum(s.dur for s in offline_pipeline["scenes"])
+    assert MIN_SHORT_DURATION <= total <= MAX_SHORT_DURATION
     assert os.listdir(tmp_path / "intelligence"), "the artifact is written even when empty"
 
 
@@ -190,45 +209,58 @@ def test_context_scene_appears_once_history_exists(offline_pipeline, tmp_path):
                        for s in sessions])
 
     main.run(_Args())
-    names = [type(s).__name__ for s in offline_pipeline["scenes"]]
-    assert "ContextScene" in names
-    assert sum(s.dur for s in offline_pipeline["scenes"]) == pytest.approx(75.0), \
-        "context is carved from the stretch scenes, never added to the runtime"
+    assert "CONTEXT" in _scene_types(offline_pipeline)
+    context = _scene_of(offline_pipeline, "CONTEXT").plan
+    assert context.items and context.source_insight_ids
 
 
-def test_context_scene_duration_comes_out_of_the_stretch_scenes():
-    present = {"intro", "nifty", "gainers", "losers", "events", "outro", "global", "fii",
-               "sector"}
-    without = main.durations(present)
-    with_context = main.durations(present | {"context"}, context=True)
+def test_durations_are_content_driven_not_a_fixed_budget(offline_pipeline):
+    """The Short no longer targets 75s for compatibility; each scene is as long as it needs."""
+    from editorial import MAX_SHORT_DURATION, MIN_SHORT_DURATION
 
-    assert sum(without.values()) == pytest.approx(75.0)
-    assert sum(with_context.values()) == pytest.approx(75.0)
-    assert with_context["context"] == pytest.approx(main.CONTEXT_DUR)
-    for key in main.STRETCH:
-        assert with_context[key] < without[key]
-    for key in ("intro", "global", "fii", "sector", "events", "outro"):
-        assert with_context[key] == pytest.approx(without[key])
+    main.run(_Args())
+    durations = [s.dur for s in offline_pipeline["scenes"]]
+    total = sum(durations)
+    assert MIN_SHORT_DURATION <= total <= MAX_SHORT_DURATION
+    assert total != pytest.approx(75.0)
+    assert len(set(durations)) > 1, "identical durations would mean nothing adapted"
 
 
-def test_unsafe_intelligence_statement_is_dropped_before_display():
-    """Statements are templated and safe, but they are published text and get scanned."""
-    from intelligence import IntelligenceInsight, InsightCategory, IntelligenceSnapshot
+def test_reading_heavy_scenes_hide_the_ticker(offline_pipeline):
+    main.run(_Args())
+    by_type = {s.plan.scene_type.value: s for s in offline_pipeline["scenes"]}
+    assert by_type["NIFTY"].show_ticker is False
+    assert by_type["HOOK"].show_ticker is True
 
-    snapshot = IntelligenceSnapshot(report_id="x")
-    snapshot.insights = [
-        IntelligenceInsight(insight_id="safe", category=InsightCategory.INDEX_MOVE,
-                            subject="NIFTY 50", sample_size=20,
-                            statement="Nifty's 1.2% move is larger than 17 of the previous 20 sessions.",
-                            metadata={"selection_score": 0.9}),
-        IntelligenceInsight(insight_id="unsafe", category=InsightCategory.MOVER_RECURRENCE,
-                            subject="ABC", sample_size=20,
-                            statement="Top stocks to buy tomorrow: ABC",
-                            metadata={"selection_score": 1.0}),
-    ]
-    lines = main.context_lines(snapshot)
-    assert [label for label, _ in lines] == ["NIFTY"]
-    assert all("to buy" not in text.lower() for _, text in lines)
+
+def test_no_rendered_scene_cycles_captions(offline_pipeline):
+    """The bottom caption no longer rotates analytical sentences under a reader."""
+    main.run(_Args())
+    for scene in offline_pipeline["scenes"]:
+        assert len(scene.captions()) <= 1, type(scene).__name__
+
+
+def test_every_word_a_scene_draws_was_declared_by_the_plan(offline_pipeline):
+    """`plan.public_text()` is what the final content scan and the reading budget see, so a
+    scene that draws a string of its own escapes both.
+
+    This is not hypothetical: the outro drew its own "DAILY MARKET BYTE" / "New recap every
+    trading day", and the hook drew a second wordmark - none of it known to the plan.
+    """
+    import video
+    from PIL import Image, ImageDraw
+
+    main.run(_Args())
+    surface = ImageDraw.Draw(Image.new("RGBA", (video.W, video.H)))
+
+    for scene in offline_pipeline["scenes"]:
+        declared = " ".join(scene.plan.public_text().values()).lower()
+        drawn = []
+        surface.text = lambda xy, text, drawn=drawn, **kw: drawn.append(text)
+        scene.draw(surface, Image.new("RGBA", (video.W, video.H)), scene.dur / 2)
+        for fragment in drawn:
+            assert fragment.strip().rstrip(".…").lower() in declared, (
+                f"{type(scene).__name__} drew {fragment!r}, which the plan never declared")
 
 
 def test_intelligence_failure_does_not_stop_the_run(offline_pipeline, monkeypatch):
@@ -237,8 +269,7 @@ def test_intelligence_failure_does_not_stop_the_run(offline_pipeline, monkeypatc
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("history exploded")))
     out = main.run(_Args())
     assert out and os.path.exists(out)
-    names = [type(s).__name__ for s in offline_pipeline["scenes"]]
-    assert "ContextScene" not in names
+    assert "CONTEXT" not in _scene_types(offline_pipeline)
 
 
 def test_unsafe_upstream_text_is_neutralised_and_never_reaches_the_report(

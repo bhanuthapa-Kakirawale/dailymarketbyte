@@ -92,8 +92,55 @@ def history(ticker: str, period: str = "1y") -> pd.DataFrame:
     return retry(_get)
 
 
+def _nifty_history_with_backfill_check(period: str = "1y", max_extra_attempts: int = 2):
+    """Nifty's own chart history can lag one session behind Yahoo's already-published live
+    quote for the same index (verified 2026-09-23: `^NSEI`'s chart stayed at 21-Sep as its
+    latest bar while `history_metadata.regularMarketTime` already showed a 22-Sep close, for
+    well over ten minutes of repeated checking). This matters far more than an ordinary stale
+    read: `get_market()`'s Nifty fetch sets `recap_date`, and every other date-alignment check
+    in the pipeline (NSE indices, sectors, movers, FII/DII) is gated against that one date - a
+    stale recap_date silently starves the whole run of same-day data that is, in fact, already
+    published elsewhere (verified same day: NSE's own `/api/allIndices` already had all 12
+    sector indices for 22-Sep, correctly rejected only because it didn't match this stale date).
+
+    Detected by comparing the chart's last bar to the live quote's own timestamp - never a
+    wall-clock guess - and given the same escalating-wait retry `get_movers` already uses for
+    its analogous Close-backfill lag (30s, then 60s) before giving up and using whatever the
+    chart already has. A lag that outlasts these retries is not fixed here, by design - the
+    right recovery for a lag lasting minutes is a later run or the next scheduled cron, not
+    inventing a session from the live quote's other metadata fields (verified separately that
+    `chartPreviousClose`/`regularMarketPrice` disagree with verified chart data by several
+    percentage points and must never be used as a data source)."""
+    import yfinance as yf
+
+    def _fetch():
+        tk = yf.Ticker("^NSEI")
+        d = _clean(tk.history(period=period, interval="1d", auto_adjust=False))
+        if d.empty:
+            raise RuntimeError("no data for ^NSEI")
+        return d, (tk.history_metadata or {})
+
+    d = meta = None
+    for attempt in range(max_extra_attempts + 1):
+        d, meta = retry(_fetch)
+        live_time = meta.get("regularMarketTime")
+        lagging = live_time is not None and live_time.date() > d.index[-1].date()
+        if not lagging or attempt == max_extra_attempts:
+            if lagging:
+                print(f"[market] Nifty chart still lags the live quote after retries "
+                      f"(chart last={d.index[-1].date()}, live={live_time.date()}) - "
+                      "using the chart's own latest session")
+            return d
+        wait = 30 * (attempt + 1)
+        print(f"[market] Nifty chart last bar is {d.index[-1].date()} but the live quote is "
+              f"already {live_time.date()} - retrying in {wait}s "
+              f"(attempt {attempt + 1}/{max_extra_attempts})")
+        time.sleep(wait)
+    return d
+
+
 def get_market() -> dict:
-    nifty = history("^NSEI", "1y")
+    nifty = _nifty_history_with_backfill_check("1y")
     if len(nifty) < 60:
         raise RuntimeError("Not enough Nifty history returned")
     bank_pct = vix = None
@@ -397,10 +444,21 @@ def get_sectors(recap_date, prev_date, nse_idx: dict) -> list:
             continue
         try:
             d = history(yt, "1mo")
-            if d.index[-1].date() == recap_date and d.index[-2].date() == prev_date:
+            if len(d) < 2:
+                # A confirmed real failure mode for some NSE sector-index tickers on Yahoo:
+                # `.history()` returns exactly one row (a live/current spot quote) regardless
+                # of period, never a daily-bar series - previously silent, so a real run could
+                # lose most of its sectors with nothing in the logs to explain why.
+                last = d.index[-1].date() if len(d) else None
+                print(f"[market] sector {label} dropped: yfinance {yt} returned only "
+                      f"{len(d)} daily bar(s) (last={last}), no usable day-over-day history")
+            elif d.index[-1].date() == recap_date and d.index[-2].date() == prev_date:
                 out.append({"name": label, "pct": float((d.Close.iloc[-1] / d.Close.iloc[-2] - 1) * 100)})
             elif d.index[-1].date() == recap_date:
                 print(f"[market] sector {label} dropped: prev-close date {d.index[-2].date()} != {prev_date}")
+            else:
+                print(f"[market] sector {label} dropped: latest bar {d.index[-1].date()} "
+                      f"!= recap session {recap_date}")
         except Exception as e:
             print(f"[market] sector {label} failed: {e}")
     return sorted(out, key=lambda x: -x["pct"])

@@ -134,6 +134,7 @@ def test_report_is_built_before_presentation():
     import inspect
     source = inspect.getsource(main.run)
     order = [source.index(marker) for marker in
-             ("build_report(", "check_publication(", "ReportPresentation(", "build_scenes(",
-              "video.render(")]
-    assert order == sorted(order), "report must precede presentation and rendering"
+             ("build_report(", "check_publication(", "plan_short(", "ReportPresentation(",
+              "scenes_from_plan(", "video.render(")]
+    assert order == sorted(order), \
+        "the report must precede the editorial plan, presentation and rendering"

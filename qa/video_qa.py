@@ -295,7 +295,8 @@ def _check_frames(result: VideoQAResult, video_path: str, duration: float, sampl
 # --------------------------------------------------------------------- artifact
 def write_qa_artifact(result: VideoQAResult, out_dir: str, report, report_path: str | None = None,
                       video_path: str | None = None, demo: bool = False,
-                      content_qa: dict | None = None) -> str:
+                      content_qa: dict | None = None, readability: dict | None = None,
+                      editorial: dict | None = None) -> str:
     """Write the QA record beside the run's other artifacts.
 
     This is the operational half of the record: what happened when we tried to render and
@@ -322,6 +323,10 @@ def write_qa_artifact(result: VideoQAResult, out_dir: str, report, report_path: 
         "warnings": list(result.warnings),
         "content_safety": report.content_safety,
         "final_content_qa": content_qa,
+        "readability_qa": readability,
+        # The editorial plan is derived presentation state, recorded here so a published
+        # Short can be explained later without re-deriving what it chose to say.
+        "editorial_plan": editorial,
         "data_validation": report.validation_summary.to_dict(),
     }
     with open(path, "w", encoding="utf-8") as fh:

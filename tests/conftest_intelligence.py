@@ -54,7 +54,7 @@ def movers(symbols, volx=2.0, definition_version="2.0"):
 
 
 def session_report(session, pct=0.3, fii=None, dii=None, vix=13.0, sectors=None,
-                   gainers=None, losers=None, report_date=None, demo=False,
+                   gainers=None, losers=None, events=None, report_date=None, demo=False,
                    definition_version="2.0"):
     """One canonical report for `session`, published the next day."""
     flows = None
@@ -63,6 +63,7 @@ def session_report(session, pct=0.3, fii=None, dii=None, vix=13.0, sectors=None,
     report = build_test_report(
         market(session, pct=pct, vix=vix), gainers=list(gainers or []),
         losers=list(losers or []), sectors=list(sectors or []), flows=flows,
+        events=list(events or []),
         report_date=report_date or (session + dt.timedelta(days=1)), demo=demo, now=NOW)
     if definition_version != "2.0":
         _rewrite_relative_volume_version(report, definition_version)

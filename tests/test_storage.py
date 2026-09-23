@@ -249,6 +249,26 @@ def test_demo_reports_do_not_contaminate_production_history(db, market_dict, rep
     assert len(everything) == 2
 
 
+def test_a_same_day_demo_report_never_collides_with_the_production_one(
+        db, market_dict, report):
+    """report_id is the canonical primary key. A demo run on the SAME report_date as a
+    production run must get its own row - not silently fail to persist against the
+    production report's row, and not later be handed the production JSON artifact by
+    `adopt_existing_report` when it looks its own report_id up in history."""
+    demo = build_test_report(market_dict, demo=True, report_date=report.report_date)
+    assert demo.report_id != report.report_id, \
+        "a demo report sharing report_date/report_type with a production one must not " \
+        "share its report_id"
+
+    assert db.save_report(report, artifact_path="real.json", is_demo=False)
+    assert db.save_report(demo, artifact_path="demo.json", is_demo=True)
+
+    stored_prod = db.get_report(report.report_id)
+    stored_demo = db.get_report(demo.report_id)
+    assert stored_prod.json_artifact_path == "real.json"
+    assert stored_demo.json_artifact_path == "demo.json"
+
+
 def test_date_range_query(db, report, market_dict):
     other = build_test_report(market_dict, report_date=dt.date(2026, 10, 15))
     db.save_report(report, artifact_path="a.json")

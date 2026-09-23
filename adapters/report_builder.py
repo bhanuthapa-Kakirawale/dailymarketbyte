@@ -128,6 +128,14 @@ def build_report(session, narrative, observations: list[Observation], tiles: lis
                       "number rendered in the video is derived from these facts and sections."),
         },
     )
+    if demo:
+        # A demo and a production run on the same date share `report_date` and `report_type`,
+        # so MarketReport's default report_id (unchanged, untouched here) would collide - the
+        # demo run could then silently adopt, or be silently blocked from persisting beside,
+        # the SAME canonical row a production run already wrote for that day. Giving it a
+        # distinct id is enough to make it a distinct row; nothing about how a normal report's
+        # id is generated changes.
+        report.report_id = f"{report.report_id}_DEMO"
     return report
 
 

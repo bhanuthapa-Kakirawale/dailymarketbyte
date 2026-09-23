@@ -304,10 +304,10 @@ def test_rerun_renders_from_the_persisted_report_not_fresh_provider_data(
     monkeypatch.setattr(main.market, "get_market", lambda: dict(moved))
     main.run(_Args())
 
-    nifty_scene = next(s for s in offline_pipeline["scenes"] if type(s).__name__ == "NiftyScene")
-    assert nifty_scene.m["vix"] == original_vix, \
+    rendered = MarketReport.from_json(open(_report_json(tmp_path), encoding="utf-8").read())
+    assert rendered.nifty["india_vix"] == original_vix, \
         "the rerun must render the canonical report, not newly fetched data"
-    assert nifty_scene.m["vix"] != 99.9
+    assert rendered.nifty["india_vix"] != 99.9
 
     report = MarketReport.from_json(open(_report_json(tmp_path), encoding="utf-8").read())
     assert report.nifty["india_vix"] == original_vix
@@ -390,6 +390,40 @@ def test_unreadable_canonical_artifact_fails_safely(offline_pipeline, monkeypatc
     monkeypatch.undo()
 
     assert _canonical_snapshot(_db(tmp_path)) == before
+
+
+# --------------------------------------------------------------------- demo/production identity
+def test_a_demo_run_never_adopts_the_same_days_production_report(offline_pipeline, tmp_path):
+    """Regression: demo and production share report_date/report_type, so before report_id was
+    made demo-aware, a `--demo` run on a day production had already run for computed the SAME
+    report_id - and `adopt_existing_report` would then hand the demo run the PRODUCTION
+    report's canonical JSON to render and QA under the demo label."""
+    prod_out = main.run(_Args())
+    assert prod_out and os.path.exists(prod_out)
+    prod_report = MarketReport.from_json(open(_report_json(tmp_path), encoding="utf-8").read())
+    assert prod_report.metadata.get("demo") is not True
+
+    demo_out = main.run(_Args(demo=True))
+    assert demo_out and os.path.exists(demo_out)
+    assert demo_out != prod_out
+
+    reports_dir = tmp_path / "reports"
+    written = sorted(p.name for p in reports_dir.iterdir())
+    assert len(written) == 2, f"expected separate production and demo artifacts, got {written}"
+    demo_path = next(p for p in reports_dir.iterdir() if "_DEMO" in p.name)
+    demo_report = MarketReport.from_json(demo_path.read_text(encoding="utf-8"))
+
+    assert demo_report.report_id != prod_report.report_id
+    assert demo_report.metadata.get("demo") is True, \
+        "adopt_existing_report must not have substituted the production report"
+
+    with MarketHistory(_db(tmp_path)) as history:
+        rows = history.conn.execute("SELECT report_id, is_demo FROM reports "
+                                    "ORDER BY report_id").fetchall()
+    assert len(rows) == 2
+    by_id = {r["report_id"]: r["is_demo"] for r in rows}
+    assert by_id[prod_report.report_id] == 0
+    assert by_id[demo_report.report_id] == 1
 
 
 # --------------------------------------------------------------------- administrative path

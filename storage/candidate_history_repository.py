@@ -10,7 +10,7 @@ import sqlite3
 
 from .candidate_history_migrations import (CandidateHistorySchemaVersionError, current_version,
                                            initialise)
-from .candidate_history_models import StoredCandidateState
+from .candidate_history_models import RunStatus, StoredCandidateState, StoredRunMarker
 
 DEFAULT_DB_RELPATH = os.path.join("data", "radar_candidate_history.db")
 
@@ -97,6 +97,64 @@ class CandidateHistoryStore:
                 inserted += cur.rowcount
         return inserted
 
+    # ------------------------------------------------------------------ run markers (Packet 5.4E)
+    def mark_run(self, session_date: dt.date, calculation_version: str, status: str,
+                candidate_count: int, processed_at: dt.datetime | None = None) -> None:
+        """Upsert the `candidate_history_runs` row for `(session_date, calculation_version)`.
+
+        Unlike `save_candidates`, this is a REPLACE, not an insert-and-ignore: a session that
+        was previously `FAILED` must be updatable to `COMPLETE` on a successful retry (packet
+        spec section 14 - "already COMPLETE sessions should normally be skipped... FAILED/
+        incomplete session retried"), and a caller marking `FAILED` after a `COMPLETE` row
+        would be a bug in the caller, not something this method tries to prevent - it simply
+        records whatever the caller reports.
+        """
+        processed_at = processed_at or dt.datetime.now(dt.timezone.utc)
+        with self.conn:
+            self.conn.execute(
+                """INSERT INTO candidate_history_runs
+                       (session_date, calculation_version, status, candidate_count, processed_at)
+                   VALUES (?,?,?,?,?)
+                   ON CONFLICT(session_date, calculation_version) DO UPDATE SET
+                       status=excluded.status, candidate_count=excluded.candidate_count,
+                       processed_at=excluded.processed_at""",
+                (_iso(session_date), calculation_version,
+                 status.value if isinstance(status, RunStatus) else status,
+                 candidate_count, _iso(processed_at)))
+
+    def get_run_status(self, session_date: dt.date, calculation_version: str) -> StoredRunMarker | None:
+        row = self.conn.execute(
+            "SELECT * FROM candidate_history_runs WHERE session_date = ? AND calculation_version = ?",
+            (_iso(session_date), calculation_version)).fetchone()
+        if row is None:
+            return None
+        return StoredRunMarker(
+            session_date=_parse_date(row["session_date"]),
+            calculation_version=row["calculation_version"], status=row["status"],
+            candidate_count=row["candidate_count"],
+            processed_at=dt.datetime.fromisoformat(row["processed_at"]))
+
+    def is_session_complete(self, session_date: dt.date, calculation_version: str) -> bool:
+        marker = self.get_run_status(session_date, calculation_version)
+        return marker is not None and marker.status == RunStatus.COMPLETE.value
+
+    def get_complete_sessions(self, calculation_version: str, *, before: dt.date | None = None,
+                              after: dt.date | None = None) -> set:
+        """Every `session_date` with a `COMPLETE` row under `calculation_version` - one bounded
+        query, the input `radar.candidate_history_backfill.find_missing_candidate_sessions`
+        needs (packet spec section 10), never one lookup per candidate spine session."""
+        sql = ("SELECT session_date FROM candidate_history_runs "
+              "WHERE calculation_version = ? AND status = ?")
+        params: list = [calculation_version, RunStatus.COMPLETE.value]
+        if before is not None:
+            sql += " AND session_date < ?"
+            params.append(_iso(before))
+        if after is not None:
+            sql += " AND session_date > ?"
+            params.append(_iso(after))
+        rows = self.conn.execute(sql, params).fetchall()
+        return {_parse_date(r["session_date"]) for r in rows}
+
     # ------------------------------------------------------------------ reading
     def get_prior_candidates(self, before_session_date: dt.date, spine: list,
                              lookback_sessions: int) -> list:
@@ -153,4 +211,4 @@ class CandidateHistoryStore:
 
 
 __all__ = ["CandidateHistoryStore", "default_db_path", "DEFAULT_DB_RELPATH",
-          "CandidateHistorySchemaVersionError", "current_version"]
+          "CandidateHistorySchemaVersionError", "current_version", "RunStatus", "StoredRunMarker"]

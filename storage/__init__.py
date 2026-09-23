@@ -6,7 +6,7 @@ every stored report carries the path of the JSON it came from so the authoritati
 always locatable. Nothing in the rendering path reads from here.
 """
 from .candidate_history_migrations import CandidateHistorySchemaVersionError
-from .candidate_history_models import StoredCandidateState
+from .candidate_history_models import RunStatus, StoredCandidateState, StoredRunMarker
 from .candidate_history_repository import (
     DEFAULT_DB_RELPATH as CANDIDATE_HISTORY_DEFAULT_DB_RELPATH, CandidateHistoryStore,
     default_db_path as candidate_history_default_db_path)
@@ -32,4 +32,5 @@ __all__ = ["MarketHistory", "default_db_path", "DEFAULT_DB_RELPATH", "SCHEMA_VER
            "EditorialSchemaVersionError", "editorial_default_db_path",
            "EDITORIAL_DEFAULT_DB_RELPATH",
            "CandidateHistoryStore", "StoredCandidateState", "CandidateHistorySchemaVersionError",
-           "candidate_history_default_db_path", "CANDIDATE_HISTORY_DEFAULT_DB_RELPATH"]
+           "candidate_history_default_db_path", "CANDIDATE_HISTORY_DEFAULT_DB_RELPATH",
+           "RunStatus", "StoredRunMarker"]

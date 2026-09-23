@@ -22,7 +22,7 @@ stored - no OHLCV, no full detector snapshots, no duplicated market data.
 """
 from __future__ import annotations
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS radar_candidate_history (
@@ -44,6 +44,30 @@ CREATE INDEX IF NOT EXISTS idx_candidate_history_session
     ON radar_candidate_history (session_date);
 CREATE INDEX IF NOT EXISTS idx_candidate_history_instrument
     ON radar_candidate_history (instrument, session_date);
+
+-- Session-level processing marker (Phase 4.2 Packet 5.4E). A valid trading session can
+-- legitimately produce ZERO composite candidates - that must never be confused with "this
+-- session was never processed". `radar_candidate_history` row EXISTENCE alone cannot make this
+-- distinction (a zero-candidate session inserts no rows at all), so this table is the
+-- authoritative record of "was session X actually run through the candidate-history pipeline,
+-- and under which calculation_version". Keyed on (session_date, calculation_version) rather
+-- than session_date alone: a session already processed under an OLDER calculation_version must
+-- remain distinguishable from - and reprocessable under - a newer one, never silently treated
+-- as equivalent (packet spec section 15). `status` is `COMPLETE` only once candidate persistence
+-- for that session has actually succeeded; a crash or exception between computing candidates and
+-- persisting this marker must never leave a false `COMPLETE` row - see
+-- `radar.candidate_history_backfill` for the write ordering this depends on.
+CREATE TABLE IF NOT EXISTS candidate_history_runs (
+    session_date         TEXT NOT NULL,
+    calculation_version    TEXT NOT NULL,
+    status                   TEXT NOT NULL,
+    candidate_count            INTEGER NOT NULL,
+    processed_at                 TEXT NOT NULL,
+    PRIMARY KEY (session_date, calculation_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_candidate_history_runs_session
+    ON candidate_history_runs (session_date);
 """
 
 __all__ = ["SCHEMA_SQL", "SCHEMA_VERSION"]

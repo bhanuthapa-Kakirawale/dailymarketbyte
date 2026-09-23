@@ -11,6 +11,22 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass, field
+from enum import Enum
+
+
+class RunStatus(str, Enum):
+    """Terminal states for one `candidate_history_runs` row (Phase 4.2 Packet 5.4E).
+
+    `COMPLETE` is the only status that counts as "successfully backfilled" - a session's
+    candidate-history state is trustworthy for future novelty comparisons only once its row
+    reads `COMPLETE`. `FAILED` records a session that was attempted and did not finish
+    (candidate persistence itself raised, or an earlier detector stage did) - it remains
+    eligible for retry, exactly like a session with no row at all; the distinction from "no row"
+    is diagnostic only (so an operator/monitor can tell "never attempted" from "attempted and
+    failed"), never a different eligibility rule.
+    """
+    COMPLETE = "COMPLETE"
+    FAILED = "FAILED"
 
 
 def _iso(value) -> str | None:
@@ -50,4 +66,23 @@ class StoredCandidateState:
         }
 
 
-__all__ = ["StoredCandidateState"]
+@dataclass(frozen=True)
+class StoredRunMarker:
+    """One `candidate_history_runs` row - the authoritative record that session_date was (or
+    was attempted to be) run through the candidate-history pipeline under calculation_version,
+    independent of how many candidate rows that produced (Phase 4.2 Packet 5.4E)."""
+    session_date: dt.date
+    calculation_version: str
+    status: str  # RunStatus value
+    candidate_count: int
+    processed_at: dt.datetime
+
+    def to_dict(self) -> dict:
+        return {
+            "session_date": _iso(self.session_date),
+            "calculation_version": self.calculation_version, "status": self.status,
+            "candidate_count": self.candidate_count, "processed_at": _iso(self.processed_at),
+        }
+
+
+__all__ = ["StoredCandidateState", "StoredRunMarker", "RunStatus"]

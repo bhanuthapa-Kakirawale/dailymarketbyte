@@ -23,7 +23,14 @@ def _set_version(conn: sqlite3.Connection, version: int) -> None:
     conn.execute(f"PRAGMA user_version = {int(version)}")
 
 
-MIGRATIONS: list = []
+def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
+    """Add `candidate_history_runs` (Phase 4.2 Packet 5.4E) - idempotent (`CREATE TABLE IF NOT
+    EXISTS`), so re-running this against a database that already has the table (e.g. one
+    created fresh already at v2) is a no-op."""
+    conn.executescript(SCHEMA_SQL)
+
+
+MIGRATIONS: list = [(2, _migrate_v1_to_v2)]
 
 
 def initialise(conn: sqlite3.Connection) -> int:

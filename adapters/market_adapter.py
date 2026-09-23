@@ -223,5 +223,25 @@ class MarketAdapter:
             ]
         return [o for o in out if o]
 
+    # ------------------------------------------------------------------ universe-wide RVOL
+    def observe_universe_relative_volume(self, rows: list) -> list[Observation]:
+        """RVOL-only observations for the wider Market Intelligence Radar scan universe.
+
+        Deliberately narrower than `observe_movers`: no STOCK_CLOSE/STOCK_CHANGE_PCT here.
+        `intelligence/movers.py::analyse_recurrence` infers "was a tracked top mover" purely
+        from the EXISTENCE of a STOCK_CHANGE_PCT fact for a symbol on a session, with no
+        `bucket` check on that count - emitting STOCK_CHANGE_PCT for hundreds of non-mover
+        symbols a day would silently make almost every liquid stock look like a
+        FREQUENT_MOVER on screen. Keeping this path RVOL-only is a hard boundary, not a
+        convenience. See docs/MARKET_INTELLIGENCE_RADAR.md.
+        """
+        out = [
+            self._obs(Metric.STOCK_RELATIVE_VOLUME, row.get("symbol"), row.get("volx"),
+                      UNIT_RATIO, SRC_YAHOO, SourceType.DERIVED,
+                      **_relative_volume_definition(), company=row.get("name"),
+                      universe_scan=True)
+            for row in rows or []]
+        return [o for o in out if o]
+
 
 __all__ = ["MarketAdapter", "SRC_YAHOO", "SRC_NSE", "SRC_DEMO"]

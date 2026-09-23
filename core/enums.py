@@ -50,11 +50,16 @@ class ValidationStatus(str, Enum):
 
 
 class ReportType(str, Enum):
-    """PRE_MARKET is the only edition implemented. POST_MARKET exists so archived
-    reports and downstream consumers already carry the discriminator when the 6 PM
-    edition is built; nothing in this phase produces one."""
+    """PRE_MARKET is the only publication edition implemented. POST_MARKET exists so
+    archived reports and downstream consumers already carry the discriminator when the
+    6 PM edition is built; nothing in this phase produces one. RADAR_SCAN (Phase 4.2
+    Packet 1.1) is not a publication edition at all - it identifies a DB-only canonical
+    history artifact carrying universe-wide STOCK_RELATIVE_VOLUME facts for the Market
+    Intelligence Radar, kept out of the video-facing MarketReport/JSON entirely. See
+    docs/MARKET_INTELLIGENCE_RADAR.md."""
     PRE_MARKET = "PRE_MARKET"
     POST_MARKET = "POST_MARKET"
+    RADAR_SCAN = "RADAR_SCAN"
 
 
 class Metric(str, Enum):

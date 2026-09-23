@@ -5,11 +5,31 @@ artifact is, and it stays immutable. SQLite is the queryable index over those ar
 every stored report carries the path of the JSON it came from so the authoritative file is
 always locatable. Nothing in the rendering path reads from here.
 """
+from .candidate_history_migrations import CandidateHistorySchemaVersionError
+from .candidate_history_models import StoredCandidateState
+from .candidate_history_repository import (
+    DEFAULT_DB_RELPATH as CANDIDATE_HISTORY_DEFAULT_DB_RELPATH, CandidateHistoryStore,
+    default_db_path as candidate_history_default_db_path)
+from .editorial_migrations import EditorialSchemaVersionError
+from .editorial_models import EditorialSelection, SelectionLifecycle
+from .editorial_repository import (DEFAULT_DB_RELPATH as EDITORIAL_DEFAULT_DB_RELPATH,
+                                   EditorialStore, default_db_path as editorial_default_db_path)
 from .migrations import SCHEMA_VERSION, SchemaVersionError, current_version, initialise
+from .ohlcv_models import OHLCVBar, QualityStatus
+from .ohlcv_repository import (DEFAULT_DB_RELPATH as OHLCV_DEFAULT_DB_RELPATH, OHLCVRow,
+                               OHLCVStore, OhlcvSchemaVersionError,
+                               default_db_path as ohlcv_default_db_path)
 from .repository import (DEFAULT_DB_RELPATH, MarketHistory, StoredFact, StoredMetricPoint,
                          StoredObservation, StoredReport, StoredRun, StoredValidationResult,
                          default_db_path)
 
 __all__ = ["MarketHistory", "default_db_path", "DEFAULT_DB_RELPATH", "SCHEMA_VERSION",
            "SchemaVersionError", "current_version", "initialise", "StoredReport", "StoredFact",
-           "StoredObservation", "StoredValidationResult", "StoredRun", "StoredMetricPoint"]
+           "StoredObservation", "StoredValidationResult", "StoredRun", "StoredMetricPoint",
+           "OHLCVStore", "OHLCVRow", "OHLCVBar", "QualityStatus", "OhlcvSchemaVersionError",
+           "ohlcv_default_db_path", "OHLCV_DEFAULT_DB_RELPATH",
+           "EditorialStore", "EditorialSelection", "SelectionLifecycle",
+           "EditorialSchemaVersionError", "editorial_default_db_path",
+           "EDITORIAL_DEFAULT_DB_RELPATH",
+           "CandidateHistoryStore", "StoredCandidateState", "CandidateHistorySchemaVersionError",
+           "candidate_history_default_db_path", "CANDIDATE_HISTORY_DEFAULT_DB_RELPATH"]

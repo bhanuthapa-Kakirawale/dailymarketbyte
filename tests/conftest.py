@@ -18,6 +18,22 @@ REPORT_DATE = dt.date(2026, 9, 21)
 NOW = dt.datetime(2026, 9, 21, 7, 40, tzinfo=IST)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_config_out_dir(tmp_path, monkeypatch):
+    """Point `config.OUT_DIR` at a throwaway per-test directory, autouse and unconditional.
+
+    Several acquisition paths (e.g. `market.get_universe_technical_series`'s OHLCV
+    write-through, Phase 4.2 Packet 5.2) resolve their on-disk location from `config.OUT_DIR`
+    at call time rather than taking it as a parameter, and a test that has no reason to know
+    about that write-through would otherwise silently create/modify real files under this
+    repo's own `output/` directory. Tests stay "fully offline" only if they are also
+    "fully filesystem-isolated" from the real project output - a test that wants the real
+    default may still override this with its own `monkeypatch.setattr(config, "OUT_DIR", ...)`.
+    """
+    import config
+    monkeypatch.setattr(config, "OUT_DIR", str(tmp_path))
+
+
 def observation(value, source="yahoo_finance", kind=SourceType.SECONDARY,
                 metric=Metric.INDEX_CLOSE, instrument="NIFTY 50",
                 market_date=SESSION, unit=UNIT_POINTS, retrieved_at=NOW,

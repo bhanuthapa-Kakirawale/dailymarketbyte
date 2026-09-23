@@ -70,6 +70,27 @@ def _clean(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _truncate_to_recap(d: pd.DataFrame, recap_date: dt.date) -> pd.DataFrame:
+    """Drop any row dated AFTER `recap_date` from an already-`_clean`ed frame (Phase 4.2 Packet
+    5.3B, look-ahead prevention).
+
+    A symbol's own Yahoo series can already have advanced past `recap_date` - later sessions
+    already published for that stock - independent of whatever session `recap_date` itself
+    represents (verified 2026-09-23: while the Nifty INDEX chart still lagged at 21 Sep, most
+    individual NIFTY200 stocks' own series already had 22/23 Sep rows). Acceptance of a recap
+    session must be "does `recap_date` have a valid row in this stock's own series", never "is
+    `recap_date` the LAST row" - a later, unrelated session existing must never invalidate an
+    otherwise-valid recap-date reading (this previously produced 152 false `backfill_pending`
+    results for a genuinely valid session), and must never be visible to any calculation FOR
+    that recap date (RVOL's prior-volume window, technical SMA/range windows, day-over-day
+    %). Every caller of this truncates immediately after `_clean()`, before any date-alignment
+    check or calculation reads `d.index[-1]`/`d.index[-2]`/`d.Close`/`d.Volume` - the "last row"
+    of the returned frame is then always `recap_date` itself when present, restoring the
+    invariant the rest of this file's `iloc[-1]`/`iloc[-2]` logic already assumes.
+    """
+    return d[d.index.date <= recap_date]
+
+
 def retry(fn, tries=3, wait=4):
     last = None
     for i in range(tries):
@@ -230,7 +251,7 @@ def get_movers(universe: dict, recap_date: dt.date, prev_date: dt.date, n: int =
                 continue
             has_recap_row = recap_date in {ts.date() for ts in _normalize_index(full).index}
             try:
-                d = _clean(full)
+                d = _truncate_to_recap(_clean(full), recap_date)
             except Exception:
                 continue
             if len(d) < 3 or d.index[-1].date() != recap_date:
@@ -257,6 +278,235 @@ def get_movers(universe: dict, recap_date: dt.date, prev_date: dt.date, n: int =
         raise RuntimeError(f"Only {len(rows)} stocks had clean data for {recap_date}")
     df = pd.DataFrame(rows).sort_values("pct", ascending=False)
     return df.head(n).to_dict("records"), df.tail(n).iloc[::-1].to_dict("records")
+
+
+def _bulk_download_universe_ohlcv(symbols: list, period: str = "3mo") -> pd.DataFrame:
+    """The one multi-ticker `yf.download()` call, wrapped in `retry()`.
+
+    Extracted fresh for `get_universe_relative_volume` rather than factored out of
+    `get_movers` - `get_movers`'s own inline fetch/retry loop is untouched, so this
+    function carries zero risk to its already-verified NaN-Close-backfill/date-alignment
+    behaviour.
+    """
+    import yfinance as yf
+
+    def _fetch():
+        return yf.download([s + ".NS" for s in symbols], period=period, interval="1d",
+                           group_by="ticker", auto_adjust=False, progress=False, threads=True)
+    return retry(_fetch)
+
+
+def get_universe_relative_volume(universe: dict, recap_date: dt.date, prev_date: dt.date,
+                                 period: str = "3mo"):
+    """Relative volume (the SAME `relative_volume()` formula `get_movers` uses, never a
+    second one) for every symbol in `universe` - not just the top gainers/losers.
+
+    No ranking and no n-truncation: every symbol that produces a usable >=20-prior-session
+    reading is returned. Reuses `get_movers`'s exact NaN-Close backfill-retry pattern and
+    its exact `prev_date` alignment check (duplicated here rather than shared, since that
+    loop in `get_movers` is intertwined with gainer/loser row-building and its
+    `len(rows) >= 2*n` contract, which this function has no equivalent of - a wide universe
+    legitimately returning far fewer usable rows than requested is not a failure here the
+    way it is for `get_movers`'s guaranteed top-n).
+
+    Returns (rows, skip_reasons):
+      rows: [{"symbol": str, "name": str, "volx": float}, ...]
+      skip_reasons: {symbol: "no_recap_row" | "backfill_pending" | "date_gap" |
+                             "insufficient_relative_volume_history"}
+    """
+    syms = list(universe)
+    raw = _bulk_download_universe_ohlcv(syms, period=period)
+
+    rows, skip_reasons, pending_backfill = [], {}, []
+    for attempt in range(3):
+        rows, skip_reasons, pending_backfill = [], {}, []
+        for s in syms:
+            try:
+                full = raw[s + ".NS"][["Open", "High", "Low", "Close", "Volume"]]
+            except Exception:
+                skip_reasons[s] = "no_recap_row"
+                continue
+            has_recap_row = recap_date in {ts.date() for ts in _normalize_index(full).index}
+            try:
+                d = _truncate_to_recap(_clean(full), recap_date)
+            except Exception:
+                skip_reasons[s] = "no_recap_row"
+                continue
+            if len(d) < 3 or d.index[-1].date() != recap_date:
+                if has_recap_row:
+                    pending_backfill.append(s)
+                    skip_reasons[s] = "backfill_pending"
+                else:
+                    skip_reasons[s] = "no_recap_row"
+                continue
+            if d.index[-2].date() != prev_date:
+                skip_reasons[s] = "date_gap"
+                continue
+            volx = relative_volume(d.Volume)
+            if volx is None:
+                skip_reasons[s] = "insufficient_relative_volume_history"
+                continue
+            rows.append({"symbol": s, "name": universe[s], "volx": volx})
+        if not pending_backfill or attempt == 2:
+            break
+        wait = 30 * (attempt + 1)
+        print(f"[market] {len(pending_backfill)} universe stocks have a {recap_date} row with "
+              f"Close not yet backfilled by Yahoo - retrying in {wait}s "
+              f"(attempt {attempt + 1}/3)")
+        time.sleep(wait)
+        raw = _bulk_download_universe_ohlcv(syms, period=period)
+    return rows, skip_reasons
+
+
+# Minimum valid sessions (prior 20 + current) for even the shortest technical-structure
+# detector (the 20-session range break) to be computable at all. Below this the symbol is
+# skipped entirely rather than producing a detector that silently runs over a shorter window.
+MIN_TECHNICAL_SESSIONS = 21
+
+
+def get_universe_technical_series(universe: dict, recap_date: dt.date, prev_date: dt.date,
+                                  period: str = "1y"):
+    """Per-symbol OHLC session history for the Market Intelligence Radar's technical-structure
+    detector (Phase 4.2 Packet 2) - close/high/low across the whole bulk-fetched window, not
+    just today's row.
+
+    Reuses the SAME bulk fetch, NaN-Close backfill retry and `prev_date` alignment checks as
+    `get_universe_relative_volume` - duplicated rather than shared, for the same reason
+    `get_movers`/`get_universe_relative_volume` already duplicate this loop: each caller
+    returns a different shape, and touching the shared loop risks the others' already-verified
+    behaviour.
+
+    Returns (series, skip_reasons):
+      series: {symbol: [{"date": date, "open": float|None, "high": float, "low": float,
+                         "close": float, "volume": float|None}, ...]}
+              oldest first, ending at `recap_date` inclusive. A session with invalid OHLC
+              (high < low, or high/low/close <= 0) is dropped from the series rather than
+              discarding the whole symbol - real data, just not usable for that one row.
+              `open`/`volume` are carried through (None if NaN) so callers needing volume too
+              (Phase 4.2 Packet 5.3's shared OHLCV service, for RVOL) don't need a second
+              fetch - the technical-structure windows below never read these two fields.
+      skip_reasons: "no_recap_row" | "backfill_pending" | "date_gap" (same vocabulary as
+                    `get_universe_relative_volume`) plus "insufficient_technical_history" when
+                    fewer than `MIN_TECHNICAL_SESSIONS` valid sessions remain - too little even
+                    for the 20-session detector, the shortest one this package implements.
+    """
+    syms = list(universe)
+    raw = _bulk_download_universe_ohlcv(syms, period=period)
+
+    series, skip_reasons, pending_backfill = {}, {}, []
+    for attempt in range(3):
+        series, skip_reasons, pending_backfill = {}, {}, []
+        for s in syms:
+            try:
+                full = raw[s + ".NS"][["Open", "High", "Low", "Close", "Volume"]]
+            except Exception:
+                skip_reasons[s] = "no_recap_row"
+                continue
+            has_recap_row = recap_date in {ts.date() for ts in _normalize_index(full).index}
+            try:
+                d = _truncate_to_recap(_clean(full), recap_date)
+            except Exception:
+                skip_reasons[s] = "no_recap_row"
+                continue
+            if len(d) < 3 or d.index[-1].date() != recap_date:
+                if has_recap_row:
+                    pending_backfill.append(s)
+                    skip_reasons[s] = "backfill_pending"
+                else:
+                    skip_reasons[s] = "no_recap_row"
+                continue
+            if d.index[-2].date() != prev_date:
+                skip_reasons[s] = "date_gap"
+                continue
+            rows = [{"date": ts.date(),
+                    "open": None if pd.isna(r.Open) else float(r.Open),
+                    "high": float(r.High), "low": float(r.Low), "close": float(r.Close),
+                    "volume": None if pd.isna(r.Volume) else float(r.Volume)}
+                   for ts, r in d.iterrows()
+                   if r.High >= r.Low and r.High > 0 and r.Low > 0 and r.Close > 0]
+            if len(rows) < MIN_TECHNICAL_SESSIONS:
+                skip_reasons[s] = "insufficient_technical_history"
+                continue
+            series[s] = rows
+        if not pending_backfill or attempt == 2:
+            break
+        wait = 30 * (attempt + 1)
+        print(f"[market] {len(pending_backfill)} universe stocks have a {recap_date} row with "
+              f"Close not yet backfilled by Yahoo - retrying in {wait}s "
+              f"(attempt {attempt + 1}/3)")
+        time.sleep(wait)
+        raw = _bulk_download_universe_ohlcv(syms, period=period)
+
+    try:
+        _write_through_ohlcv(raw, syms, recap_date)
+    except Exception as exc:
+        # Storage failure must never take down the acquisition it rides on (Phase 4.2
+        # Packet 5.2, section 9) - `_write_through_ohlcv` already guards internally, this is
+        # defense in depth so a future edit inside it can't regress that guarantee silently.
+        print(f"[market] OHLCV write-through raised unexpectedly, ignoring: {exc}")
+    return series, skip_reasons
+
+
+def _write_through_ohlcv(raw, syms: list, recap_date: dt.date, source: str = "yahoo") -> None:
+    """Persist every session this bulk fetch already downloaded for `syms` into the local
+    OHLCV cache (`market_ohlcv.db`), using ONLY the bars `get_universe_technical_series`
+    already has in memory - no second Yahoo call (Phase 4.2 Packet 5.2, section 10).
+
+    Write-only from acquisition's point of view: nothing here is read back to influence
+    `series`/`skip_reasons`, and this function is a pure log-and-return-on-failure - it must
+    never raise and never change acquisition's returned values (section 9).
+    """
+    try:
+        from config import OUT_DIR
+        from storage.ohlcv_models import OHLCVBar, QualityStatus
+        from storage.ohlcv_repository import OHLCVStore, default_db_path
+    except Exception as exc:
+        print(f"[market] OHLCV store unavailable, skipping write-through: {exc}")
+        return
+
+    retrieved_at = dt.datetime.now(dt.timezone.utc)
+    bars = []
+    for s in syms:
+        try:
+            full = raw[s + ".NS"][["Open", "High", "Low", "Close", "Volume"]]
+        except Exception:
+            # Yahoo returned nothing at all for this symbol in this fetch - an explicit
+            # NO_DATA row records that this session/symbol was attempted, distinct from a
+            # symbol this cache has simply never seen.
+            bars.append(OHLCVBar(symbol=s, session_date=recap_date, open=None, high=None,
+                                 low=None, close=None, volume=None, source=source,
+                                 retrieved_at=retrieved_at, quality_status=QualityStatus.NO_DATA))
+            continue
+        for ts, r in _normalize_index(full).iterrows():
+            close = None if pd.isna(r.Close) else float(r.Close)
+            open_ = None if pd.isna(r.Open) else float(r.Open)
+            high = None if pd.isna(r.High) else float(r.High)
+            low = None if pd.isna(r.Low) else float(r.Low)
+            volume = None if pd.isna(r.Volume) else float(r.Volume)
+            if close is None:
+                # Open/High/Low/Volume populated but Close still NaN: the known Yahoo
+                # backfill-lag signature (see market.py module notes) - never a valid OK row.
+                quality = QualityStatus.BACKFILL_PENDING
+            elif high is not None and low is not None and high >= low and high > 0 and low > 0:
+                quality = QualityStatus.OK
+            else:
+                continue  # not a usable or informative row - skip rather than guess a status
+            bars.append(OHLCVBar(symbol=s, session_date=ts.date(), open=open_, high=high,
+                                 low=low, close=close, volume=volume, source=source,
+                                 retrieved_at=retrieved_at, quality_status=quality))
+
+    try:
+        store = OHLCVStore(default_db_path(OUT_DIR))
+    except Exception as exc:
+        print(f"[market] OHLCV store unavailable, skipping write-through: {exc}")
+        return
+    try:
+        n = store.upsert_bars(bars)
+        print(f"[market] OHLCV write-through: {n} bars persisted for {len(syms)} symbols")
+    except Exception as exc:
+        print(f"[market] OHLCV write-through failed: {exc}")
+    finally:
+        store.close()
 
 
 # ----------------------------------------------------------------------------- analysis

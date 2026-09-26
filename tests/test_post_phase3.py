@@ -39,7 +39,7 @@ def real():
         pytest.skip("real validation artifacts not present")
     import render_daily_market_byte as r
     plan, pres, rp, rr, ev, uni, src = r.load_inputs(REPORT, "output/radar", "2026-09-21")
-    sb = sbm.build_storyboard(plan, pres, rp, rr, ev, uni, src)
+    sb = sbm.build_storyboard(plan, pres, rp, rr, ev, uni, src, profile="PRIVATE_ANALYTICS")
     by = {s["instrument"]: s for s in rr["stories"]}
     stories = [(sc["story"], by[sc["story"]["instrument"]]) for sc in rp["scenes"]
                if sc.get("role") == "STORY"][:3]
@@ -162,7 +162,7 @@ def test_overnight_cues_never_appear_in_post(real):
     assert "overnight" not in shown
     assert all(s.kind != "AHEAD" for s in real["sb"].scenes)
     busy = sbm.build_storyboard(_plan(globals_=(("NASDAQ", -2.4),), gainers=(("STOCK-E", 6.0),)),
-                                _pres(pct=-1.6), dynamic_hook=False)
+                                _pres(pct=-1.6), dynamic_hook=False, profile="PRIVATE_ANALYTICS")
     assert "overnight" not in " ".join(busy.public_text().values()).lower()
 
 
@@ -208,7 +208,7 @@ def test_gemini_reply_cannot_change_sections(real):
     calls = []
     sb = sbm.build_storyboard(real["plan"], real["pres"], real["rp"], real["rr"], real["ev"],
                               real["uni"], real["src"], hook_ai=True,
-                              hook_client=lambda p, s: calls.append(p) or '{"sections": ["MOVERS"]}')
+                              hook_client=lambda p, s: calls.append(p) or '{"sections": ["MOVERS"]}', profile="PRIVATE_ANALYTICS")
     assert calls and sb.post_plan["order"] == real["sb"].post_plan["order"]
 
 
@@ -263,7 +263,7 @@ def test_public_text_passes_content_safety(real):
 def _all_optional_storyboard():
     return sbm.build_storyboard(
         _plan(gainers=(("STOCK-E", 6.0),), losers=(("STOCK-F", -5.1),)),
-        _pres(pct=-0.9, cross="down"), dynamic_hook=False)
+        _pres(pct=-0.9, cross="down"), dynamic_hook=False, profile="PRIVATE_ANALYTICS")
 
 
 def test_safe_areas_and_clipping_real_and_optional(real):
@@ -298,7 +298,7 @@ def test_runtime(real):
     busiest = sbm.build_storyboard(
         _plan(gainers=(("STOCK-E", 6.0),), globals_=(("NASDAQ", -2.4),),
               flows=(("FII", -3200.0), ("DII", 2900.0)), events=(("RBI policy decision", "RBI"),)),
-        _pres(pct=-1.6, cross="down"), dynamic_hook=False)
+        _pres(pct=-1.6, cross="down"), dynamic_hook=False, profile="PRIVATE_ANALYTICS")
     assert busiest.total_duration + 4.6 + 3.8 + 3 * 6.8 <= 65.0     # + hook and a full Radar
 
 

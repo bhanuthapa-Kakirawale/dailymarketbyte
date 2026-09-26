@@ -3,6 +3,7 @@
 These are renderer-only tests - the plan itself (word counts, caps, ordering) is exactly the
 Phase 4.1.2 plan and is covered by tests/test_editorial.py; nothing here re-asserts it.
 """
+import functools
 import datetime as dt
 
 import pytest
@@ -12,6 +13,11 @@ from conftest_intelligence import market, movers, trading_sessions
 
 import video
 from editorial import plan_short
+
+# These tests pin the editorial ENGINE (movers ranking, news events, stock insights), which
+# is PRIVATE_ANALYTICS content since the publication boundary; the public default is
+# covered by tests/test_public_publication.py.
+plan_short = functools.partial(plan_short, profile="PRIVATE_ANALYTICS")
 
 SESSION = trading_sessions(1)[0]
 

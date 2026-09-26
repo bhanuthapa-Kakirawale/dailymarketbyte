@@ -1,4 +1,5 @@
 """Editorial selection: what the Short says, how long it runs, and what it leaves out."""
+import functools
 import datetime as dt
 
 import pytest
@@ -11,6 +12,11 @@ from editorial import (MAX_CONTEXT_INSIGHTS, MAX_EVENTS, MAX_GLOBAL_CUES, MAX_HE
                        MAX_RANKED_MOVERS, MAX_SECTORS_HIGHLIGHTED, MAX_SHORT_DURATION,
                        MIN_SHORT_DURATION, SceneType, plan_short)
 from editorial.config import MAX_MAJOR_CARDS, TICKER_SCENES, bounds_for
+
+# These tests pin the editorial ENGINE (movers ranking, news events, stock insights), which
+# is PRIVATE_ANALYTICS content since the publication boundary; the public default is
+# covered by tests/test_public_publication.py.
+plan_short = functools.partial(plan_short, profile="PRIVATE_ANALYTICS")
 
 SESSION = trading_sessions(1)[0]
 

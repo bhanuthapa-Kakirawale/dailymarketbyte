@@ -231,11 +231,13 @@ def fallback(report) -> HookCandidate:
                          score=0.0, order=99)
 
 
-def select(report, snapshot, is_safe=None) -> HookCandidate:
+def select(report, snapshot, is_safe=None, admit=None) -> HookCandidate:
     """The strongest candidate that passes content safety, else the neutral fallback.
 
     `is_safe` receives each piece of hook text; safety is never bypassed, so an unsafe
     candidate is skipped in favour of the next one rather than being published or rewritten.
+    `admit` (the publication gate, see editorial.planner) receives each candidate; a candidate
+    it refuses - e.g. a single named stock under PUBLIC_UNREGISTERED - is skipped the same way.
     """
     if is_safe is None:
         def is_safe(_text):
@@ -243,6 +245,8 @@ def select(report, snapshot, is_safe=None) -> HookCandidate:
 
     for candidate in candidates(report, snapshot):
         if not candidate.within_budget():
+            continue
+        if admit is not None and not admit(candidate):
             continue
         if all(is_safe(text) for text in candidate.texts()):
             return candidate

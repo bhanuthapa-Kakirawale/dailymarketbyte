@@ -37,7 +37,7 @@ def real():
         pytest.skip("real validation artifacts not present")
     import render_daily_market_byte as r
     plan, pres, rp, rr, ev, uni, src = r.load_inputs(REPORT, "output/radar", "2026-09-21")
-    sb = sbm.build_storyboard(plan, pres, rp, rr, ev, uni, src)
+    sb = sbm.build_storyboard(plan, pres, rp, rr, ev, uni, src, profile="PRIVATE_ANALYTICS")
     comp = Composer(sb)
     stories = [(i, s) for i, s in enumerate(sb.scenes) if s.kind == "RADAR_STORY"]
     frames = {i: comp.freeze(i) for i, _ in stories}

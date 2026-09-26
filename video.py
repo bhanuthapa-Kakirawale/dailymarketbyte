@@ -970,7 +970,40 @@ def _ffmpeg():
         return "ffmpeg"
 
 
-def render(scenes, info, ticker_items, music_path, out_path, demo=False):
+PROV_BOX = (X0, 1380, 920, 1462)     # SOURCE / DATA AS OF plate: left of the Shorts action rail
+
+
+def provenance_layer(prov):
+    """The legacy renderer's SOURCE / DATA AS OF plate (same size/position grammar as
+    daily_video.provenance_bar): two bold 26 px lines on a dark plate, above the disclaimer."""
+    key = ("prov", prov.get("source"), prov.get("as_of"))
+    if key in _cap_cache:
+        return _cap_cache[key]
+    bw, bh = PROV_BOX[2] - PROV_BOX[0], PROV_BOX[3] - PROV_BOX[1]
+    img = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle((0, 0, bw - 1, bh - 1), 14, fill=(12, 19, 44, 225), outline=(44, 60, 104, 255),
+                        width=2)
+    d.rounded_rectangle((0, 12, 5, bh - 13), 3, fill=ACCENT + (255,))
+    y = 10
+    for line in (prov.get("source"), prov.get("as_of")):
+        if not line:
+            continue
+        f = fit(line, bw - 40, 26, min_size=24)
+        head, sep, rest = line.partition(": ")
+        if sep:
+            d.text((22, y), head + ":", font=f, fill=SUB)
+            d.text((22 + tlen(head + ": ", f), y), rest, font=f, fill=TEXT)
+        else:
+            d.text((22, y), line, font=f, fill=TEXT)
+        y += 34
+    _cap_cache[key] = img
+    return img
+
+
+def render(scenes, info, ticker_items, music_path, out_path, demo=False, provenance=None):
+    """`provenance`: optional list aligned with `scenes` - {"source", "as_of"} or None - drawn
+    as the SOURCE / DATA AS OF plate for the whole of that scene (public profile)."""
     total = sum(s.dur for s in scenes)
     bd = Backdrop()
     head = header_layer(info, demo)
@@ -1016,6 +1049,10 @@ def render(scenes, info, ticker_items, music_path, out_path, demo=False):
         if cap:
             layer = caption_layer(*cap)
             frame.paste(layer, CAP_BOX[:2], layer)
+        prov = provenance[i] if provenance and i < len(provenance) else None
+        if prov:
+            pl = provenance_layer(prov)
+            frame.paste(pl, PROV_BOX[:2], pl)
         d = ImageDraw.Draw(frame)
         d.line((X0, LINE_Y, X1, LINE_Y), fill=(40, 54, 96), width=5)
         d.line((X0, LINE_Y, X0 + (X1 - X0) * (t / total), LINE_Y), fill=ACCENT, width=5)

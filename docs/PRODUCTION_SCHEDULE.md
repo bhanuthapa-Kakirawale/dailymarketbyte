@@ -27,7 +27,9 @@ NEXT SESSION D+1
   07:40 IST        POST job     python main.py --upload               (daily_byte.yml)
                      canonical report for D exists? -> reuse it (REUSED_CANONICAL)
                      else build it with the same code path (BUILT_INLINE, recorded)
-                     render -> data/content/video QA -> upload
+                     render -> data/content/video/readability QA
+                     -> publication audit (PUBLIC_UNREGISTERED) -> upload (refused without a
+                        PASS audit for this exact file - docs/PUBLICATION_POLICY.md)
                      run record: job_type=POST_MARKET
 ```
 

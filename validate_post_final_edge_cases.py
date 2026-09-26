@@ -282,7 +282,7 @@ def cmd_render() -> int:
     # the COROMANDEL scene on its own
     plan, pres, rp, rr, ev, uni, src = r.load_inputs(REPORT_24, RADAR_24, "2026-09-24")
     from daily_video import build_storyboard
-    sb = build_storyboard(plan, pres, rp, rr, ev, uni, src, hook_ai=False)
+    sb = build_storyboard(plan, pres, rp, rr, ev, uni, src, hook_ai=False, profile="PRIVATE_ANALYTICS")
     spec = next(s for s in sb.scenes if s.kind == "RADAR_STORY" and s.texts["symbol"] == "COROMANDEL")
     one = Storyboard(session_date=sb.session_date, date_label=sb.date_label, kicker=sb.kicker,
                      scenes=[spec])

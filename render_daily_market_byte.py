@@ -71,6 +71,12 @@ def main(argv=None):
                     "daily_market_byte_redesign_<session>.mp4)")
     ap.add_argument("--no-hook-ai", action="store_true",
                     help="open with the deterministic hook; never call Gemini")
+    ap.add_argument("--profile", choices=("PUBLIC_UNREGISTERED", "PRIVATE_ANALYTICS"),
+                    default=None, help="publication profile (default PUBLIC_UNREGISTERED: no Radar "
+                                       "stock story, Market Structure / Exchange / IPO Watch instead)")
+    ap.add_argument("--fetch-public", action="store_true",
+                    help="fetch today's official exchange lists (F&O ban, ASM/GSM) and NSE IPO "
+                         "lists; otherwise only stored artifacts are read")
     ap.add_argument("--confirm-publication", action="store_true",
                     help="after a successful render + QA, mark the Radar stories this MP4 shows "
                          "as PUBLISHED (products.radar_publication). Off by default: previews "
@@ -83,8 +89,16 @@ def main(argv=None):
         args.report, args.radar_dir, session)
     # Gemini chooses among approved hook candidates when a key is configured; any failure
     # falls back to the deterministic hook inside the engine.
+    from operations.sessions import next_session
+    from presentation.public_intelligence import load_public_intelligence
+    from publication import resolve_profile
+    profile = resolve_profile(args.profile)
+    list_date = next_session(report.session_date) or report.report_date
+    intel = load_public_intelligence(report.session_date, list_date, OUT_DIR,
+                                     fetch=args.fetch_public,
+                                     now_iso=dt.datetime.now(dt.timezone.utc).isoformat())
     sb = build_storyboard(plan, pres, radar_pres, radar_result, evidence, universe, sources,
-                          hook_ai=not args.no_hook_ai)
+                          hook_ai=not args.no_hook_ai, profile=profile, intelligence=intel)
     if sb.hook_plan:
         hp = sb.hook_plan
         print(f"hook: {hp['archetype']} via {hp['source']}"
@@ -104,6 +118,8 @@ def main(argv=None):
                   encoding="utf-8") as fh:
             json.dump(sb.hook_plan, fh, indent=2, ensure_ascii=False, default=str)
 
+    from daily_video.public_storyboard import audit_storyboard
+    from publication import write_publication_audit
     comp = Composer(sb)
     names = freeze_names(sb)
     progressive = {}
@@ -117,14 +133,24 @@ def main(argv=None):
         if not e["qa"]["passed"]:
             print("  ", e["scene"], e["qa"]["issues"])
     if args.frames_only:
+        audit = audit_storyboard(sb, "POST_UNIFIED")
+        write_publication_audit(audit, args.out_dir)
+        print(f"publication audit ({sb.publication_profile}): {audit['final']}"
+              + (f" - failed {audit['failed_checks']}" if audit["failed_checks"] else ""))
         return 0
 
     out = args.out or os.path.join(OUT_DIR, f"daily_market_byte_redesign_{session}.mp4")
     result = comp.render(out)
+    audit = audit_storyboard(sb, "POST_UNIFIED", video_path=out if result.get("ok") else None)
+    audit_path = write_publication_audit(audit, args.out_dir)
+    print(f"publication audit ({sb.publication_profile}): {audit['final']}"
+          + (f" - failed {audit['failed_checks']}" if audit["failed_checks"] else ""))
     manifest = {"render": result, "session_date": session, "total_duration": sb.total_duration,
                 "scene_count": len(sb.scenes), "sections": sb.sections(), "sources": sources,
                 "omitted": sb.omitted, "fonts": font_report(), "hook_plan": sb.hook_plan,
-                "content_safety": scan.status.value,
+                "content_safety": scan.status.value, "publication_profile": sb.publication_profile,
+                "publication_audit": {"final": audit["final"], "path": audit_path,
+                                      "failed_checks": audit["failed_checks"]},
                 "rendered_at": dt.datetime.now(dt.timezone.utc).isoformat()}
     if args.confirm_publication:
         # RADAR_PUBLISHED: only the stories this completed artifact shows, only after QA.

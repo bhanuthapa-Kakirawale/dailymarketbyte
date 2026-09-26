@@ -63,7 +63,8 @@ class BeatKind(str, Enum):
 # Which heroes each archetype may use, in preference order. Gemini may pick any listed one
 # that the candidate actually has data for; nothing else.
 ARCHETYPE_HEROES = {
-    Archetype.QUIET_MARKET_HIDDEN_ACTION: (HeroVisual.DEPTH_LOLLIPOP, HeroVisual.SIGNAL_STACK_CHART),
+    Archetype.QUIET_MARKET_HIDDEN_ACTION: (HeroVisual.DEPTH_LOLLIPOP, HeroVisual.SIGNAL_STACK_CHART,
+                                          HeroVisual.HEADLINE_NUMBER),
     Archetype.BIG_MOVE: (HeroVisual.HEADLINE_NUMBER,),
     Archetype.CONTRAST: (HeroVisual.VERSUS_SPLIT,),
     Archetype.UNUSUAL_ACTIVITY: (HeroVisual.SIGNAL_STACK_CHART, HeroVisual.DEPTH_LOLLIPOP),

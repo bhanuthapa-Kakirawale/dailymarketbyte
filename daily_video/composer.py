@@ -22,6 +22,8 @@ from .market_scenes import (GlobalContextScene, MarketPulseScene, MarketStructur
                             MoversDuelScene, QuickCloseScene, SectorBoardScene, SpecialEventScene)
 from .pre_scenes import (PreEventScene, PreOvernightScene, PreStockWatchScene, PreVixScene,
                          PreWatchScene)
+from .public_scenes import (ExchangeWatchScene, IPOWatchScene, PrimaryMarketScene,
+                            StructureScene)
 from .radar_scenes import RadarIntroScene
 from .radar_story_scene import RadarStockScene
 from .scenes import AheadScene, FlowsScene, HookScene
@@ -36,6 +38,9 @@ SCENE_CLASSES = {
     # PRE-MARKET V1 (the setup, sectors, flows and close reuse the POST scenes above)
     "PRE_OVERNIGHT": PreOvernightScene, "PRE_VIX": PreVixScene, "PRE_EVENT": PreEventScene,
     "PRE_STOCKS": PreStockWatchScene, "PRE_WATCH": PreWatchScene,
+    # public market intelligence V1 (PUBLIC_UNREGISTERED)
+    "STRUCTURE": StructureScene, "EXCHANGE_WATCH": ExchangeWatchScene,
+    "IPO_WATCH": IPOWatchScene, "IPO_BOARD": PrimaryMarketScene,
 }
 
 REQUIRED_MARKS = {
@@ -64,6 +69,10 @@ REQUIRED_MARKS = {
     "PRE_EVENT": {"event_card", "event_calendar"},
     "PRE_STOCKS": {"stock_card"},
     "PRE_WATCH": {"watch_card"},
+    "STRUCTURE": {"structure_hero"},
+    "EXCHANGE_WATCH": {"exchange_card"},
+    "IPO_WATCH": {"ipo_card"},
+    "IPO_BOARD": {"ipo_row"},
 }
 
 
@@ -232,6 +241,8 @@ def qa_check(spec, rec: Recorder) -> dict:
                 issues.append(f"label collides with callout: {tb.text!r}")
     kinds = {k for k, _ in rec.marks}
     need = REQUIRED_MARKS.get(spec.freeze.get("mode") or spec.kind, set())
+    if isinstance((spec.texts or {}).get("provenance"), dict):
+        need = set(need) | {"provenance"}       # a factual scene must SHOW its source/date
     missing = sorted(need - kinds)
     if missing:
         issues.append(f"missing required visual evidence: {missing}")

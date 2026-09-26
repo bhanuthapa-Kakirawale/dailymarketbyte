@@ -35,6 +35,33 @@ def _isolate_config_out_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _offline_official_lists(monkeypatch):
+    """The public-intelligence fetchers (F&O ban file, ASM/GSM, NSE IPO lists) never reach the
+    network in tests: each returns the fail-closed UNAVAILABLE result it returns in production
+    when the exchange cannot be reached. Tests that need events inject synthetic ones."""
+    import exchange_watch
+    import exchange_watch.sources as exs
+    import ipo_watch
+    import ipo_watch.sources as ips
+    from exchange_watch.models import SourceResult
+
+    def _ban(now_iso, get=None):
+        return SourceResult("nse_fo_secban", "UNAVAILABLE", reason="network disabled in tests")
+
+    def _surv(now_iso, nse=None):
+        return [SourceResult("nse_surveillance", "UNAVAILABLE", reason="network disabled in tests")]
+
+    def _ipo(data_as_of, now_iso, nse=None):
+        return [], ["network disabled in tests"]
+
+    for mod in (exchange_watch, exs):
+        monkeypatch.setattr(mod, "fetch_fo_ban", _ban)
+        monkeypatch.setattr(mod, "fetch_surveillance", _surv)
+    for mod in (ipo_watch, ips):
+        monkeypatch.setattr(mod, "fetch_nse_issues", _ipo)
+
+
+@pytest.fixture(autouse=True)
 def _offline_index_fallback(monkeypatch):
     """Benchmark gap recovery (`market.recover_index_gaps`) fetches NSE's end-of-day index file
     whenever a synthetic series skips a canonical weekday. Tests stay offline: the default

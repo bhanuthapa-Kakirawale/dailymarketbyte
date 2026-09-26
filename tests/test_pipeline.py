@@ -55,7 +55,8 @@ def offline_pipeline(monkeypatch, tmp_path, market_dict, movers, sectors, tiles,
     monkeypatch.setattr(main.chart, "make_chart", lambda m, prefix: _stub_chart(tmp_path, m))
     monkeypatch.setattr(main.music, "get_music", lambda *a, **k: None)
 
-    def _render(scenes, info, ticker, music_path, out_path, demo=False):
+    def _render(scenes, info, ticker, music_path, out_path, demo=False, provenance=None):
+        rendered["provenance"] = provenance
         rendered["scenes"] = scenes
         rendered["ticker"] = ticker
         rendered["info"] = info
@@ -114,12 +115,14 @@ def _scene_of(rendered, scene_type):
     return next(s for s in rendered["scenes"] if s.plan.scene_type.value == scene_type)
 
 
-def test_rendered_scenes_are_fed_from_the_report(offline_pipeline, tmp_path):
+def test_rendered_scenes_are_fed_from_the_report(offline_pipeline, tmp_path, monkeypatch):
     """Everything the renderer received must match what the report stored.
 
     The renderer now draws an editorial plan rather than the report's raw sections, so the
-    check follows the plan - which is still derived only from the report.
+    check follows the plan - which is still derived only from the report. Movers are
+    PRIVATE_ANALYTICS content since the publication boundary, so this run asks for it.
     """
+    monkeypatch.setenv("PUBLICATION_PROFILE", "PRIVATE_ANALYTICS")
     main.run(_Args())
     report_path = next((tmp_path / "reports").iterdir())
     report = MarketReport.from_json(report_path.read_text(encoding="utf-8"))
@@ -378,7 +381,7 @@ def test_qa_artifact_is_written_for_every_render(offline_pipeline, tmp_path):
 
 def test_all_gates_passing_publishes_only_with_upload_flag(offline_pipeline, monkeypatch):
     published = {}
-    monkeypatch.setattr(main, "publish", lambda out, meta, d: published.setdefault("id", "vid123"))
+    monkeypatch.setattr(main, "publish", lambda out, meta, d, audit=None: published.setdefault("id", "vid123"))
 
     main.run(_Args(upload=False))
     assert not published, "a no-upload run must never publish"
@@ -388,7 +391,7 @@ def test_all_gates_passing_publishes_only_with_upload_flag(offline_pipeline, mon
 
 
 def test_publish_records_the_video_id_in_history(offline_pipeline, monkeypatch, tmp_path):
-    monkeypatch.setattr(main, "publish", lambda out, meta, d: "vid123")
+    monkeypatch.setattr(main, "publish", lambda out, meta, d, audit=None: "vid123")
     main.run(_Args(upload=True))
     with MarketHistory(str(tmp_path / "data" / "market_history.db")) as history:
         run = history.get_publication_runs()[0]
@@ -408,7 +411,7 @@ def test_rerunning_the_same_session_does_not_duplicate_history(offline_pipeline,
 def test_unsafe_text_surviving_into_metadata_blocks_upload(offline_pipeline, monkeypatch):
     """The final gate is the backstop: if recommendation language ever reaches a finalized
     artifact despite sanitisation, publication stops rather than the text being rewritten."""
-    real_metadata = main.build_metadata
+    real_metadata = main.build_public_metadata
 
     def _unsafe_metadata(*a, **k):
         meta = real_metadata(*a, **k)
@@ -418,6 +421,6 @@ def test_unsafe_text_surviving_into_metadata_blocks_upload(offline_pipeline, mon
     def _boom(*a, **k):
         raise AssertionError("unsafe content must not be published")
 
-    monkeypatch.setattr(main, "build_metadata", _unsafe_metadata)
+    monkeypatch.setattr(main, "build_public_metadata", _unsafe_metadata)
     monkeypatch.setattr(main, "publish", _boom)
     assert main.run(_Args(upload=True)) is not None

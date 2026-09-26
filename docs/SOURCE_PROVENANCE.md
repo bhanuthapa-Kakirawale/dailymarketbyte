@@ -46,6 +46,12 @@ notes                       what to know about its failure modes
 | `expiry_calendar_rule` | DERIVED | INTERNAL | `INTERNAL` |
 | `daily_byte_derived` | DERIVED | INTERNAL | `INTERNAL` |
 | `demo_fixture` | DERIVED | FIXTURE | `DEMO_FIXTURE` |
+| `nse_index_constituents` | PRIMARY | EXCHANGE | `NSE` (NSE Indices' constituent file - the universe + sector map) |
+| `nse_fo_secban` | PRIMARY | EXCHANGE | `NSE` (F&O ban archive file) |
+| `nse_surveillance` | PRIMARY | EXCHANGE | `NSE` (ASM / GSM website API) |
+| `nse_ipo_issues` | PRIMARY | EXCHANGE | `NSE` (issue lists, website API - no update timestamp) |
+| `sebi_offer_document` | PRIMARY | REGULATOR | `SEBI_FILING` (hand-entered, page-referenced) |
+| `daily_byte_market_structure` | DERIVED | INTERNAL | `INTERNAL` (counts over a named universe) |
 
 An unregistered source resolves to group `UNKNOWN` rather than being given a plausible one.
 An invented independence group is precisely the failure this module exists to prevent.
@@ -142,6 +148,16 @@ URL, release number, quoted line, `retrieved_at` and `verified_on` - see docs/PR
 GIFT, India VIX, previous-session Nifty/FII-DII/sectors from the report's own observations,
 events, news headlines) and `render_pre` BLOCKS if a displayed fact has AI provenance. FII/DII
 or a sector whose canonical fact has only AI observations is dropped from PRE upstream.
+
+## Visible provenance (public intelligence V1)
+
+Every factual public scene now SHOWS its provenance: a SOURCE / DATA AS OF plate (FETCHED for
+live readings), built from the fact's own observations (`publication.classify.report_fact`:
+the non-AI sources behind the fact, never the AI one) and its session - e.g. "SOURCE: NSE ·
+YAHOO FINANCE / DATA AS OF: 24 SEP 2026 · 3:30 PM IST". SOURCE = origin of the fact; DATA AS OF
+= the market/event time it represents; FETCHED = when we retrieved it. The label never implies
+endorsement (plain text, no logo). Publication rights are tracked separately from authority and
+independence (`publication/rights.py`, docs/PUBLICATION_POLICY.md): reachable is not licensed.
 
 ## Traceability
 

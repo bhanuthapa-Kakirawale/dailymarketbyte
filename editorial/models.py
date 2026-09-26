@@ -177,6 +177,9 @@ class ShortsPlan:
     scenes: list = field(default_factory=list)
     omitted: list = field(default_factory=list)
     notes: list = field(default_factory=list)
+    # publication boundary: the profile the plan was built under and the gate that judged it
+    publication_profile: str = "PUBLIC_UNREGISTERED"
+    gate: object | None = None
 
     @property
     def hook(self):
@@ -213,6 +216,7 @@ class ShortsPlan:
             "scenes": [s.to_dict() for s in self.scenes],
             "omitted": list(self.omitted),
             "notes": list(self.notes),
+            "publication_profile": self.publication_profile,
         }
 
     def to_json(self, indent: int = 2) -> str:

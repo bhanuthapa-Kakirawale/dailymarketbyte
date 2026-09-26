@@ -13,7 +13,8 @@ from .sheet_common import (FAMILY_CHIP, beat, breakout_payload, count_fact, even
                            sign, slug, EVENT_CLAIM, EVENT_PHRASE)
 
 SECTION_CHIP = {"PULSE": "Market", "NIFTY": "Nifty", "FLOWS": "FII/DII", "SECTORS": "Sectors",
-                "MOVERS": "Movers", "RADAR": "Radar", "AHEAD": "Look ahead"}
+                "MOVERS": "Movers", "RADAR": "Radar", "AHEAD": "Look ahead",
+                "STRUCTURE": "Under the surface", "EXCHANGE": "Exchange watch", "IPO": "IPO watch"}
 
 
 def _plan_scene(plan, kind):

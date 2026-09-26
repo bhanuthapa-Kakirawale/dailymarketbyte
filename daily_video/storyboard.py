@@ -27,9 +27,11 @@ SECTION_LABELS = {
     "GLOBAL": "GLOBAL CONTEXT", "EVENT": "TODAY'S EVENT",
     "SECTORS": "SECTORS", "MOVERS": "BIGGEST MOVERS", "CONTEXT": "IN CONTEXT",
     "RADAR": "MARKET RADAR", "AHEAD": "LOOK AHEAD", "CLOSING": "",
+    "STRUCTURE": "UNDER THE SURFACE", "EXCHANGE": "EXCHANGE WATCH", "IPO": "IPO WATCH",
 }
 AGENDA_NAMES = {"PULSE": "Market", "NIFTY": "Nifty", "FLOWS": "FII/DII", "SECTORS": "Sectors",
-                "MOVERS": "Movers", "RADAR": "Radar", "AHEAD": "Look ahead"}
+                "MOVERS": "Movers", "RADAR": "Radar", "AHEAD": "Look ahead",
+                "STRUCTURE": "Under the surface", "EXCHANGE": "Exchange watch", "IPO": "IPO watch"}
 
 # Primary-event priority: the longer the window a level held for, the bigger the change.
 EVENT_PRIORITY = ("BREAK_ABOVE_50D_RANGE", "BREAK_BELOW_50D_RANGE", "BREAK_ABOVE_20D_RANGE",
@@ -163,6 +165,12 @@ class Storyboard:
     # SECTION_LABELS, so a POST storyboard - which never sets it - is unchanged.
     section_labels: dict = field(default_factory=dict)
     pre_plan: dict | None = None    # the PRE editorial plan, when this is a PRE Short
+    # publication boundary: the profile this storyboard was built under, the gate's record of
+    # every fact considered/allowed/blocked, and the audit blocks of the public sections
+    publication_profile: str = "PUBLIC_UNREGISTERED"
+    publication: dict | None = None
+    public_audit: dict = field(default_factory=dict)
+    gate: object | None = None
 
     @property
     def total_duration(self) -> float:
@@ -203,6 +211,7 @@ class Storyboard:
             "total_duration": self.total_duration, "sources": self.sources,
             "omitted": self.omitted, "hook_plan": self.hook_plan, "post_plan": self.post_plan,
             "radar_guard": self.radar_guard,
+            "publication_profile": self.publication_profile, "publication": self.publication,
             **({"pre_plan": self.pre_plan, "section_labels": self.section_labels}
                if self.pre_plan is not None else {}),
             "scenes": [{"kind": s.kind, "section": s.section, "duration": s.duration,
@@ -454,15 +463,84 @@ def dynamic_hook_spec(hook_plan, sheet) -> SceneSpec:
 
 
 # --------------------------------------------------------------------------- entry point
+POST_MAX_RUNTIME = 62.0
+# Dropped first when a public POST would run past POST_MAX_RUNTIME (never a core section).
+POST_TRIM_ORDER = ("GLOBAL", "EVENT", "MOVERS", "FLOWS", "NIFTY", "IPO", "EXCHANGE")
+
+
+def _report_facts(pres, key):
+    """Canonical fact ids behind one POST section (for its gate check and its provenance)."""
+    r = getattr(pres, "report", None)
+    if r is None:
+        return []
+    if key in ("PULSE", "NIFTY"):
+        return list((r.nifty or {}).get("fact_ids") or [])
+    if key == "SECTORS":
+        return [s.get("fact_id") for s in (r.sectors or []) if s.get("fact_id")]
+    if key == "FLOWS":
+        return list((r.institutional_flows or {}).get("fact_ids") or [])
+    if key == "GLOBAL":
+        return [c.get("fact_id") for c in (r.global_cues or []) if c.get("fact_id")]
+    return []
+
+
+def _admit_section(gate, pres, key, texts, session):
+    """Classify one existing POST section (report-backed) and ask the gate.
+    Returns (allowed, provenance_texts)."""
+    from dataclasses import replace
+
+    from presentation.provenance_label import fmt_date
+    from presentation.public_intelligence import section_provenance
+    from publication.classification import Scope
+    from publication.classify import report_event_fact, report_fact
+    r = getattr(pres, "report", None)
+    texts = [t for t in texts if t]
+    if key == "EVENT":
+        ev = next((e for e in (getattr(r, "events", None) or [])
+                   if e.get("text") == texts[0]), None)
+        f = report_event_fact(ev or {"text": texts[0]}, session)
+        ok = True
+        for i, t in enumerate(texts):
+            ok = gate.admit(replace(f, fact_id=f"{f.fact_id}.{i}", text=t)) and ok
+        return ok, {"source": f"SOURCE: {f.source_label.upper()}",
+                    "as_of": f"EVENT DATE: {fmt_date(session)}"}
+    if r is None:
+        return True, None
+    ids = _report_facts(pres, key)
+    scope = {"SECTORS": Scope.SECTOR, "FLOWS": Scope.MARKET,
+             "GLOBAL": Scope.MARKET}.get(key, Scope.INDEX)
+    ok = True
+    for i, t in enumerate(texts):
+        ok = gate.admit(report_fact(r, ids, t, scope, key, f"{key.lower()}.{i}", session)) and ok
+    kind = "SESSION" if key in ("PULSE", "NIFTY", "SECTORS") else "DATE"
+    return ok, section_provenance(r, ids, session, kind)
+
+
 def build_storyboard(plan, pres, radar_presentation: dict | None = None,
                      radar_result: dict | None = None, visual_evidence: dict | None = None,
                      universe_label: str = "Nifty 100", sources: dict | None = None,
                      dynamic_hook: bool = True, hook_ai: bool = False, hook_client=None,
-                     snapshot=None) -> Storyboard:
+                     snapshot=None, profile=None, intelligence=None) -> Storyboard:
     """`dynamic_hook` opens with the Dynamic Hook Engine (teaser beats + settled hook) instead
     of the legacy number card. `hook_ai` lets it ask Gemini (`hook_client`, or the configured
     key when None); it is off by default so nothing here reaches the network unless the caller
-    asks - and any Gemini failure falls back to the deterministic hook anyway."""
+    asks - and any Gemini failure falls back to the deterministic hook anyway.
+
+    `profile` (default PUBLIC_UNREGISTERED - `publication.resolve_profile`): every candidate fact
+    goes through `publication.PublicationGate` BEFORE a scene is built. Public: no Radar stock
+    story, no top-mover ranking, no named security except via an official event; the Market
+    Structure / Exchange Watch / IPO Watch sections come from `intelligence`
+    (presentation.public_intelligence.PublicIntelligence). PRIVATE_ANALYTICS keeps every Radar
+    story exactly as before."""
+    from presentation.public_intelligence import plan_public_sections
+    from publication import PublicationGate
+    from publication.classify import mover_fact, radar_story_fact
+
+    from .public_storyboard import exchange_spec, ipo_spec, structure_spec
+
+    known = dict(getattr(intelligence, "known_securities", None) or {})
+    gate = PublicationGate(profile, known)
+    session = pres.session_date
     stories = []
     radar_closing = ""
     if radar_presentation and radar_presentation.get("status") == "OK":
@@ -481,16 +559,65 @@ def build_storyboard(plan, pres, radar_presentation: dict | None = None,
     radar_audit = []
     if stories:
         from presentation.radar_guard import guard_radar_stories
-        stories, radar_audit = guard_radar_stories(stories, visual_evidence, pres.session_date,
+        stories, radar_audit = guard_radar_stories(stories, visual_evidence, session,
                                                    (getattr(pres, "m", None) or {}).get("prev_date"))
 
     # Publication takes the selector's own first N, in its own order - no second selector.
     held = stories[RADAR_PUBLISH_LIMIT:]
     stories = stories[:RADAR_PUBLISH_LIMIT]
 
+    # Publication boundary: a Radar story is our own technical analysis of a named security.
+    gated_out, kept = [], []
+    for sp, story in stories:
+        text = " ".join(x for x in (sp["instrument"], sp.get("headline") or "") if x)
+        if gate.admit(radar_story_fact(sp["instrument"], text, session)):
+            kept.append((sp, story))
+        else:
+            gated_out.append(sp["instrument"])
+    stories = kept
+    if gated_out:
+        radar_closing = ""
+
     # POST editorial plan (Phase 3): a deterministic planner decides which sections earn screen
     # time and what each says; the storyboard only lays them out in the plan's order.
     post = plan_post_sections(pres, plan, stories, universe_label)
+    gate_reasons = {}
+    if post.movers:
+        cards = post.movers["cards"]
+        admitted = [gate.admit(mover_fact(c["name"], f"{c['name']} {c['value']}", session))
+                    for c in cards]
+        if not all(admitted):
+            gate_reasons["MOVERS"] = (f"omitted: publication profile {gate.profile.value} - "
+                                      "named single-stock moves are a security ranking")
+    flows_scene = _plan_scene(plan, "FLOWS")
+    section_texts = {
+        "PULSE": lambda: [post.pulse["headline"],
+                          f"NIFTY 50 {post.pulse['value']} {post.pulse['change']}"],
+        "NIFTY": lambda: [post.structure["model"]["takeaway"]],
+        "SECTORS": lambda: ([post.sectors["headline"], post.sectors["tone"]]
+                            + [f"{r['name']} {r['value']}" for r in post.sectors["rows"]]),
+        "FLOWS": lambda: [f"{it.title} {it.value}" for it in
+                          (flows_scene.items if flows_scene else [])],
+        "GLOBAL": lambda: ([f"{post.global_context['lead']['name']} "
+                            f"{post.global_context['lead']['value']}"]
+                           + [f"{o['name']} {o['value']}"
+                              for o in post.global_context.get("others", [])]),
+        "EVENT": lambda: [post.special_event["title"], post.special_event["tag"]],
+    }
+    provenance = {}
+    for key in list(post.order):
+        if key in gate_reasons or key not in section_texts:
+            continue
+        ok, prov = _admit_section(gate, pres, key, section_texts[key](), session)
+        provenance[key] = prov
+        if not ok:
+            gate_reasons[key] = (f"omitted: publication profile {gate.profile.value} refused "
+                                 "the section's facts (see publication audit)")
+    for key, why in gate_reasons.items():
+        if key in post.order:
+            post.order.remove(key)
+        post.reasons[key] = why
+
     builders = {"PULSE": lambda: _pulse_scene(post.pulse),
                 "NIFTY": lambda: _structure_scene(post.structure),
                 "SECTORS": lambda: _sectors_scene(post.sectors),
@@ -498,14 +625,52 @@ def build_storyboard(plan, pres, radar_presentation: dict | None = None,
                 "FLOWS": lambda: _flows(plan),
                 "GLOBAL": lambda: _global_scene(post.global_context),
                 "EVENT": lambda: _event_scene(post.special_event)}
-    main = [s for s in (builders[k]() for k in post.order if k in builders) if s]
-    present = [s.section for s in main] + (["RADAR"] if stories else [])
+    main = []
+    for k in post.order:
+        spec = builders[k]() if k in builders else None
+        if spec is None:
+            continue
+        if provenance.get(k):
+            spec.texts["provenance"] = provenance[k]
+        main.append(spec)
+
+    # Public intelligence sections: EXCHANGE WATCH, IPO WATCH, UNDER THE SURFACE.
+    ps = plan_public_sections(gate, intelligence, session, "POST",
+                              nifty_pct=(getattr(pres, "m", None) or {}).get("pct"),
+                              include_ipo_listed=True)
+    if ps.exchange:
+        main.append(exchange_spec(ps.exchange, "POST"))
+    if ps.ipo:
+        main.append(ipo_spec(ps.ipo))
+    main += [structure_spec(ins, lines) for ins, lines in ps.structure]
+
+    # Runtime ceiling - content-driven: nothing is stretched; optional sections go first.
+    def _total(ms):
+        return sum(x.duration for x in ms) + 2.6 + 5.0
+    for key in POST_TRIM_ORDER:
+        if _total(main) <= POST_MAX_RUNTIME:
+            break
+        for x in [x for x in main if x.section == key]:
+            main.remove(x)
+            post.reasons[key] = f"omitted: POST runtime ceiling {POST_MAX_RUNTIME:.0f}s"
+            if key in post.order:
+                post.order.remove(key)
+    while _total(main) > POST_MAX_RUNTIME and sum(1 for x in main if x.kind == "STRUCTURE") > 1:
+        last = [x for x in main if x.kind == "STRUCTURE"][-1]
+        main.remove(last)
+        ps.omitted.append({"section": "UNDER THE SURFACE", "item": last.data["kind"],
+                           "reason": f"runtime ceiling {POST_MAX_RUNTIME:.0f}s"})
+    present = list(dict.fromkeys(s.section for s in main)) + (["RADAR"] if stories else [])
 
     hook_record = None
     if dynamic_hook:
         from hooks import plan_hook, post_market_sheet
+        from publication.public_hooks import add_structure_facts, restrict_sheet
         sheet = post_market_sheet(plan, pres, stories, visual_evidence, present, universe_label,
                                   snapshot)
+        restrict_sheet(sheet, gate)
+        shown = {x.data["kind"] for x in main if x.kind == "STRUCTURE"}
+        add_structure_facts(sheet, [ins for ins, _ in ps.structure if ins.kind in shown])
         kwargs = {"client": hook_client} if hook_client is not None else {}
         hp = plan_hook(sheet, use_ai=hook_ai, **kwargs)
         hook_scene = dynamic_hook_spec(hp, sheet)
@@ -528,21 +693,28 @@ def build_storyboard(plan, pres, radar_presentation: dict | None = None,
     omitted += [{"section": "MARKET RADAR", "item": sp["instrument"],
                  "reason": f"publication limit: the POST Short shows the selector's first "
                            f"{RADAR_PUBLISH_LIMIT} Radar stories"} for sp, _ in held]
+    omitted += [{"section": "MARKET RADAR", "item": sym,
+                 "reason": f"publication profile {gate.profile.value}: our own technical "
+                           "analysis of a named security stays PRIVATE (it can only count "
+                           "anonymously in UNDER THE SURFACE)"} for sym in gated_out]
     for key in ("NIFTY", "MOVERS", "FLOWS", "GLOBAL", "EVENT"):
         if key not in post.order:
             omitted.append({"section": SECTION_LABELS.get(key, key) or key,
                             "reason": post.reasons.get(key, "")})
+    omitted += ps.omitted
     for o in getattr(plan, "omitted", []) or []:
         o = o if isinstance(o, dict) else {"item": str(o)}
         if o.get("scene") == "sectors":
             continue    # the heatmap shows every sector in the report - nothing trimmed
         omitted.append({"section": "editorial", **o})
 
-    session = pres.session_date
+    post_dict = post.to_dict()
+    post_dict["public_reasons"] = ps.reasons
     return Storyboard(session_date=session, date_label=session.strftime("%a %d %b %Y").upper(),
                       kicker="SESSION RECAP", scenes=scenes, sources=sources or {},
-                      omitted=omitted, hook_plan=hook_record, post_plan=post.to_dict(),
-                      radar_guard=radar_audit)
+                      omitted=omitted, hook_plan=hook_record, post_plan=post_dict,
+                      radar_guard=radar_audit, publication_profile=gate.profile.value,
+                      publication=gate.to_dict(), public_audit=ps.audit, gate=gate)
 
 
 __all__ = ["SceneSpec", "Storyboard", "build_storyboard", "choose_mode", "primary_event",

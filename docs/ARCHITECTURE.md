@@ -33,6 +33,11 @@ Publication Gate     report.publication_ready - an unfit report renders nothing
 Editorial Selection  editorial/ - report + snapshot -> ShortsPlan (derived, never canonical)
       |                what is said, in what order, for how long. No LLM, no predictions.
       v
+Publication Gate     publication/ - PublicationProfile (default PUBLIC_UNREGISTERED) judges
+      |                every candidate fact BEFORE a storyboard exists: no named-stock Radar
+      |                analysis / ranking in public; named securities only via an official
+      |                event; counts only over a named universe (docs/PUBLICATION_POLICY.md)
+      v
 Presentation Adapter presentation/ - reshapes the report into renderer structures
       |
       v
@@ -80,6 +85,7 @@ not fetch anything or compute a new market fact.
 | Session calendar | `core/trading_calendar.py`         | Data-reliability patch - canonical NSE sessions (holiday list + benchmark bars); every day-over-day / window calculation drops provider rows on non-sessions first, and the benchmark must carry the canonical previous session (`docs/VALIDATION_RULES.md` section 9) |
 | Benchmark gap recovery / cache repair | `market.recover_index_gaps`, `radar/cache_repair.py` | Second index source (NSE end-of-day index file) for a canonical session the Yahoo index series lacks, validated + anchored + provenance-recorded; the recap session itself only via
 `market.recover_recap_session` once the session is final (section 10.1), else publication is blocked; repair of cached non-final OHLCV bars (`docs/VALIDATION_RULES.md` sections 10-11) |
+| Publication boundary | `publication/`, `market_structure/`, `exchange_watch/`, `ipo_watch/`, `presentation/public_intelligence.py`, `presentation/pre_public.py`, `presentation/legacy_public.py`, `presentation/provenance_label.py`, `daily_video/provenance_bar.py`, `daily_video/public_scenes.py` | Public intelligence V1 - PRIVATE_ANALYTICS vs PUBLIC_UNREGISTERED profiles, typed fact classification, deterministic policy + rights registry + language scan, visible SOURCE / DATA AS OF, UNDER THE SURFACE (Market Structure over NIFTY 200), EXCHANGE WATCH, IPO WATCH, `publication_audit.json` and the upload hard-block (docs/PUBLICATION_POLICY.md, MARKET_STRUCTURE.md, EXCHANGE_WATCH.md, IPO_WATCH.md) |
 | Hook engine    | `hooks/`                           | Hook Phase 1 - teaser + hook for PRE/POST/CUSTOM; Gemini chooses among approved candidates, strict validation, deterministic fallback (`docs/HOOK_ENGINE.md`) |
 | Presentation   | `presentation/`                    | the renderer boundary               |
 | PRE-MARKET     | `products/` (router + runner), `providers/premarket.py`, `core/freshness.py`, `core/event_calendar.py`, `presentation/pre_plan.py`, `daily_video/pre_storyboard.py`, `daily_video/pre_scenes.py` | PRE V1 - "before the bell" Short from the previous session's canonical report + dated/timestamped pre-open readings + verified schedules; deterministic `PreEditorialPlanner`; reuses the POST design system and the hook engine; never writes canonical history, never uploads (`docs/PRE_MARKET.md`) |
@@ -100,21 +106,25 @@ The renderer itself was not rewritten. `presentation/report_adapter.py` produces
 structures `video.py` and `chart.py` have always consumed, so the migration moved the
 *source* of those structures without touching the code that draws them.
 
-## Four independent gates
+## Five independent gates
 
 ```
-DATA QA         report.publication_ready   - validation, corroboration, required facts
+DATA QA            report.publication_ready   - validation, corroboration, required facts
      AND
-CONTENT QA      core/content_safety.py     - deterministic, no model
+CONTENT QA         core/content_safety.py     - deterministic, no model
      AND
-VIDEO QA        qa/video_qa.py             - deterministic artifact inspection
+VIDEO QA           qa/video_qa.py             - deterministic artifact inspection
      AND
-READABILITY QA  qa/readability_qa.py       - can the Short actually be read at its pace
+READABILITY QA     qa/readability_qa.py       - can the Short actually be read at its pace
+     AND
+PUBLICATION AUDIT  publication/audit.py       - profile, language scans, visible provenance,
+                                                universe visibility, no GMP; upload.upload
+                                                re-checks it against the file's sha256
         ↓
    publication allowed
 ```
 
-All four must pass, and none is advisory. Data QA failing stops the run before rendering;
+All five must pass, and none is advisory. Data QA failing stops the run before rendering;
 the rest stop the upload after it, preserving every artifact for diagnosis. Persistence is a
 further precondition: if the run cannot be recorded in history, it does not publish, because
 auditability is part of publication integrity.

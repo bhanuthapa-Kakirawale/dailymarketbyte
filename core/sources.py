@@ -108,6 +108,13 @@ SRC_NSEIX_LIVE = "nseix_market_rate"          # GIFT Nifty live quote, NSE IX we
 SRC_NSEIX_DSP = "nseix_settlement_file"       # GIFT Nifty daily settlement price file
 SRC_RBI_PRESS = "rbi_press_release"           # RBI's own press release (MPC schedule)
 SRC_FED_CALENDAR = "federal_reserve_calendar"  # the Fed's own FOMC calendar page
+# Public market intelligence V1 (publication boundary) - official exchange/regulator files
+SRC_NSE_CONSTITUENTS = "nse_index_constituents"   # ind_<index>list.csv (symbol, company, Industry)
+SRC_NSE_FO_BAN = "nse_fo_secban"                 # F&O securities in ban period (archive CSV)
+SRC_NSE_SURVEILLANCE = "nse_surveillance"        # ASM / GSM lists (NSE website API)
+SRC_NSE_IPO = "nse_ipo_issues"                   # current / upcoming / past issues (NSE website API)
+SRC_SEBI_OFFER_DOC = "sebi_offer_document"       # DRHP / RHP / prospectus, entered by hand
+SRC_MARKET_STRUCTURE = "daily_byte_market_structure"  # our own aggregate over exchange data
 
 _REGISTRY: dict[str, SourceMetadata] = {
     SRC_NSE: SourceMetadata(
@@ -193,6 +200,52 @@ _REGISTRY: dict[str, SourceMetadata] = {
         retrieval_method="manual entry from federalreserve.gov FOMC calendar",
         reference="https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
         display_rights_status="OWN_CONTENT", notes="Schedule only - never a number."),
+    SRC_NSE_CONSTITUENTS: SourceMetadata(
+        source_name=SRC_NSE_CONSTITUENTS, source_type=SourceType.PRIMARY,
+        source_family=SourceFamily.EXCHANGE, independence_group=GROUP_NSE,
+        retrieval_method="https GET nsearchives.nseindia.com/content/indices/ind_<index>list.csv",
+        reference="https://nsearchives.nseindia.com/content/indices/", display_rights_status="UNREVIEWED",
+        notes="NSE Indices' own constituent file; its 'Industry' column is the sector mapping "
+              "source for Market Structure. Used to define the universe, never displayed raw."),
+    SRC_NSE_FO_BAN: SourceMetadata(
+        source_name=SRC_NSE_FO_BAN, source_type=SourceType.PRIMARY,
+        source_family=SourceFamily.EXCHANGE, independence_group=GROUP_NSE,
+        retrieval_method="https GET nsearchives.nseindia.com/content/fo/fo_secban.csv",
+        reference="https://nsearchives.nseindia.com/content/fo/fo_secban.csv",
+        market_timestamp_available=True, display_rights_status="UNREVIEWED",
+        notes="The exchange's own list of securities in the F&O ban period, dated by its "
+              "header line ('Securities in Ban For Trade Date DD-MON-YYYY')."),
+    SRC_NSE_SURVEILLANCE: SourceMetadata(
+        source_name=SRC_NSE_SURVEILLANCE, source_type=SourceType.PRIMARY,
+        source_family=SourceFamily.EXCHANGE, independence_group=GROUP_NSE,
+        retrieval_method="https GET www.nseindia.com/api/reportASM | /api/reportGSM",
+        reference="https://www.nseindia.com/reports/asm", market_timestamp_available=True,
+        display_rights_status="UNREVIEWED",
+        notes="Undocumented website API behind NSE's surveillance pages; each row carries its "
+              "own date (asmTime / gsmTime). Shape can change -> the adapter fails closed."),
+    SRC_NSE_IPO: SourceMetadata(
+        source_name=SRC_NSE_IPO, source_type=SourceType.PRIMARY,
+        source_family=SourceFamily.EXCHANGE, independence_group=GROUP_NSE,
+        retrieval_method="https GET www.nseindia.com/api/ipo-current-issue | "
+                         "/api/all-upcoming-issues?category=ipo | /api/public-past-issues",
+        reference="https://www.nseindia.com/market-data/all-upcoming-issues-ipo",
+        market_timestamp_available=False, display_rights_status="UNREVIEWED",
+        notes="Undocumented website API. The current-issue rows carry NO update timestamp, so "
+              "bid/subscription multiples from it are never published (no DATA AS OF)."),
+    SRC_SEBI_OFFER_DOC: SourceMetadata(
+        source_name=SRC_SEBI_OFFER_DOC, source_type=SourceType.PRIMARY,
+        source_family=SourceFamily.REGULATOR, independence_group="SEBI_FILING",
+        retrieval_method="manual entry from the offer document filed on www.sebi.gov.in",
+        reference="https://www.sebi.gov.in/filings/public-issues", display_rights_status="UNREVIEWED",
+        notes="The company's own offer document as filed with SEBI. Every figure carries the "
+              "document name, filing date and page/section reference."),
+    SRC_MARKET_STRUCTURE: SourceMetadata(
+        source_name=SRC_MARKET_STRUCTURE, source_type=SourceType.DERIVED,
+        source_family=SourceFamily.INTERNAL, independence_group=GROUP_INTERNAL,
+        upstream_source="exchange end-of-day data via the Radar OHLCV store",
+        retrieval_method="deterministic aggregation (market_structure/)",
+        display_rights_status="OWN_CONTENT",
+        notes="Counts over a named index universe; never names a security publicly."),
 }
 
 
@@ -251,5 +304,6 @@ __all__ = ["SourceMetadata", "SourceFamily", "source_metadata", "independence_gr
            "register_source", "registry_snapshot", "news_source",
            "SRC_NSE", "SRC_YAHOO", "SRC_GEMINI", "SRC_GOOGLE_NEWS", "SRC_RULE_EXPIRY",
            "SRC_DERIVED", "SRC_DEMO", "SRC_NSEIX_LIVE", "SRC_NSEIX_DSP", "SRC_RBI_PRESS",
-           "SRC_FED_CALENDAR", "GROUP_NSE", "GROUP_NSEIX", "GROUP_RBI", "GROUP_FED", "GROUP_YAHOO", "GROUP_GEMINI",
+           "SRC_FED_CALENDAR", "SRC_NSE_CONSTITUENTS", "SRC_NSE_FO_BAN", "SRC_NSE_SURVEILLANCE",
+           "SRC_NSE_IPO", "SRC_SEBI_OFFER_DOC", "SRC_MARKET_STRUCTURE", "GROUP_NSE", "GROUP_NSEIX", "GROUP_RBI", "GROUP_FED", "GROUP_YAHOO", "GROUP_GEMINI",
            "GROUP_INTERNAL", "GROUP_DEMO", "GROUP_UNKNOWN", "NEWS_GROUP_PREFIX"]

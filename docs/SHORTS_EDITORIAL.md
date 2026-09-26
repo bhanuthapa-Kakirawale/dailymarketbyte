@@ -373,3 +373,36 @@ colour, close-tag colour, "higher"/"lower") comes from the story's validated ses
 (`price_change_pct`). COROMANDEL was `ALIGNED_POSITIVE`, and it is shown red with "0.7% lower".
 Normal event stories are pixel-identical to Phase 2 (frame hashes compared before and after).
 
+
+## Public profile V2 (PUBLIC_UNREGISTERED, public intelligence V1)
+
+The publication profile (docs/PUBLICATION_POLICY.md) is applied BEFORE the storyboard, so the
+editorial rules above run only over admitted facts.
+
+**Unified POST (`daily_video.build_storyboard`, default profile PUBLIC_UNREGISTERED):**
+
+    DYNAMIC HOOK -> MARKET PULSE -> SECTOR STORY -> [optional context] -> EXCHANGE WATCH (opt.)
+                 -> IPO WATCH (opt.) -> UNDER THE SURFACE (0-2 scenes) -> CLOSING
+
+- Market Radar stock stories are private: each is classified `SECURITY / INTERNAL_ANALYTICS /
+  TECHNICAL_ANALYSIS` and refused; `omitted` records "publication profile ... stays PRIVATE".
+  The Radar closing line goes with them.
+- MOVERS is a security ranking and is refused publicly (`post_plan.reasons["MOVERS"]`).
+- Every remaining section is admitted fact-by-fact (an AI-only section is dropped) and carries
+  its SOURCE / DATA AS OF plate.
+- UNDER THE SURFACE, EXCHANGE WATCH and IPO WATCH come from `PublicIntelligence`
+  (docs/MARKET_STRUCTURE.md, EXCHANGE_WATCH.md, IPO_WATCH.md). Runtime ceiling 62 s: optional
+  sections are trimmed first (global, event, movers, flows, Nifty chart, IPO, exchange), then a
+  second structure scene - never a core section, never padded.
+- The Dynamic Hook's fact sheet is restricted by the same gate before candidates are built
+  (`publication.public_hooks.restrict_sheet`), and the Market Structure count is offered instead
+  ("Nifty moved just +0.12%. 18 NIFTY 200 stocks saw unusual volume.").
+
+**Legacy scheduled POST (`editorial.plan_short(profile=...)`):** no GAINERS/LOSERS scenes, no
+single-stock hook (`hook-mover`), no stock-level CONTEXT insight, no news/Gemini WATCH NEXT
+event (the F&O expiry rule stays); the ticker carries no stock; title/description/tags from
+`presentation/legacy_public.public_metadata` (no stock names, no "Top gainers"); FLOWS tags
+`NET BUYERS` / `NET SELLERS`.
+
+`PRIVATE_ANALYTICS` renders exactly what this document describes above (Radar stories, movers,
+Radar hook archetypes) for research, and is never uploaded.

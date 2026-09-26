@@ -33,6 +33,13 @@ FALLBACK_NIFTY50 = {
 
 
 # ----------------------------------------------------------------------------- data
+# What the last successful constituent download said beyond {symbol: company}: NSE's own
+# 'Industry' column, the file URL and when it was fetched. Kept from the SAME request (no second
+# fetch) so Market Structure can map observations to sectors with recorded provenance.
+# A fallback list is recorded as such - it is never passed off as the official constituents.
+UNIVERSE_META: dict = {}
+
+
 def get_universe(name: str) -> dict:
     slug = _SLUG.get(name, "nifty100")
     urls = [f"https://archives.nseindia.com/content/indices/ind_{slug}list.csv",
@@ -45,10 +52,21 @@ def get_universe(name: str) -> dict:
             uni = dict(zip(df["Symbol"].astype(str).str.strip(), df["Company Name"].astype(str).str.strip()))
             if len(uni) >= 40:
                 print(f"[market] universe {name}: {len(uni)} stocks")
+                industries = (dict(zip(df["Symbol"].astype(str).str.strip(),
+                                       df["Industry"].astype(str).str.strip()))
+                              if "Industry" in df.columns else {})
+                UNIVERSE_META[name] = {"index": name, "source": "NSE_CONSTITUENT_FILE",
+                                       "source_reference": url, "companies": dict(uni),
+                                       "industries": industries,
+                                       "retrieved_at": now_ist().isoformat()}
                 return uni
         except Exception as e:
             print(f"[market] constituent list failed ({url}): {e}")
     print("[market] using built-in Nifty 50 fallback list")
+    UNIVERSE_META[name] = {"index": name, "source": "BUILTIN_NIFTY50_FALLBACK",
+                           "source_reference": "market.FALLBACK_NIFTY50",
+                           "companies": dict(FALLBACK_NIFTY50), "industries": {},
+                           "retrieved_at": now_ist().isoformat()}
     return dict(FALLBACK_NIFTY50)
 
 

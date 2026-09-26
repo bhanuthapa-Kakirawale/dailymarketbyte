@@ -119,14 +119,14 @@ def test_final_content_qa_failure_cannot_mutate_canonical_history(offline_pipeli
     before = _canonical_snapshot(_db(tmp_path))
     json_before = _sha256(_report_json(tmp_path))
 
-    real_metadata = main.build_metadata
+    real_metadata = main.build_public_metadata
 
     def _unsafe_metadata(*a, **k):
         meta = real_metadata(*a, **k)
         meta["title"] = "Top stocks to buy tomorrow #shorts"
         return meta
 
-    monkeypatch.setattr(main, "build_metadata", _unsafe_metadata)
+    monkeypatch.setattr(main, "build_public_metadata", _unsafe_metadata)
     monkeypatch.setattr(main, "publish",
                         lambda *a, **k: pytest.fail("must not publish when content QA fails"))
     main.run(_Args(upload=True))
@@ -145,7 +145,7 @@ def test_final_content_qa_failure_cannot_mutate_canonical_history(offline_pipeli
 
 # --------------------------------------------------------------------- Test D
 def test_upload_result_is_operational_only(offline_pipeline, monkeypatch, tmp_path):
-    monkeypatch.setattr(main, "publish", lambda out, meta, d: "vid123")
+    monkeypatch.setattr(main, "publish", lambda out, meta, d, audit=None: "vid123")
     main.run(_Args())                                     # local run, nothing published
     before = _canonical_snapshot(_db(tmp_path))
     json_before = _sha256(_report_json(tmp_path))

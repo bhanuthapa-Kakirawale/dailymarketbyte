@@ -51,8 +51,8 @@ def _displayable(snapshot, used_ids):
 
 
 # --------------------------------------------------------------------- scenes
-def _hook_scene(report, snapshot, is_safe) -> tuple:
-    chosen = hook_module.select(report, snapshot, is_safe=is_safe)
+def _hook_scene(report, snapshot, is_safe, admit=None) -> tuple:
+    chosen = hook_module.select(report, snapshot, is_safe=is_safe, admit=admit)
     scene = ScenePlan(
         scene_id="hook", scene_type=SceneType.HOOK,
         primary_text=chosen.primary_text, primary_value=chosen.primary_value,
@@ -146,7 +146,7 @@ def _flows_scene(report, snapshot, used_insights) -> ScenePlan | None:
         fact_id = _fact_id(report, metric)
         scene.items.append(EditorialItem(
             title=label, value=f"{'+' if value >= 0 else '-'}{_rupees(value)}",
-            label="NET BUY" if value >= 0 else "NET SELL",
+            label="NET BUYERS" if value >= 0 else "NET SELLERS",
             numeric=value, positive=value >= 0,
             source_fact_ids=[fact_id] if fact_id else []))
 
@@ -423,11 +423,12 @@ def context_line(insight) -> str:
     return _short_note(insight.statement, max_words=8)
 
 
-def _context_scene(snapshot, used_insights) -> ScenePlan | None:
+def _context_scene(snapshot, used_insights, admit=None) -> ScenePlan | None:
     # An insight whose short form comes back empty has nothing card-sized to say - an index
     # move sitting mid-window, for instance. It stays in the snapshot and leaves the screen.
     lines = [(i, context_line(i)) for i in _displayable(snapshot, used_insights)]
-    lines = [(i, line) for i, line in lines if line][:MAX_CONTEXT_INSIGHTS]
+    lines = [(i, line) for i, line in lines if line and (admit is None or admit(i, line))]
+    lines = lines[:MAX_CONTEXT_INSIGHTS]
     if not lines:
         return None
     insights = [i for i, _ in lines]
@@ -452,8 +453,8 @@ def _context_label(insight) -> str:
     return fixed if fixed else (insight.subject or "CONTEXT").upper()[:12]
 
 
-def _events_scene(report) -> ScenePlan | None:
-    events = [e for e in report.events or [] if e.get("text")]
+def _events_scene(report, admit=None) -> ScenePlan | None:
+    events = [e for e in report.events or [] if e.get("text") and (admit is None or admit(e))]
     if not events:
         return None
     scene = ScenePlan(scene_id="events", scene_type=SceneType.EVENTS,
@@ -475,13 +476,48 @@ def _outro_scene() -> ScenePlan:
 
 # --------------------------------------------------------------------- plan
 def plan_short(report, snapshot=None, now: dt.datetime | None = None,
-               is_safe=None) -> ShortsPlan:
-    """Assemble the Short. Reads the report and the snapshot; writes to neither."""
+               is_safe=None, profile=None) -> ShortsPlan:
+    """Assemble the Short. Reads the report and the snapshot; writes to neither.
+
+    `profile` (default PUBLIC_UNREGISTERED): the publication gate decides what may appear - a
+    single named stock, a top-gainer/loser ranking, a stock-level history insight or a
+    news/AI "event" is refused publicly and recorded in `omitted`; PRIVATE_ANALYTICS keeps them."""
+    from publication import PublicationGate
+    from publication.classify import insight_fact, mover_fact, report_event_fact
+
     plan = ShortsPlan(report_id=report.report_id,
                       session_date=report.session_date or report.report_date,
                       generated_at=now)
+    pub = PublicationGate(profile)
+    plan.publication_profile, plan.gate = pub.profile.value, pub
+    session = plan.session_date
 
-    hook_scene, chosen = _hook_scene(report, snapshot, is_safe)
+    def admit_hook(c):
+        if c.candidate_id == "hook-mover":
+            return pub.admit(mover_fact(c.primary_text, f"{c.primary_text} {c.primary_value}",
+                                        session))
+        if c.candidate_id.startswith("hook-insight-") and snapshot is not None:
+            ins = next((i for i in snapshot.insights if i.insight_id in c.source_insight_ids), None)
+            if ins is not None:
+                return pub.admit(insight_fact(ins, c.secondary_text, session))
+        return True
+
+    def admit_insight(ins, line):
+        ok = pub.admit(insight_fact(ins, line, session))
+        if not ok:
+            plan.omitted.append({"scene": "context", "reason": "publication_profile",
+                                 "item": ins.insight_id, "profile": pub.profile.value})
+        return ok
+
+    def admit_event(ev):
+        ok = pub.admit(report_event_fact(ev, session))
+        if not ok:
+            plan.omitted.append({"scene": "events", "reason": "publication_profile",
+                                 "item": ev.get("text"), "origin": ev.get("origin"),
+                                 "profile": pub.profile.value})
+        return ok
+
+    hook_scene, chosen = _hook_scene(report, snapshot, is_safe, admit_hook)
     used_insights = set(chosen.source_insight_ids)
     plan.scenes.append(hook_scene)
     plan.notes.append(f"hook: {chosen.candidate_id}")
@@ -498,13 +534,23 @@ def plan_short(report, snapshot=None, now: dt.datetime | None = None,
     for held in gate["guard_excluded"]:
         plan.omitted.append({"scene": "movers", "reason": "move_guard", "item": held["symbol"],
                              "status": held["status"], "detail": held["reason"]})
+    movers = [gainers_scene(report), losers_scene(report)] if gate["publishable"] else [None, None]
+    for sc in [m for m in movers if m is not None and m.items]:
+        top = sc.items[0]
+        if not pub.admit(mover_fact(top.title, f"{top.title} {top.value}", session)):
+            plan.omitted.append({"scene": "movers", "reason": "publication_profile",
+                                 "profile": pub.profile.value,
+                                 "detail": "named single-stock moves are a security ranking - "
+                                           "PRIVATE_ANALYTICS only"})
+            movers = [None, None]
+            break
     builders = [
         _global_scene(report),
         _nifty_scene(report, snapshot, used_insights),
         _flows_scene(report, snapshot, used_insights),
         _sectors_scene(report),
-        gainers_scene(report) if gate["publishable"] else None,
-        losers_scene(report) if gate["publishable"] else None,
+        movers[0],
+        movers[1],
     ]
     for scene in builders:
         if scene is None:
@@ -512,10 +558,10 @@ def plan_short(report, snapshot=None, now: dt.datetime | None = None,
         used_insights.update(scene.source_insight_ids)
         plan.scenes.append(scene)
 
-    context = _context_scene(snapshot, used_insights)
+    context = _context_scene(snapshot, used_insights, admit_insight if pub.public else None)
     if context is not None:
         plan.scenes.append(context)
-    events = _events_scene(report)
+    events = _events_scene(report, admit_event if pub.public else None)
     if events is not None:
         plan.scenes.append(events)
     plan.scenes.append(_outro_scene())

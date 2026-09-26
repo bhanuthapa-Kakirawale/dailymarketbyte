@@ -42,7 +42,7 @@ def real():
     import render_daily_market_byte as r
     plan, pres, radar_pres, radar_result, evidence, universe, sources = r.load_inputs(
         REPORT, "output/radar", "2026-09-21")
-    sb = build_storyboard(plan, pres, radar_pres, radar_result, evidence, universe, sources)
+    sb = build_storyboard(plan, pres, radar_pres, radar_result, evidence, universe, sources, profile="PRIVATE_ANALYTICS")
     return {"plan": plan, "pres": pres, "radar_pres": radar_pres, "radar_result": radar_result,
             "evidence": evidence, "sb": sb, "comp": Composer(sb)}
 

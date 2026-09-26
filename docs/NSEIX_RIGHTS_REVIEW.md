@@ -43,6 +43,14 @@ Last reviewed: 2026-09-25 (engineering review, not legal advice).
 6. Is an automated request to an undocumented endpoint acceptable, or is a licensed feed or a
    data vendor required?
 
+## Publication rights registry
+
+`publication/rights.py` records both NSE IX sources as `RESTRICTED` (stricter than their
+`display_rights_status`), so the publication gate refuses a GIFT fact on its own; PRE also
+withholds GIFT in public output unless `operations.gift_policy` explicitly allowed it
+(`presentation/pre_public.py`). The rest of NSE's sources are `REVIEW_REQUIRED` - reachable is
+not licensed - see docs/PUBLICATION_POLICY.md.
+
 ## Decision
 
 The terms do not clearly establish permission for public display. So:

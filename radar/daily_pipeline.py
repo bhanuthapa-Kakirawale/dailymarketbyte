@@ -485,6 +485,35 @@ def save_artifact(result: DailyRadarResult, out_dir: str = ARTIFACT_DIR) -> str:
 
 
 # ------------------------------------------------------------------ production entry point
+def _market_structure_step(universe_name, session_date, prev_date, detector_output,
+                           out_dir) -> dict:
+    """Build + save the Market Structure snapshot from this run's detector output. Uses the
+    constituent metadata `market.get_universe` recorded from its own download (NSE's
+    'Industry' column); a fallback list or a missing record means no snapshot, with a warning."""
+    try:
+        import market_structure as ms
+        meta = market.UNIVERSE_META.get(universe_name)
+        if not meta:
+            return {"status": "SKIPPED", "reason": f"no constituent record for {universe_name}"}
+        uni = ms.from_market_meta(meta)
+        uni.require_official()
+        subsets = []
+        for other, m in market.UNIVERSE_META.items():
+            if other != universe_name and m.get("source") == "NSE_CONSTITUENT_FILE":
+                sub = ms.from_market_meta(m)
+                if sub.symbols() < uni.symbols():
+                    subsets.append(sub)
+        obs = ms.build_observations(uni, session_date, prev_date, detector_output.volume_snapshot,
+                                    detector_output.technical_snapshot,
+                                    detector_output.dataset.series_by_symbol)
+        snap = ms.aggregate(obs, uni, session_date, subsets)
+        path = ms.save_snapshot(snap, obs, uni, out_dir, subsets)
+        return {"status": "OK", "artifact": path, "universe": uni.label,
+                "coverage": {k: m.coverage_pct for k, m in snap.metrics.items()}}
+    except Exception as exc:
+        return {"status": "SKIPPED", "reason": f"{type(exc).__name__}: {exc}"}
+
+
 def run_daily_radar(session_date: dt.date | None = None, *, universe_name: str = "NIFTY200",
                     out_dir: str | None = None, dry_run: bool = False,
                     as_of: dt.datetime | None = None) -> DailyRadarResult:
@@ -562,6 +591,13 @@ def run_daily_radar(session_date: dt.date | None = None, *, universe_name: str =
     composite_snapshot = detector_output.composite_snapshot
     timings.update(detector_output.timings)
     network_calls["universe_yahoo"] = detector_output.network_calls["universe_yahoo"]
+
+    # ---- public Market Structure (additive): counts over the SAME detector output, per named
+    # universe, saved as an internal artifact. Never fatal, never a second detector, no fetch.
+    market_structure_status = {"status": "NOT_RUN", "reason": "dry run or empty universe"}
+    if not dry_run and universe:
+        market_structure_status = _market_structure_step(universe_name, session_date, prev_date,
+                                                         detector_output, out_dir)
 
     # ---- 9-11: novelty, from PERSISTED CANDIDATE HISTORY (never editorial history) ----
     # Auto-bootstrap preflight (Packet 5.4E, packet spec sections 16/17): a fresh deployment or
@@ -736,7 +772,8 @@ def run_daily_radar(session_date: dt.date | None = None, *, universe_name: str =
         editorial_selection_count=len(selection_result.selected), stories=stories,
         coverage_diagnostics=coverage, issues=issues,
         pipeline_diagnostics={"stage_timings_ms": timings, "network_calls": network_calls,
-                              "editorial_diagnostics": selection_result.diagnostics},
+                              "editorial_diagnostics": selection_result.diagnostics,
+                              "market_structure": market_structure_status},
         warnings=warnings,
         calculation_versions={"composite": composite_snapshot.calculation_version,
                               "volume": "1.0", "technical": "1.0", "relative": "1.0"},

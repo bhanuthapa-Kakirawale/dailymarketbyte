@@ -84,6 +84,13 @@ def build_metadata(m, gainers, losers, events, info, fd, sec, tiles):
     return {"title": title, "description": "\n".join(L), "tags": tags}
 
 
+def build_public_metadata(m, plan, info):
+    """PUBLIC_UNREGISTERED title/description/tags: built only from what the public plan shows
+    (presentation.legacy_public.public_metadata) - no stock names, no rankings."""
+    from presentation.legacy_public import public_metadata
+    return public_metadata(m, plan, info)
+
+
 # ----------------------------------------------------------------------------- demo data
 def demo_data():
     rng = np.random.default_rng(3)
@@ -174,7 +181,11 @@ def collect_public_text(plan, meta) -> dict:
     including the hook and every context statement. Reading it here rather than introspecting
     rendered scenes means nothing can reach the screen without passing the safety scan.
     """
-    fields = {"youtube_title": meta["title"], "youtube_description": meta["description"]}
+    # The registered disclaimer names the words it disclaims ("buy/sell/hold, target,
+    # stop-loss"); it - and only it, verbatim - is exempt. Everything else is scanned.
+    from publication.disclaimer import strip_registered
+    fields = {"youtube_title": meta["title"],
+              "youtube_description": strip_registered(meta["description"])}
     fields.update(plan.public_text())
     return fields
 
@@ -211,7 +222,7 @@ def operational_content_qa(scan) -> dict:
 
 
 # ----------------------------------------------------------------------------- main
-def plan_short(report, snapshot, now=None):
+def plan_short(report, snapshot, now=None, profile=None):
     """The editorial script for this Short: what is said, in what order, for how long.
 
     Durations come from how much there is to read, not from a fixed 75-second budget, and
@@ -221,7 +232,7 @@ def plan_short(report, snapshot, now=None):
     def _is_safe(text):
         return classify_text(text).status is not SafetyStatus.BLOCKED
 
-    return editorial.plan_short(report, snapshot, now=now, is_safe=_is_safe)
+    return editorial.plan_short(report, snapshot, now=now, is_safe=_is_safe, profile=profile)
 
 
 def collect(args, today, morning_facts=True):
@@ -546,9 +557,11 @@ def video_qa(out, meta_path, report_path, expected_duration, upload_requested):
     return result
 
 
-def publish(out, meta, session_date):
+def publish(out, meta, session_date, audit):
+    """`audit`: the PASS publication_audit.json for exactly this file - upload.upload refuses
+    anything else (publication.audit.require_publication_pass)."""
     import upload
-    vid = upload.upload(out, meta)
+    vid = upload.upload(out, meta, audit)
     print(f"Uploaded: https://youtube.com/shorts/{vid}")
     with open(os.path.join(OUT_DIR, "last_session.txt"), "w") as f:
         f.write(str(session_date))
@@ -726,6 +739,27 @@ def obtain_post_report(args, today, history, run_id):
     return outcome
 
 
+def publication_audit(plan, meta, out, provs, report, args, tag, ticker=()):
+    """Gate 5 (public intelligence V1): the per-video publication audit. PASS or BLOCK; a
+    BLOCK makes the upload impossible (upload.upload re-checks it against the file)."""
+    from presentation.legacy_public import legacy_scene_audit, provenance_text
+    from publication import build_publication_audit, write_publication_audit
+    texts = dict(plan.public_text())
+    texts.update(provenance_text(provs or []))
+    for i, item in enumerate(ticker or ()):          # the scrolling strip is on screen too
+        texts[f"ticker.{i}"] = " ".join(str(x) for x in item[:2] if x)
+    audit = build_publication_audit(
+        gate=plan.gate, product="POST_LEGACY", session_date=report.session_date,
+        public_text=texts, scenes=legacy_scene_audit(plan, provs or [None] * len(plan.scenes)),
+        metadata=meta, video_path=out, synthetic=bool(args.demo),
+        sources={"market_report": report.report_id})
+    path = write_publication_audit(audit, os.path.join(OUT_DIR, "publication", tag))
+    print(f"      publication audit: {audit['final']}"
+          + (f" (failed: {', '.join(audit['failed_checks'])})" if audit["failed_checks"] else "")
+          + f" -> {os.path.relpath(path, OUT_DIR)}")
+    return audit, path
+
+
 def run(args):
     os.makedirs(OUT_DIR, exist_ok=True)
     today = now_ist().date()
@@ -756,7 +790,10 @@ def run(args):
         # The editorial plan is the video's script: what earns screen time, what opens it,
         # and how long each scene needs to be readable. Derived from the report and the
         # snapshot, it changes neither.
-        plan = plan_short(report, snapshot, now=now_ist())
+        from publication import resolve_profile
+        profile = resolve_profile(getattr(args, "profile", None))
+        public = profile.is_public
+        plan = plan_short(report, snapshot, now=now_ist(), profile=profile)
         print(f"      editorial: {len(plan.scenes)} scenes, {plan.total_duration:.1f}s "
               f"| hook: {plan.hook.primary_text} {plan.hook.primary_value}".rstrip())
 
@@ -777,12 +814,22 @@ def run(args):
         swells = list(np.cumsum([s.dur for s in scenes])[:-1])
         mus = music.get_music(ASSETS_DIR, OUT_DIR, DURATION, swells, date=pres.session_date)
         out = os.path.join(OUT_DIR, f"daily_byte_{tag}{'_DEMO' if args.demo else ''}.mp4")
-        video.render(scenes, info,
-                     ticker_items(pres.m, pres.tiles, pres.sec, pres.gainers, pres.losers),
-                     mus, out, demo=args.demo)
+        # PUBLIC_UNREGISTERED: no named stock in the ticker, no AI-only global tile, and a
+        # SOURCE / DATA AS OF plate on every factual scene
+        provs = None
+        if public:
+            from presentation.legacy_public import plan_provenance
+            provs = plan_provenance(report, plan)
+            ticker = ticker_items(pres.m, [], pres.sec, [], [])
+        else:
+            ticker = ticker_items(pres.m, pres.tiles, pres.sec, pres.gainers, pres.losers)
+        video.render(scenes, info, ticker, mus, out, demo=args.demo, provenance=provs)
 
-        meta = build_metadata(pres.m, pres.gainers, pres.losers, pres.events, info,
-                              pres.fd, pres.sec, pres.tiles)
+        if public:
+            meta = build_public_metadata(pres.m, plan, info)
+        else:
+            meta = build_metadata(pres.m, pres.gainers, pres.losers, pres.events, info,
+                                  pres.fd, pres.sec, pres.tiles)
         meta_path = out.replace(".mp4", ".json")
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2, ensure_ascii=False)
@@ -796,6 +843,12 @@ def run(args):
         read_result = readability_qa(plan, args.upload)
         scan = final_qa(plan, meta, out, args.upload)
         content_ok = scan.status is SafetyStatus.SAFE
+        audit, audit_path = publication_audit(plan, meta, out, provs, report, args, tag, ticker)
+        publication_ok = audit["final"] == "PASS"
+        _merge_details(history, run_id, publication={
+            "profile": profile.value, "final": audit["final"],
+            "failed_checks": audit["failed_checks"], "audit_path": audit_path,
+            "facts_blocked": audit["facts_blocked"], "block_reasons": audit["block_reasons"]})
 
         qa_path = write_qa_artifact(qa_result, OUT_DIR, report, report_path=report_path,
                                     video_path=out, demo=args.demo,
@@ -821,17 +874,18 @@ def run(args):
                       qa={"video_qa": qa_result.status.value, "readability": read_result.passed,
                           "content_qa": scan.status.value, "qa_artifact": qa_path})
 
-        if not (qa_result.passed and content_ok and read_result.passed):
+        if not (qa_result.passed and content_ok and read_result.passed and publication_ok):
             stage = ("VIDEO_QA" if not qa_result.passed
-                     else "READABILITY_QA" if not read_result.passed else "CONTENT_QA")
+                     else "READABILITY_QA" if not read_result.passed
+                     else "CONTENT_QA" if not content_ok else "PUBLICATION_AUDIT")
             reason = (qa_result.blocking_issues or read_result.blocking_issues
-                      or scan.blocked_fields)
+                      or scan.blocked_fields or audit["failed_checks"])
             _finish(history, run_id, "FAILED", "BLOCKED", failure_stage=stage,
                     failure_reason="; ".join(reason), artifact_path=out, run_status="BLOCKED")
             return out
 
         if args.upload and not args.demo:
-            vid = publish(out, meta, pres.session_date)
+            vid = publish(out, meta, pres.session_date, audit_path)
             _finish(history, run_id, "PUBLISHED", "PUBLISHED", artifact_path=out,
                     youtube_video_id=vid, run_status="SUCCESS")
         else:
@@ -954,6 +1008,9 @@ if __name__ == "__main__":
     ap.add_argument("--skip-radar", action="store_true", help="report: build the report only")
     ap.add_argument("--as-of", help="premarket: IST cutoff (ISO datetime); default now")
     ap.add_argument("--frames-only", action="store_true", help="premarket: frames + QA, no MP4")
+    ap.add_argument("--profile", choices=("PUBLIC_UNREGISTERED", "PRIVATE_ANALYTICS"),
+                    default=None, help="publication profile (default PUBLIC_UNREGISTERED); "
+                                       "PRIVATE_ANALYTICS output is never uploaded")
     ap.add_argument("--hook-ai", action="store_true",
                     help="premarket: let Gemini choose among the approved hook candidates")
     try:

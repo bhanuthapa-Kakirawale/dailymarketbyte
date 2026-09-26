@@ -160,7 +160,7 @@ def _gift_not_fetched(policy):
 
 def build_real_brief(pre_date: dt.date, as_of: dt.datetime, history_fn=None, gift_fn=None,
                      calendar=None, db_path: str | None = None, shadow: bool = False,
-                     gift_policy=None):
+                     gift_policy=None, intel_fn=None):
     """(brief, acquisition) from REAL data. Raises PreMarketBlocked when the previous session
     cannot be described honestly. GIFT goes through the publication gate
     (`operations.gift_policy`): fetched only in shadow or once approved, displayed only once
@@ -202,6 +202,20 @@ def build_real_brief(pre_date: dt.date, as_of: dt.datetime, history_fn=None, gif
         brief.gift = None
         brief.gift_policy["withheld"] = True
         brief.notes.append(f"GIFT Nifty withheld by publication policy: {policy.reason}")
+    # Public intelligence (EXCHANGE / IPO WATCH): the official lists for THIS morning. A live run
+    # fetches them (fail closed); a reconstruction of a past morning reads only what was stored
+    # for that date - a current list is never relabelled as a past one.
+    live = abs((now_ist() - as_of).total_seconds()) <= 15 * 60
+    if intel_fn is None:
+        from presentation.public_intelligence import load_public_intelligence
+
+        def intel_fn(d, live_run):
+            return load_public_intelligence(None, d, config.OUT_DIR, fetch=live_run,
+                                            now_iso=dt.datetime.now(dt.timezone.utc).isoformat())
+    try:
+        brief.public_intelligence = intel_fn(pre_date, live)
+    except Exception as exc:          # optional sections: never block PRE
+        brief.notes.append(f"public intelligence unavailable: {type(exc).__name__}: {exc}")
     gen = getattr(report, "generated_at", None)
     if gen is not None and gen > as_of:
         brief.notes.append(f"RECONSTRUCTION: the previous-session report was generated {gen:%Y-%m-%d %H:%M} "
@@ -241,8 +255,11 @@ def render_pre(brief, out_dir: str, watermark: str | None = None, frames_only: b
 
     os.makedirs(out_dir, exist_ok=True)
     tag = brief.pre_date.isoformat()
+    # publication boundary BEFORE planning: a blocked fact never becomes a section or a hook
+    from presentation.pre_public import apply_publication_profile
+    gate = apply_publication_profile(brief)
     plan = plan_pre_sections(brief)
-    sb = build_pre_storyboard(brief, plan, hook_ai=hook_ai, hook_client=hook_client)
+    sb = build_pre_storyboard(brief, plan, hook_ai=hook_ai, hook_client=hook_client, gate=gate)
     public = sb.public_text()
     scan = scan_publication(public)
     language = pre_language_issues(public)
@@ -277,6 +294,18 @@ def render_pre(brief, out_dir: str, watermark: str | None = None, frames_only: b
     if scan.status is not SafetyStatus.SAFE or language:
         result["blocked"] = "content/language gate: " + "; ".join(
             list(scan.blocked_fields or []) + language)
+        dump(f"pre_result_{tag}.json", result)
+        return result
+    # publication audit (PRE never uploads, but every public render gets one)
+    from daily_video.public_storyboard import audit_storyboard
+    from publication import write_publication_audit
+    pub_audit = audit_storyboard(sb, "PRE", synthetic=brief.synthetic)
+    result["publication_audit"] = {"final": pub_audit["final"],
+                                   "failed_checks": pub_audit["failed_checks"],
+                                   "profile": sb.publication_profile,
+                                   "path": write_publication_audit(pub_audit, out_dir)}
+    if sb.publication_profile == "PUBLIC_UNREGISTERED" and pub_audit["final"] != "PASS":
+        result["blocked"] = "publication audit: " + ", ".join(pub_audit["failed_checks"])
         dump(f"pre_result_{tag}.json", result)
         return result
     if not provenance["ok"]:

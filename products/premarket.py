@@ -202,16 +202,21 @@ def build_real_brief(pre_date: dt.date, as_of: dt.datetime, history_fn=None, gif
         brief.gift = None
         brief.gift_policy["withheld"] = True
         brief.notes.append(f"GIFT Nifty withheld by publication policy: {policy.reason}")
-    # Public intelligence (EXCHANGE / IPO WATCH): the official lists for THIS morning. A live run
-    # fetches them (fail closed); a reconstruction of a past morning reads only what was stored
-    # for that date - a current list is never relabelled as a past one.
+    # Public intelligence (EXCHANGE / IPO WATCH): the official snapshots the REPORT job captured
+    # the evening of the previous session (the F&O ban file for THIS trade date, the surveillance
+    # and IPO lists as of that evening). A live run may capture a missing snapshot while the
+    # session's window is open (before 09:15); a reconstruction of a past morning reads only what
+    # was preserved - a current list is never relabelled as a past one.
     live = abs((now_ist() - as_of).total_seconds()) <= 15 * 60
     if intel_fn is None:
         from presentation.public_intelligence import load_public_intelligence
 
         def intel_fn(d, live_run):
             return load_public_intelligence(None, d, config.OUT_DIR, fetch=live_run,
-                                            now_iso=dt.datetime.now(dt.timezone.utc).isoformat())
+                                            now_iso=dt.datetime.now(dt.timezone.utc).isoformat(),
+                                            snapshot_session=prev, replay=not live_run,
+                                            now=now_ist() if live_run else as_of,
+                                            capture_mode="PRE_FALLBACK", calendar=cal)
     try:
         brief.public_intelligence = intel_fn(pre_date, live)
     except Exception as exc:          # optional sections: never block PRE

@@ -28,10 +28,21 @@ clarifications - each needs its own official source, validator and test first.
 
 - A payload whose shape or date does not validate yields `INVALID` and **no** events; a stale
   list (yesterday's ban file) is rejected, never relabelled.
-- `NEW` / `CONTINUING` only against a previously STORED list (`output/exchange_watch/`); with
-  none, the change is `UNKNOWN` and "new" is never claimed.
-- Selection order: F&O ban, GSM, ASM, corporate; NEW before CONTINUING before UNKNOWN; index
-  members first; then symbol. One card per security, at most three.
+- The lists are captured as official daily snapshots by the REPORT job (see "Official daily
+  snapshots" in docs/PRODUCTION_SCHEDULE.md), and every change is derived from them
+  (`official_snapshots/changes.py`). The current snapshot is compared with the **previous
+  trading session's** validated snapshot:
+  - F&O ban: `ENTERED_BAN` / `REMAINS_IN_BAN` / `EXITED_BAN`;
+  - ASM / GSM: `ENTERED` / `STAGE_CHANGED` / `UNCHANGED` / `REMOVED`.
+- With no validated previous snapshot, every member is `CHANGE_UNKNOWN`. There are no exits, and
+  the wording stays current-state only: "entered" is never claimed. An older snapshot never
+  stands in as the baseline.
+- Selection order: a proven change first (entered, then stage changed, then exited), then
+  continuing membership, then no-baseline state. Within that: F&O ban, GSM, ASM, corporate;
+  index members first; then symbol. One card per security, at most three.
+- An UNCHANGED surveillance membership is not an event. When nothing changed, the section is
+  `NO_NEW_EVENT`. An F&O ban in force always qualifies, because it restricts trading on that
+  date.
 - Every card's facts are SECURITY / OFFICIAL_EXCHANGE / EXCHANGE_EVENT with the official
   reference - the only combination the gate lets name a security. Provenance plate:
   "SOURCE: NSE / LIST DATE: 28 SEP 2026".

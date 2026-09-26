@@ -8,7 +8,10 @@ ever called by a production job, fails closed, and records what it saw.
                           www.nseindia.com/api/reportGSM ([])  - undocumented website API
 
 A payload whose shape or date does not validate yields status INVALID and NO events - never a
-partially-read list.
+partially-read list. A well-formed list with no rows is EMPTY (read fine, nothing on it). A
+request that never got an answer is UNAVAILABLE with its `connectivity` verdict
+(operations.connectivity: BLOCKED / TIMEOUT / HTTP_ERROR); a body that could not be decoded is
+INVALID with connectivity REACHABLE.
 """
 from __future__ import annotations
 
@@ -35,17 +38,18 @@ def parse_fo_ban(text: str, retrieved_at: str | None = None,
                  url: str = FO_BAN_URL) -> SourceResult:
     lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
     if not lines:
-        return SourceResult(S.SRC_NSE_FO_BAN, "INVALID", reason="empty file")
+        return SourceResult(S.SRC_NSE_FO_BAN, "INVALID", reason="empty file", list_name="FNO_BAN")
     m = _BAN_HEADER.search(lines[0])
     if not m:
-        return SourceResult(S.SRC_NSE_FO_BAN, "INVALID", reason=f"unexpected header {lines[0][:60]!r}")
+        return SourceResult(S.SRC_NSE_FO_BAN, "INVALID", list_name="FNO_BAN",
+                            reason=f"unexpected header {lines[0][:60]!r}")
     trade_date = _date(m.group(1))
     events = []
     for ln in lines[1:]:
         parts = [p.strip() for p in ln.split(",")]
         if len(parts) != 2 or not parts[0].isdigit() or not _SYM.match(parts[1]):
             return SourceResult(S.SRC_NSE_FO_BAN, "INVALID", reason=f"unexpected row {ln[:60]!r}",
-                                list_date=trade_date)
+                                list_date=trade_date, list_name="FNO_BAN")
         sym = parts[1]
         events.append(ExchangeEvent(
             event_id=f"FNO_BAN:{trade_date}:{sym}", family=EventFamily.FNO_BAN, symbol=sym,
@@ -54,25 +58,27 @@ def parse_fo_ban(text: str, retrieved_at: str | None = None,
             data_as_of=trade_date, source_name=S.SRC_NSE_FO_BAN, source_reference=url,
             retrieved_at=retrieved_at, validation_status="PARSED"))
     return SourceResult(S.SRC_NSE_FO_BAN, "OK", events=events, list_date=trade_date,
-                        retrieved_at=retrieved_at,
+                        retrieved_at=retrieved_at, list_name="FNO_BAN",
                         reason=f"{len(events)} securities in ban for trade date {trade_date}")
 
 
 # --------------------------------------------------------------------------- ASM / GSM
 def parse_asm(payload, retrieved_at: str | None = None, url: str = ASM_URL) -> SourceResult:
     if not isinstance(payload, dict):
-        return SourceResult(S.SRC_NSE_SURVEILLANCE, "INVALID", reason="ASM payload is not an object")
-    events, dates = [], set()
+        return SourceResult(S.SRC_NSE_SURVEILLANCE, "INVALID", reason="ASM payload is not an object",
+                            list_name="ASM")
+    events, dates, buckets = [], set(), 0
     for bucket, label in (("longterm", "Long-term ASM"), ("shortterm", "Short-term ASM")):
         rows = (payload.get(bucket) or {}).get("data") if isinstance(payload.get(bucket), dict) else None
-        if rows is None:
+        if not isinstance(rows, list):
             continue
+        buckets += 1
         for r in rows:
             try:
                 sym, day = str(r["symbol"]).strip(), _date(str(r["asmTime"]))
                 stage = str(r.get("asmSurvIndicator") or "").strip()
             except Exception as exc:
-                return SourceResult(S.SRC_NSE_SURVEILLANCE, "INVALID",
+                return SourceResult(S.SRC_NSE_SURVEILLANCE, "INVALID", list_name="ASM",
                                     reason=f"ASM row unreadable: {type(exc).__name__}")
             dates.add(day)
             events.append(ExchangeEvent(
@@ -83,20 +89,28 @@ def parse_asm(payload, retrieved_at: str | None = None, url: str = ASM_URL) -> S
                 source_name=S.SRC_NSE_SURVEILLANCE, source_reference=url,
                 retrieved_at=retrieved_at, validation_status="PARSED"))
     if not events:
-        return SourceResult(S.SRC_NSE_SURVEILLANCE, "INVALID", reason="no ASM rows in payload")
+        # well-formed buckets with no rows: read fine, nothing listed (never a guessed date)
+        return SourceResult(S.SRC_NSE_SURVEILLANCE, "EMPTY" if buckets else "INVALID",
+                            retrieved_at=retrieved_at, list_name="ASM",
+                            reason="ASM lists empty" if buckets else "no ASM rows in payload")
     return SourceResult(S.SRC_NSE_SURVEILLANCE, "OK", events=events, list_date=max(dates),
-                        retrieved_at=retrieved_at, reason=f"{len(events)} ASM rows")
+                        retrieved_at=retrieved_at, reason=f"{len(events)} ASM rows",
+                        list_name="ASM")
 
 
 def parse_gsm(payload, retrieved_at: str | None = None, url: str = GSM_URL) -> SourceResult:
     if not isinstance(payload, list):
-        return SourceResult(S.SRC_NSE_SURVEILLANCE, "INVALID", reason="GSM payload is not a list")
+        return SourceResult(S.SRC_NSE_SURVEILLANCE, "INVALID", reason="GSM payload is not a list",
+                            list_name="GSM")
+    if not payload:
+        return SourceResult(S.SRC_NSE_SURVEILLANCE, "EMPTY", reason="GSM list empty",
+                            retrieved_at=retrieved_at, list_name="GSM")
     events, dates = [], set()
     for r in payload:
         try:
             sym, day = str(r["symbol"]).strip(), _date(str(r["gsmTime"]))
         except Exception as exc:
-            return SourceResult(S.SRC_NSE_SURVEILLANCE, "INVALID",
+            return SourceResult(S.SRC_NSE_SURVEILLANCE, "INVALID", list_name="GSM",
                                 reason=f"GSM row unreadable: {type(exc).__name__}")
         dates.add(day)
         stage = str(r.get("gsmStage") or "").strip()
@@ -107,15 +121,16 @@ def parse_gsm(payload, retrieved_at: str | None = None, url: str = GSM_URL) -> S
             detail=str(r.get("survDesc") or "").strip(), data_as_of=day,
             source_name=S.SRC_NSE_SURVEILLANCE, source_reference=url, retrieved_at=retrieved_at,
             validation_status="PARSED"))
-    if not events:
-        return SourceResult(S.SRC_NSE_SURVEILLANCE, "INVALID", reason="no GSM rows in payload")
     return SourceResult(S.SRC_NSE_SURVEILLANCE, "OK", events=events, list_date=max(dates),
-                        retrieved_at=retrieved_at, reason=f"{len(events)} GSM rows")
+                        retrieved_at=retrieved_at, reason=f"{len(events)} GSM rows",
+                        list_name="GSM")
 
 
 # --------------------------------------------------------------------------- fetch (production only)
 def fetch_fo_ban(now_iso: str, get=None) -> SourceResult:
-    """One GET of the archive file. `get(url) -> text` is injectable; any failure -> UNAVAILABLE."""
+    """One GET of the archive file. `get(url) -> text` is injectable; any failure -> UNAVAILABLE
+    with its connectivity verdict."""
+    from operations.connectivity import classify_exception
     try:
         if get is None:
             import requests
@@ -126,25 +141,38 @@ def fetch_fo_ban(now_iso: str, get=None) -> SourceResult:
         else:
             text = get(FO_BAN_URL)
     except Exception as exc:
-        return SourceResult(S.SRC_NSE_FO_BAN, "UNAVAILABLE", reason=f"{type(exc).__name__}: {exc}")
+        return SourceResult(S.SRC_NSE_FO_BAN, "UNAVAILABLE", list_name="FNO_BAN",
+                            connectivity=classify_exception(exc),
+                            reason=f"{type(exc).__name__}: {str(exc)[:200]}")
     return parse_fo_ban(text, now_iso)
 
 
 def fetch_surveillance(now_iso: str, nse=None) -> list:
-    """ASM + GSM through the existing NSE website client. Each fails closed on its own."""
-    out = []
+    """ASM + GSM through the existing NSE website client. Each fails closed on its own; one
+    result per list, always (ASM first, then GSM)."""
+    from operations.connectivity import classify_exception
+    lists = (("/api/reportASM", parse_asm, ASM_URL, "ASM"),
+             ("/api/reportGSM", parse_gsm, GSM_URL, "GSM"))
     try:
         import market
         nse = nse or market.NSE()
     except Exception as exc:
-        return [SourceResult(S.SRC_NSE_SURVEILLANCE, "UNAVAILABLE", reason=str(exc))]
-    for path, parser, url in (("/api/reportASM", parse_asm, ASM_URL),
-                              ("/api/reportGSM", parse_gsm, GSM_URL)):
+        return [SourceResult(S.SRC_NSE_SURVEILLANCE, "UNAVAILABLE", list_name=name,
+                             connectivity=classify_exception(exc),
+                             reason=f"NSE client: {type(exc).__name__}: {str(exc)[:200]}")
+                for _, _, _, name in lists]
+    out = []
+    for path, parser, url, name in lists:
         try:
-            out.append(parser(nse.get(path), now_iso, url))
+            payload = nse.get(path)
         except Exception as exc:
-            out.append(SourceResult(S.SRC_NSE_SURVEILLANCE, "UNAVAILABLE",
-                                    reason=f"{path}: {type(exc).__name__}: {exc}"))
+            verdict = classify_exception(exc)
+            out.append(SourceResult(S.SRC_NSE_SURVEILLANCE,
+                                    "INVALID" if verdict == "REACHABLE" else "UNAVAILABLE",
+                                    list_name=name, connectivity=verdict,
+                                    reason=f"{path}: {type(exc).__name__}: {str(exc)[:200]}"))
+            continue
+        out.append(parser(payload, now_iso, url))
     return out
 
 

@@ -1,8 +1,10 @@
 name: PRE-MARKET shadow (never uploads)
-# PRE shadow run: live pre-open data + the canonical previous-session report the REPORT job
-# built the evening before -> plan -> render -> QA -> run history -> output/pre_shadow/<date>/.
-# There is no upload step and no YouTube credential in this workflow. GIFT Nifty is fetched and
-# audited but NOT displayed (GIFT_NIFTY_PUBLICATION_ENABLED=false). See docs/PRODUCTION_SCHEDULE.md.
+# PRE shadow run: live pre-open data + the canonical previous-session report and official
+# snapshots the REPORT job built the evening before -> plan -> render -> QA -> run history ->
+# output/pre_shadow/<date>/. There is no upload step and no YouTube credential in this workflow.
+# GIFT Nifty is fetched and audited but NOT displayed (GIFT_NIFTY_PUBLICATION_ENABLED=false).
+# Durable state: DMB_STATE_BACKEND=gcs -> hydrate/persist in-process (docs/STATE_STORE.md);
+# otherwise actions/cache is a best-effort, NON-canonical fallback. See docs/PRODUCTION_SCHEDULE.md.
 on:
   schedule:
     - cron: "0 2 * * 1-5"     # 02:00 UTC = 07:30 IST (GitHub may start late; GIFT must be read before 09:15)
@@ -10,6 +12,13 @@ on:
 concurrency:
   group: daily-byte-state
   cancel-in-progress: false
+permissions:
+  contents: read
+  id-token: write        # Workload Identity Federation (used only when DMB_STATE_BACKEND=gcs)
+env:
+  DMB_STATE_BACKEND: ${{ vars.DMB_STATE_BACKEND || 'local' }}
+  DMB_GCS_BUCKET: ${{ vars.DMB_GCS_BUCKET }}
+  DMB_GCS_PREFIX: ${{ vars.DMB_GCS_PREFIX }}
 jobs:
   pre-shadow:
     runs-on: ubuntu-latest
@@ -22,7 +31,14 @@ jobs:
         with: { python-version: "3.11" }
       - run: sudo apt-get install -y -qq fonts-dejavu-core
       - run: pip install -r requirements.txt
-      - name: Restore persisted history
+      - name: Authenticate to Google Cloud (Workload Identity Federation)
+        if: env.DMB_STATE_BACKEND == 'gcs'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_STATE_SERVICE_ACCOUNT }}
+      - name: Restore state from actions/cache (local-backend fallback, not canonical)
+        if: env.DMB_STATE_BACKEND != 'gcs'
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -31,6 +47,9 @@ jobs:
             output/radar
             output/intelligence
             output/report_jobs
+            output/market_structure
+            output/official_snapshots
+            output/publication
           key: daily-byte-state-${{ github.run_id }}
           restore-keys: daily-byte-state-
       - name: Connectivity diagnostic (informational - never gates the run)
@@ -40,8 +59,8 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python main.py --mode premarket --shadow
-      - name: Save persisted history (run records)
-        if: always()
+      - name: Save state to actions/cache (local-backend fallback, not canonical)
+        if: always() && env.DMB_STATE_BACKEND != 'gcs'
         uses: actions/cache/save@v4
         with:
           path: |
@@ -50,6 +69,9 @@ jobs:
             output/radar
             output/intelligence
             output/report_jobs
+            output/market_structure
+            output/official_snapshots
+            output/publication
           key: daily-byte-state-${{ github.run_id }}-${{ github.run_attempt }}
       - uses: actions/upload-artifact@v4
         if: always()

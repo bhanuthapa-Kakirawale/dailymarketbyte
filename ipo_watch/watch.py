@@ -68,6 +68,36 @@ def todays_event(ipo: IPOEvent, day: dt.date) -> str | None:
     return None
 
 
+# the dated primary-market events derivable from a stored snapshot, named for the audit
+# (selection below keeps its own display kinds; nothing here judges an issue)
+DERIVED_EVENT = {"OPENS_TODAY": "OPENS_TODAY", "CLOSES_TODAY": "CLOSES_TODAY",
+                 "LISTS_TODAY": "LISTING_TODAY", "ALLOTMENT_TODAY": "ALLOTMENT_EVENT"}
+
+
+def derive_events(ipos, day: dt.date) -> list:
+    """Every dated event the exchange's own dates put on `day`, AFTER capture: OPENS_TODAY /
+    CLOSES_TODAY / LISTING_TODAY / ALLOTMENT_EVENT, plus SUBSCRIPTION_UPDATE only for bid data
+    carrying the exchange's own timestamp (the NSE issue lists carry none, so never from them).
+    No classification of any kind (good / popular / attractive) - dates and sources only."""
+    out = []
+    for ipo in ipos:
+        for when, kind in ((ipo.issue_open_date, "OPENS_TODAY"),
+                           (ipo.issue_close_date, "CLOSES_TODAY"),
+                           (ipo.listing_date, "LISTS_TODAY"),
+                           (ipo.allotment_date, "ALLOTMENT_TODAY")):
+            if when == day:
+                out.append({"event_type": DERIVED_EVENT[kind], "company": ipo.company_name,
+                            "symbol": ipo.symbol, "board": ipo.board_type.value,
+                            "date": day.isoformat(), "source_reference": ipo.source_reference})
+        sub = ipo.subscription
+        if sub is not None and sub.as_of is not None and sub.as_of.date() == day:
+            out.append({"event_type": "SUBSCRIPTION_UPDATE", "company": ipo.company_name,
+                        "symbol": ipo.symbol, "board": ipo.board_type.value,
+                        "date": day.isoformat(), "as_of": sub.as_of.isoformat(),
+                        "source_reference": sub.source_reference})
+    return out
+
+
 def validate(ipo: IPOEvent) -> IPOEvent:
     """Drop (and note) anything that is not an official, dated, self-consistent fact."""
     ipo = replace(ipo, notes=list(ipo.notes))
@@ -260,5 +290,5 @@ def ipo_audit(chosen, omitted) -> dict:
             "omitted": omitted}
 
 
-__all__ = ["todays_event", "validate", "select_ipos", "fact_rows", "build_card", "build_model",
+__all__ = ["todays_event", "derive_events", "DERIVED_EVENT", "validate", "select_ipos", "fact_rows", "build_card", "build_model",
            "ipo_facts", "chip_for", "ipo_audit", "EVENT_CHIP", "MAX_BOARD"]

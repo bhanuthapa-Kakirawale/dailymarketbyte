@@ -24,7 +24,7 @@ from publication.classification import (ContentClass, Orientation, Origin, Publi
 from publication.classify import SOURCE_LABELS
 from publication.rights import rights_for
 
-from .models import Change, EventFamily, ExchangeEvent
+from .models import PROVEN_EXIT, Change, EventFamily, ExchangeEvent
 
 MAX_CARDS = 3
 # Fixed, factual one-liners per family - the exchange's status, never its implication.
@@ -121,24 +121,38 @@ class OfficialEvidenceResolver:
 
 
 # --------------------------------------------------------------------------- selection
+# CHANGES first (proven against the previous session's snapshot), then membership that
+# continues, then current state with no baseline
+CHANGE_RANK = {Change.ENTERED_BAN: 0, Change.ENTERED: 0, Change.NEW: 0,
+               Change.STAGE_CHANGED: 1, Change.EXITED_BAN: 2, Change.REMOVED: 2,
+               Change.REMAINS_IN_BAN: 3, Change.CONTINUING: 3,
+               Change.CHANGE_UNKNOWN: 4, Change.UNKNOWN: 4}
+NO_NEW_EVENT_REASON = "unchanged surveillance membership - no new event"
+
+
 def select_events(events, universe_symbols=None, limit: int = MAX_CARDS) -> tuple:
-    """Transparent factual order: implemented family priority (F&O ban first), NEW before
-    CONTINUING before UNKNOWN, index-universe members first (broad audience), then symbol.
+    """Transparent factual order: a proven CHANGE (entered / stage changed / exited) before
+    continuing membership before current state with no baseline; then implemented family
+    priority (F&O ban first), index-universe members first (broad audience), then symbol.
     Surveillance lists run to hundreds of names, so only index-universe members qualify for
-    them. Returns (chosen, omitted [{event_id, reason}])."""
+    them, and an UNCHANGED surveillance membership is not an event at all (the F&O ban is:
+    it restricts trading for the date). Returns (chosen, omitted [{event_id, reason}])."""
     uni = set(universe_symbols or ())
-    change_rank = {Change.NEW: 0, Change.CONTINUING: 1, Change.UNKNOWN: 2}
     eligible, omitted = [], []
     for e in events:
-        if e.family in (EventFamily.SURVEILLANCE_ASM, EventFamily.SURVEILLANCE_GSM) and e.symbol not in uni:
+        surveillance = e.family in (EventFamily.SURVEILLANCE_ASM, EventFamily.SURVEILLANCE_GSM)
+        if surveillance and e.symbol not in uni:
             omitted.append({"event_id": e.event_id, "reason": "surveillance entry outside the "
                                                               "index universe"})
+            continue
+        if surveillance and e.change is Change.UNCHANGED:
+            omitted.append({"event_id": e.event_id, "reason": NO_NEW_EVENT_REASON})
             continue
         if e.family not in FAMILY_PRIORITY:
             omitted.append({"event_id": e.event_id, "reason": "family not published in V1"})
             continue
         eligible.append(e)
-    eligible.sort(key=lambda e: (FAMILY_PRIORITY[e.family], change_rank[e.change],
+    eligible.sort(key=lambda e: (CHANGE_RANK[e.change], FAMILY_PRIORITY[e.family],
                                  e.symbol not in uni, e.symbol))
     # one card per security
     chosen, seen = [], set()
@@ -155,13 +169,30 @@ def select_events(events, universe_symbols=None, limit: int = MAX_CARDS) -> tupl
 
 
 # --------------------------------------------------------------------------- public model
+# the change line: said ONLY when the previous session's validated snapshot proves it
+CHANGE_LINE = {Change.ENTERED_BAN: "Entered the ban period for this trade date",
+               Change.REMAINS_IN_BAN: "Also in the ban period on the previous trade date",
+               Change.ENTERED: "Added since the previous session's list",
+               Change.STAGE_CHANGED: "Stage changed since the previous session's list",
+               Change.UNCHANGED: "Also on the previous session's list",
+               Change.NEW: "Entered the list for this date",
+               Change.CONTINUING: "Also on the previous list"}
+EXIT_LINE = {EventFamily.FNO_BAN: "Not on the exchange's ban list for this trade date.",
+             EventFamily.SURVEILLANCE_ASM: "No longer on NSE's Additional Surveillance Measure "
+                                           "list.",
+             EventFamily.SURVEILLANCE_GSM: "No longer on NSE's Graded Surveillance Measure list."}
+
+
 def _card(e: ExchangeEvent) -> dict:
     tag = FAMILY_TAG.get(e.family, e.family.value)
-    status = e.status if e.family is not EventFamily.FNO_BAN else f"TRADE DATE {fmt_date(e.data_as_of)}"
-    change = {Change.NEW: "Entered the list for this date", Change.CONTINUING:
-              "Also on the previous list"}.get(e.change, "")
+    exit_ = e.change in PROVEN_EXIT
+    if e.family is EventFamily.FNO_BAN:
+        status = (f"{e.status} · " if exit_ else "") + f"TRADE DATE {fmt_date(e.data_as_of)}"
+    else:
+        status = e.status
+    line = EXIT_LINE.get(e.family, "") if exit_ else FAMILY_LINE.get(e.family, "")
     return {"tag": tag, "name": e.symbol, "company": e.company, "status": status.upper(),
-            "line": FAMILY_LINE.get(e.family, ""), "change": change,
+            "line": line, "change": CHANGE_LINE.get(e.change, ""),
             "event_id": e.event_id, "family": e.family.value}
 
 
@@ -170,7 +201,7 @@ def build_model(chosen, mode: str = "POST") -> dict | None:
         return None
     n = len(chosen)
     families = {e.family for e in chosen}
-    if families == {EventFamily.FNO_BAN}:
+    if families == {EventFamily.FNO_BAN} and not any(e.change in PROVEN_EXIT for e in chosen):
         headline = ("One security in the F&O ban period" if n == 1
                     else f"{n} securities in the F&O ban period")
     else:
@@ -234,4 +265,5 @@ def load_previous(out_dir: str, list_date: dt.date, max_back: int = 7) -> list:
 
 __all__ = ["validate", "mark_changes", "OfficialEvidenceResolver", "ResolvedEvidence",
            "select_events", "build_model", "exchange_facts", "save_events", "load_previous",
-           "FAMILY_LINE", "FAMILY_TAG", "MAX_CARDS"]
+           "FAMILY_LINE", "FAMILY_TAG", "MAX_CARDS", "CHANGE_RANK", "CHANGE_LINE",
+           "NO_NEW_EVENT_REASON"]

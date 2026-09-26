@@ -10,7 +10,13 @@
            acquisition must describe exactly D (an older benchmark session is a hard stop)
            a report that fails data validation is NOT committed (reports/unfit/, retryable)
       -> historical intelligence snapshot (derived, never fatal)
-      -> Market Radar for D (idempotent: skipped when D's Radar artifacts already exist)
+      -> Market Radar for D (idempotent: skipped when D's Radar artifacts already exist) - which
+         also writes D's Market Structure snapshot (market_structure/)
+      -> official daily snapshots for D (official_snapshots: NSE IPO lists, F&O ban, ASM, GSM;
+         ESM recorded NOT_SUPPORTED) - captured whether or not anything is ever shown; a kind
+         that already has a validated snapshot is never re-acquired; a failure DEGRADES the job
+         and never touches the canonical report
+      -> persist the approved state to the StateStore (state.sync) when one is configured
       -> run record: publication_runs job_type REPORT_BUILD + output/report_jobs/<D>/
 
 Idempotent and safe to retry: a rerun for a built session writes no canonical row; the report
@@ -89,6 +95,16 @@ def _readiness(report) -> dict:
                           + (align.get("index_recovery") or [])]}
 
 
+def capture_official(session: dt.date, out_dir: str, now: dt.datetime) -> dict:
+    """Official daily snapshots for `session` (never raises: optional intelligence)."""
+    from official_snapshots import REPORT_JOB, OfficialDailySnapshotService, rollup
+    try:
+        summary = OfficialDailySnapshotService(out_dir).ensure(session, now, REPORT_JOB)
+    except Exception as exc:
+        return {"official_snapshot_status": "FAILED", "error": f"{type(exc).__name__}: {exc}"}
+    return {**summary, **rollup(summary["kinds"])}
+
+
 def resolve_session(session_date: dt.date | None, now: dt.datetime, calendar=None) -> tuple:
     """(session, None) or (None, (code, message)). Never a date whose close is not final."""
     from core.trading_calendar import SessionCalendar
@@ -110,7 +126,7 @@ def resolve_session(session_date: dt.date | None, now: dt.datetime, calendar=Non
 
 def run_report_job(session_date: dt.date | None = None, *, demo: bool = False,
                    now: dt.datetime | None = None, skip_radar: bool = False,
-                   radar_fn=None, calendar=None) -> dict:
+                   radar_fn=None, calendar=None, official_fn=None) -> dict:
     """The REPORT job. Returns the run record (also written to output/report_jobs/<D>/)."""
     import config
     import main
@@ -121,6 +137,7 @@ def run_report_job(session_date: dt.date | None = None, *, demo: bool = False,
     out_dir = config.OUT_DIR
     now = now or main.now_ist()
     radar_fn = radar_fn or run_radar
+    official_fn = official_fn or capture_official
     record = {"version": REPORT_JOB_VERSION, "job_type": JOB_REPORT_BUILD,
               "started_at": dt.datetime.now(dt.timezone.utc).isoformat(), "as_of": now.isoformat(),
               "demo": demo}
@@ -216,7 +233,17 @@ def run_report_job(session_date: dt.date | None = None, *, demo: bool = False,
                                   "selected_symbols": sel["selected_symbols"],
                                   "published_count": 0, "published_symbols": [],
                                   "note": "REPORT_BUILD selects; it never publishes"}
+        official = ({"official_snapshot_status": "SKIPPED", "reason": "demo"} if demo
+                    else official_fn(session, out_dir, now))
         degraded = []
+        if official.get("official_snapshot_status") in ("DEGRADED", "FAILED") or (
+                official.get("capture") == "REFUSED" and official.get("window") != "HISTORICAL_SESSION"
+                and official.get("official_snapshot_status") == "NOT_CAPTURED"):
+            degraded.append({"source": "OFFICIAL_SNAPSHOTS",
+                             "status": official.get("official_snapshot_status"),
+                             "reason": {k: official.get(k) for k in (
+                                 "ipo_snapshot_status", "fno_status", "asm_status",
+                                 "gsm_status", "window_reason", "error") if official.get(k)}})
         if radar.get("status") == "FAILED":
             degraded.append({"source": "MARKET_RADAR", "status": "FAILED",
                              "reason": radar.get("error") or radar.get("issues")})
@@ -227,7 +254,23 @@ def run_report_job(session_date: dt.date | None = None, *, demo: bool = False,
         # row persisted before that rule could be unfit - immutable, so reported, never rebuilt
         status = (BLOCKED if not readiness["publication_ready"] and not demo
                   else DEGRADED if degraded else SUCCESS)
-        print(f"REPORT {session}: {status} ({source}) -> {report_path}; radar {radar.get('status')}")
+        from operations.sessions import next_session
+        from state import sync as state_sync
+        stored = state_sync.persist(out_dir, job="REPORT") if not demo else {
+            "persisted_to_state_store": False, "state_store_backend": "local", "reason": "demo"}
+        state_fields = {
+            "persisted_to_state_store": stored.get("persisted_to_state_store"),
+            "state_store_backend": stored.get("state_store_backend"),
+            "state_store_detail": {k: stored.get(k) for k in ("reason", "uploaded", "unchanged",
+                                                              "conflicts", "errors")
+                                   if stored.get(k) not in (None, [], "")},
+            "snapshot_manifest_path": official.get("manifest_path")}
+        ms_path = os.path.join(out_dir, "market_structure",
+                               f"market_structure_{session.isoformat()}.json") if session else None
+        print(f"REPORT {session}: {status} ({source}) -> {report_path}; radar {radar.get('status')}"
+              f"; official snapshots {official.get('official_snapshot_status')}"
+              f"; state store {state_fields['state_store_backend']}"
+              f" persisted={state_fields['persisted_to_state_store']}")
         return close(status, "REPORT_READY" if status != BLOCKED else "DATA_QA",
                      report_id=report.report_id, artifact_path=report_path,
                      data_qa_status="PASSED" if readiness["publication_ready"] else "FAILED",
@@ -238,9 +281,19 @@ def run_report_job(session_date: dt.date | None = None, *, demo: bool = False,
                      details={"report_source": source, "report_id": report.report_id,
                               "report_path": report_path, "readiness": readiness,
                               "radar": radar, "intelligence": bool(snapshot),
+                              "official_snapshots": official,
+                              **{k: official.get(k) for k in (
+                                  "official_snapshot_status", "ipo_snapshot_status",
+                                  "exchange_snapshot_status", "fno_status", "asm_status",
+                                  "gsm_status", "esm_status")},
+                              **state_fields,
+                              "market_structure_snapshot": ms_path if ms_path and
+                              os.path.exists(ms_path) else None,
+                              "official_list_date": str(next_session(session)) if session else None,
                               "degradations": degraded, "outputs": {
                                   "report": report_path, "radar": radar.get("result"),
-                                  "radar_presentation": radar.get("presentation")}})
+                                  "radar_presentation": radar.get("presentation"),
+                                  "official_snapshots": official.get("manifest_path")}})
     except Exception as exc:
         main._fail_open_run(history, run_id, exc)
         record.update(run_status=FAILED, stage="EXCEPTION",
@@ -265,5 +318,5 @@ def _write_record(record: dict, out_dir: str) -> dict:
     return record
 
 
-__all__ = ["run_report_job", "resolve_session", "existing_radar", "run_radar",
+__all__ = ["run_report_job", "resolve_session", "existing_radar", "run_radar", "capture_official",
            "REPORT_JOB_MODE", "REPORT_JOB_DEMO_MODE"]

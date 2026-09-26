@@ -155,8 +155,9 @@ def test_claim_without_fact_or_derivation_is_unresolved():
 def test_exchange_and_ipo_omissions_distinguish_nothing_from_failure():
     none = _post(exchange_scenario=None, ipo_scenario=None)
     secs = none.public_audit["omitted_sections"]
-    assert secs["EXCHANGE_WATCH"]["code"] == "SOURCE_UNAVAILABLE"
-    assert secs["IPO_WATCH"]["code"] == "SOURCE_UNAVAILABLE"
+    # never queried -> never "source unavailable" (that code means a request really failed)
+    assert secs["EXCHANGE_WATCH"]["code"] == "SNAPSHOT_NOT_CAPTURED"
+    assert secs["IPO_WATCH"]["code"] == "SNAPSHOT_NOT_CAPTURED"
     intel = _intel(exchange_scenario=None, ipo_scenario=None)
     intel.exchange_status, intel.ipo_status = "FETCHED", "FETCHED"      # read, nothing today
     sb = sbm.build_storyboard(_plan(), _pres_break(), None, None, {}, "Nifty 100", {},
@@ -172,7 +173,7 @@ def test_market_structure_omission_codes():
     assert _post(structure_scenario="QUIET").public_audit["omitted_sections"][
         "MARKET_STRUCTURE"]["code"] == "NO_MEANINGFUL_OBSERVATION"
     assert _post(structure_scenario=None).public_audit["omitted_sections"][
-        "MARKET_STRUCTURE"]["code"] == "SOURCE_UNAVAILABLE"
+        "MARKET_STRUCTURE"]["code"] == "SNAPSHOT_NOT_CAPTURED"
 
 
 # --------------------------------------------------------------------------- 8. rights

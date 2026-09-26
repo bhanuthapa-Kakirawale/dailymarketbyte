@@ -1,7 +1,13 @@
 name: Market Report (canonical, no video)
-# REPORT job: builds the canonical MarketReport for the session that just closed, plus the
-# historical intelligence snapshot and the Market Radar, and persists them. No video, no upload.
-# Idempotent: the retry slot is a no-op once the report exists. See docs/PRODUCTION_SCHEDULE.md.
+# REPORT job: builds the canonical MarketReport for the session that just closed, the historical
+# intelligence snapshot, the Market Radar + Market Structure snapshot, and the OFFICIAL DAILY
+# SNAPSHOTS (NSE IPO lists, F&O ban, ASM, GSM) - and persists them. No video, no upload.
+# Idempotent: the retry slot is a no-op once the report exists (a failed official snapshot is
+# re-attempted; a validated one is never re-acquired). See docs/PRODUCTION_SCHEDULE.md.
+#
+# Durable state (docs/STATE_STORE.md): with repository variable DMB_STATE_BACKEND=gcs the job
+# hydrates from / persists to Google Cloud Storage in-process (Workload Identity Federation - no
+# JSON key). Otherwise actions/cache below is a best-effort, NON-canonical fallback.
 on:
   schedule:
     - cron: "0 14 * * 1-5"    # 14:00 UTC = 19:30 IST - after NSE's end-of-day files and provisional FII/DII
@@ -16,6 +22,13 @@ on:
 concurrency:
   group: daily-byte-state
   cancel-in-progress: false
+permissions:
+  contents: read
+  id-token: write        # Workload Identity Federation (used only when DMB_STATE_BACKEND=gcs)
+env:
+  DMB_STATE_BACKEND: ${{ vars.DMB_STATE_BACKEND || 'local' }}
+  DMB_GCS_BUCKET: ${{ vars.DMB_GCS_BUCKET }}
+  DMB_GCS_PREFIX: ${{ vars.DMB_GCS_PREFIX }}
 jobs:
   report:
     runs-on: ubuntu-latest
@@ -25,7 +38,14 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
       - run: pip install -r requirements.txt
-      - name: Restore persisted history (canonical reports, run history, OHLCV, Radar)
+      - name: Authenticate to Google Cloud (Workload Identity Federation)
+        if: env.DMB_STATE_BACKEND == 'gcs'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_STATE_SERVICE_ACCOUNT }}
+      - name: Restore state from actions/cache (local-backend fallback, not canonical)
+        if: env.DMB_STATE_BACKEND != 'gcs'
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -34,9 +54,12 @@ jobs:
             output/radar
             output/intelligence
             output/report_jobs
+            output/market_structure
+            output/official_snapshots
+            output/publication
           key: daily-byte-state-${{ github.run_id }}
           restore-keys: daily-byte-state-
-      - name: Build the canonical report (no video)
+      - name: Build the canonical report + official snapshots (no video)
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SESSION_DATE: ${{ github.event.inputs.session_date }}
@@ -46,8 +69,8 @@ jobs:
           else
             python main.py --mode report
           fi
-      - name: Save persisted history
-        if: always()
+      - name: Save state to actions/cache (local-backend fallback, not canonical)
+        if: always() && env.DMB_STATE_BACKEND != 'gcs'
         uses: actions/cache/save@v4
         with:
           path: |
@@ -56,6 +79,9 @@ jobs:
             output/radar
             output/intelligence
             output/report_jobs
+            output/market_structure
+            output/official_snapshots
+            output/publication
           key: daily-byte-state-${{ github.run_id }}-${{ github.run_attempt }}
       - uses: actions/upload-artifact@v4
         if: always()
@@ -68,3 +94,4 @@ jobs:
             output/radar/*.json
             output/radar/presentation/*.json
             output/intelligence/**
+            output/official_snapshots/**/official_snapshot_manifest.json

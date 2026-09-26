@@ -1,8 +1,23 @@
 name: Daily Byte
+# POST (POST_UNIFIED). Reads the canonical report, the Market Structure snapshot and the official
+# daily snapshots the evening REPORT job persisted (docs/PRODUCTION_SCHEDULE.md). Durable state:
+# DMB_STATE_BACKEND=gcs -> hydrate/persist in-process (docs/STATE_STORE.md); otherwise
+# actions/cache is a best-effort, NON-canonical fallback. Upload stays refused while the rights
+# policy is BLOCK (the publication audit), whatever this workflow does.
 on:
   schedule:
     - cron: "10 2 * * 1-5"   # 02:10 UTC = 07:40 IST, Mon-Fri -> video live ~8 AM (GitHub may start late)
   workflow_dispatch: {}
+concurrency:
+  group: daily-byte-state
+  cancel-in-progress: false
+permissions:
+  contents: read
+  id-token: write        # Workload Identity Federation (used only when DMB_STATE_BACKEND=gcs)
+env:
+  DMB_STATE_BACKEND: ${{ vars.DMB_STATE_BACKEND || 'local' }}
+  DMB_GCS_BUCKET: ${{ vars.DMB_GCS_BUCKET }}
+  DMB_GCS_PREFIX: ${{ vars.DMB_GCS_PREFIX }}
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -13,6 +28,27 @@ jobs:
         with: { python-version: "3.11" }
       - run: sudo apt-get install -y -qq fonts-dejavu-core
       - run: pip install -r requirements.txt
+      - name: Authenticate to Google Cloud (Workload Identity Federation)
+        if: env.DMB_STATE_BACKEND == 'gcs'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_STATE_SERVICE_ACCOUNT }}
+      - name: Restore state from actions/cache (local-backend fallback, not canonical)
+        if: env.DMB_STATE_BACKEND != 'gcs'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            output/data
+            output/reports
+            output/radar
+            output/intelligence
+            output/report_jobs
+            output/market_structure
+            output/official_snapshots
+            output/publication
+          key: daily-byte-state-${{ github.run_id }}
+          restore-keys: daily-byte-state-
       - name: Restore YouTube credentials
         env:
           YT_TOKEN_JSON: ${{ secrets.YT_TOKEN_JSON }}
@@ -27,6 +63,20 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           if [ -f token.json ]; then python main.py --upload; else python main.py --force; fi
+      - name: Save state to actions/cache (local-backend fallback, not canonical)
+        if: always() && env.DMB_STATE_BACKEND != 'gcs'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            output/data
+            output/reports
+            output/radar
+            output/intelligence
+            output/report_jobs
+            output/market_structure
+            output/official_snapshots
+            output/publication
+          key: daily-byte-state-${{ github.run_id }}-${{ github.run_attempt }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -34,3 +84,4 @@ jobs:
           path: |
             output/*.mp4
             output/*.json
+            output/post/**/production_manifest.json

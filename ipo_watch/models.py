@@ -100,12 +100,48 @@ class IPOEvent:
     validation_status: str = "UNVALIDATED"
     publication_rights_status: str = "REVIEW_REQUIRED"
     notes: list = field(default_factory=list)
+    # bid multiples exactly as the NSE issue list showed them ({category, value}). The list
+    # carries NO update timestamp, so these are stored for the record and NEVER published
+    # (a number without its DATA AS OF is not a publishable fact).
+    unpublished_bid_multiples: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = asdict(self)
         for k in ("board_type", "status"):
             d[k] = getattr(self, k).value
         return d
+
+    # the exchange-list fields an official snapshot stores (offer-document figures are a
+    # separate, hand-verified source applied at planning time, never captured into it)
+    SNAPSHOT_FIELDS = ("company_name", "symbol", "board_type", "status", "issue_open_date",
+                       "issue_close_date", "allotment_date", "listing_date", "issue_type",
+                       "price_band_low", "price_band_high", "lot_size", "source_name",
+                       "source_reference", "data_as_of", "retrieved_at", "notes",
+                       "unpublished_bid_multiples")
+
+    def to_snapshot_record(self) -> dict:
+        out = {}
+        for k in self.SNAPSHOT_FIELDS:
+            v = getattr(self, k)
+            out[k] = (v.value if isinstance(v, Enum) else
+                      v.isoformat() if isinstance(v, dt.date) else
+                      list(v) if isinstance(v, list) else v)
+        return out
+
+    @classmethod
+    def from_snapshot_record(cls, d: dict) -> "IPOEvent":
+        def day(k):
+            return dt.date.fromisoformat(d[k]) if d.get(k) else None
+        return cls(company_name=d["company_name"], board_type=BoardType(d["board_type"]),
+                   status=IPOStatus(d["status"]), source_name=d["source_name"],
+                   source_reference=d["source_reference"], data_as_of=day("data_as_of"),
+                   symbol=d.get("symbol"), issue_open_date=day("issue_open_date"),
+                   issue_close_date=day("issue_close_date"), allotment_date=day("allotment_date"),
+                   listing_date=day("listing_date"), issue_type=d.get("issue_type"),
+                   price_band_low=d.get("price_band_low"), price_band_high=d.get("price_band_high"),
+                   lot_size=d.get("lot_size"), retrieved_at=d.get("retrieved_at"),
+                   notes=list(d.get("notes") or []),
+                   unpublished_bid_multiples=list(d.get("unpublished_bid_multiples") or []))
 
 
 __all__ = ["BoardType", "IPOStatus", "Subscription", "FinancialRow", "RiskFact",

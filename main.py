@@ -503,7 +503,8 @@ def adopt_existing_report(report, history):
     if stored is None:
         return None, None, None
 
-    path = stored.json_artifact_path
+    from operations.report_lookup import resolve_report_artifact
+    path = resolve_report_artifact(stored.json_artifact_path, OUT_DIR) or stored.json_artifact_path
     if not path or not os.path.exists(path):
         return None, None, (f"history records canonical report {report.report_id} but its JSON "
                             f"artifact is missing: {path!r}")
@@ -777,6 +778,8 @@ def publication_audit(sb, meta, out, report, args, tag):
                              synthetic=bool(args.demo),
                              audio={"audio_stream": bool(probe.get("audio")),
                                     "audio_phase_enabled": AUDIO_ENABLED})
+    # which persisted snapshots (file / revision / checksum) the sections were read from
+    audit["inputs"] = (sb.public_audit or {}).get("inputs")
     path = write_publication_audit(audit, os.path.join(OUT_DIR, "publication", tag))
     print(f"      publication audit: {audit['final']}"
           + (f" (failed: {', '.join(audit['failed_checks'])})" if audit["failed_checks"] else "")
@@ -845,10 +848,15 @@ def run(args):
         replay = bool(getattr(args, "session_date", None))
         tag = (f"replay_{session}" if replay else today.strftime("%Y-%m-%d")) + \
             ("_DEMO" if args.demo else "")
+        # Public sections read DURABLE STATE: the Market Structure snapshot and the official
+        # snapshots the REPORT job persisted for this session. A live run may capture a missing
+        # official snapshot inside the session's window (recorded CAPTURED_THIS_RUN); a replay
+        # never acquires anything.
         intel = load_public_intelligence(
             session, next_session(session) or edition, OUT_DIR,
             fetch=not (args.demo or replay or getattr(args, "no_fetch_public", False)),
-            now_iso=dt.datetime.now(dt.timezone.utc).isoformat())
+            now_iso=dt.datetime.now(dt.timezone.utc).isoformat(), snapshot_session=session,
+            replay=replay, now=now_ist(), capture_mode="POST_FALLBACK")
         sb, pres = PU.build_post_storyboard(
             report, plan, profile=profile, intelligence=intel,
             hook_ai=bool(getattr(args, "hook_ai", False)),
@@ -1075,17 +1083,41 @@ if __name__ == "__main__":
     ap.add_argument("--as-of", help="premarket: IST cutoff (ISO datetime); default now")
     ap.add_argument("--frames-only", action="store_true", help="premarket: frames + QA, no MP4")
     ap.add_argument("--no-fetch-public", action="store_true",
-                    help="postmarket: do not read today's official lists (F&O ban, ASM/GSM, "
-                         "NSE IPO lists); the Exchange / IPO Watch sections are then omitted")
+                    help="postmarket: never capture a missing official snapshot inline - only "
+                         "what the REPORT job persisted is read")
     ap.add_argument("--profile", choices=("PUBLIC_UNREGISTERED", "PRIVATE_ANALYTICS"),
                     default=None, help="publication profile (default PUBLIC_UNREGISTERED); "
                                        "PRIVATE_ANALYTICS output is never uploaded")
     ap.add_argument("--hook-ai", action="store_true",
                     help="premarket: let Gemini choose among the approved hook candidates")
+    _args = ap.parse_args()
+    # Durable state (state.sync): a clean runner hydrates the approved state from the configured
+    # StateStore before the job and persists it after. Local default = no-op (output/ IS the
+    # state). A configured store that cannot be read stops the job: running on missing state
+    # and persisting it would overwrite the durable history.
+    from state import sync as state_sync
+    _job = {"postmarket": "POST", "premarket": "PRE", "report": "REPORT"}[_args.mode]
+    _synced = False
+    if not _args.demo:
+        try:
+            _h = state_sync.hydrate(OUT_DIR, job=_job)
+            _synced = _h.get("hydrated", False)
+            if _synced:
+                print(f"state: hydrated from {_h.get('state_store_backend')} "
+                      f"({sum(v['downloaded'] for v in _h['namespaces'].values())} objects)")
+        except Exception as _exc:
+            print(f"state: hydration FAILED ({type(_exc).__name__}: {_exc}) - job not run")
+            sys.exit(1)
     try:
         from products import VideoRequest, route
-        _args = ap.parse_args()
         route(VideoRequest.from_args(_args), _args, postmarket_runner=run)
     except Exception:
         traceback.print_exc()
         sys.exit(1)
+    finally:
+        if _synced:
+            _p = state_sync.persist(OUT_DIR, job=_job)
+            print(f"state: persisted={_p['persisted_to_state_store']} uploaded={_p.get('uploaded')} "
+                  f"conflicts={len(_p.get('conflicts') or [])} errors={len(_p.get('errors') or [])}")
+            if not _p["persisted_to_state_store"]:
+                sys.exit(1)

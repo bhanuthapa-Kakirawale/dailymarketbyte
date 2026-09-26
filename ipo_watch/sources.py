@@ -100,6 +100,9 @@ def parse_nse_issues(rows, list_name: str, data_as_of: dt.date, retrieved_at: st
             # bid multiple WITHOUT an exchange timestamp: kept for audit, never published
             ev.notes.append(f"NSE bid multiple {r.get('noOfTime')} ({r.get('category')}) has no "
                             "update timestamp in this list - not published")
+            ev.unpublished_bid_multiples.append({"category": r.get("category"),
+                                                 "value": str(r.get("noOfTime")),
+                                                 "timestamp": None, "publishable": False})
         events[key] = ev
     return list(events.values()), notes
 
@@ -164,23 +167,56 @@ def apply_offer_document(ev: IPOEvent, entry: dict) -> IPOEvent:
     return ev
 
 
-def fetch_nse_issues(data_as_of: dt.date, now_iso: str, nse=None) -> tuple:
-    """Production-only fetch through the existing NSE client; fails closed per list."""
-    events, notes = [], []
+IPO_LISTS = (("/api/ipo-current-issue", "CURRENT"),
+             ("/api/all-upcoming-issues?category=ipo", "UPCOMING"))
+
+
+def fetch_nse_issue_lists(data_as_of: dt.date, now_iso: str, nse=None) -> dict:
+    """Production-only fetch through the existing NSE client, one verdict per list:
+        {"events": [IPOEvent], "notes": [...], "lists": [{name, path, connectivity, status,
+         reason, rows}]}
+    `connectivity` is operations.connectivity's verdict on the REQUEST (REACHABLE / BLOCKED /
+    TIMEOUT / HTTP_ERROR); `status` is OK / EMPTY / UNAVAILABLE / INVALID. An unreachable
+    exchange is never reported as an empty list."""
+    from operations.connectivity import classify_exception
+    events, notes, lists = [], [], []
     try:
         import market
         nse = nse or market.NSE()
     except Exception as exc:
-        return [], [f"NSE client unavailable: {exc}"]
-    for path, name in (("/api/ipo-current-issue", "CURRENT"),
-                       ("/api/all-upcoming-issues?category=ipo", "UPCOMING")):
+        verdict = classify_exception(exc)
+        return {"events": [], "notes": [f"NSE client unavailable: {type(exc).__name__}"],
+                "lists": [{"name": name, "path": path, "connectivity": verdict,
+                           "status": "UNAVAILABLE", "reason": f"NSE client: {type(exc).__name__}",
+                           "rows": 0} for path, name in IPO_LISTS]}
+    for path, name in IPO_LISTS:
         try:
-            evs, n = parse_nse_issues(nse.get(path), name, data_as_of, now_iso)
-            events += evs
-            notes += n
+            payload = nse.get(path)
         except Exception as exc:
-            notes.append(f"{name}: UNAVAILABLE ({type(exc).__name__})")
-    return dedupe(events), notes
+            verdict = classify_exception(exc)
+            status = "INVALID" if verdict == "REACHABLE" else "UNAVAILABLE"
+            notes.append(f"{name}: {status} ({type(exc).__name__})")
+            lists.append({"name": name, "path": path, "connectivity": verdict, "status": status,
+                          "reason": f"{type(exc).__name__}: {str(exc)[:200]}", "rows": 0})
+            continue
+        if not isinstance(payload, list):
+            notes.append(f"{name}: INVALID (payload is not a list)")
+            lists.append({"name": name, "path": path, "connectivity": "REACHABLE",
+                          "status": "INVALID", "reason": "payload is not a list", "rows": 0})
+            continue
+        evs, n = parse_nse_issues(payload, name, data_as_of, now_iso)
+        events += evs
+        notes += n
+        lists.append({"name": name, "path": path, "connectivity": "REACHABLE",
+                      "status": "OK" if payload else "EMPTY", "reason": "; ".join(n)[:300],
+                      "rows": len(payload)})
+    return {"events": dedupe(events), "notes": notes, "lists": lists}
+
+
+def fetch_nse_issues(data_as_of: dt.date, now_iso: str, nse=None) -> tuple:
+    """(events, notes) - the older two-value shape of `fetch_nse_issue_lists`."""
+    res = fetch_nse_issue_lists(data_as_of, now_iso, nse)
+    return res["events"], res["notes"]
 
 
 def dedupe(events) -> list:
@@ -196,4 +232,5 @@ def dedupe(events) -> list:
 
 
 __all__ = ["parse_nse_issues", "dedupe", "load_offer_documents", "apply_offer_document",
-           "fetch_nse_issues", "NSE_IPO_PAGE", "OFFICIAL_DOC_HOSTS", "DEFAULT_DOC_FILE"]
+           "fetch_nse_issues", "fetch_nse_issue_lists", "NSE_IPO_PAGE", "OFFICIAL_DOC_HOSTS",
+           "DEFAULT_DOC_FILE", "IPO_LISTS"]

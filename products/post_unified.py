@@ -136,6 +136,8 @@ def manifest(*, entry_point, report_source, report_id, session, sb, audit, uploa
             "sections": [s[1] or s[0] for s in sb.sections()],
             "duration": sb.total_duration, "video": video_path, "qa": qa,
             "optional_sections": (sb.public_audit or {}).get("omitted_sections", {}),
+            # durable-state provenance: which persisted snapshot fed each public section
+            "inputs": (sb.public_audit or {}).get("inputs"),
             "publication_audit": {"final": audit["final"],
                                   "failed_checks": audit["failed_checks"]},
             "rights_policy": audit.get("rights_policy"), "upload": upload_status,

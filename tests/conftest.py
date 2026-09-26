@@ -45,20 +45,31 @@ def _offline_official_lists(monkeypatch):
     import ipo_watch.sources as ips
     from exchange_watch.models import SourceResult
 
+    # the shape production sees from a runner NSE refuses: every request BLOCKED, per list
     def _ban(now_iso, get=None):
-        return SourceResult("nse_fo_secban", "UNAVAILABLE", reason="network disabled in tests")
+        return SourceResult("nse_fo_secban", "UNAVAILABLE", reason="network disabled in tests",
+                            connectivity="BLOCKED", list_name="FNO_BAN")
 
     def _surv(now_iso, nse=None):
-        return [SourceResult("nse_surveillance", "UNAVAILABLE", reason="network disabled in tests")]
+        return [SourceResult("nse_surveillance", "UNAVAILABLE", list_name=name,
+                             connectivity="BLOCKED", reason="network disabled in tests")
+                for name in ("ASM", "GSM")]
 
     def _ipo(data_as_of, now_iso, nse=None):
         return [], ["NSE client unavailable: network disabled in tests"]   # production's note
+
+    def _ipo_lists(data_as_of, now_iso, nse=None):
+        return {"events": [], "notes": ["NSE client unavailable: network disabled in tests"],
+                "lists": [{"name": n, "path": p, "connectivity": "BLOCKED",
+                           "status": "UNAVAILABLE", "reason": "network disabled in tests",
+                           "rows": 0} for p, n in ips.IPO_LISTS]}
 
     for mod in (exchange_watch, exs):
         monkeypatch.setattr(mod, "fetch_fo_ban", _ban)
         monkeypatch.setattr(mod, "fetch_surveillance", _surv)
     for mod in (ipo_watch, ips):
         monkeypatch.setattr(mod, "fetch_nse_issues", _ipo)
+        monkeypatch.setattr(mod, "fetch_nse_issue_lists", _ipo_lists, raising=False)
 
 
 @pytest.fixture(autouse=True)

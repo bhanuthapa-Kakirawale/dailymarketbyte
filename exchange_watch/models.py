@@ -29,9 +29,30 @@ IMPLEMENTED = (EventFamily.FNO_BAN, EventFamily.SURVEILLANCE_ASM, EventFamily.SU
 
 
 class Change(str, Enum):
-    NEW = "NEW"                  # on today's list, not on the previous stored list
-    CONTINUING = "CONTINUING"    # on both
-    UNKNOWN = "UNKNOWN"          # no previous stored list - "new" is never claimed
+    """Membership change vs the PREVIOUS trading session's validated official snapshot
+    (official_snapshots.changes). Without that snapshot the change is CHANGE_UNKNOWN and nothing
+    is ever called "entered" - the wording stays current-state only."""
+    # F&O ban
+    ENTERED_BAN = "ENTERED_BAN"
+    EXITED_BAN = "EXITED_BAN"
+    REMAINS_IN_BAN = "REMAINS_IN_BAN"
+    # surveillance lists (ASM / GSM / ESM)
+    ENTERED = "ENTERED"
+    REMOVED = "REMOVED"
+    STAGE_CHANGED = "STAGE_CHANGED"
+    UNCHANGED = "UNCHANGED"
+    CHANGE_UNKNOWN = "CHANGE_UNKNOWN"
+    # legacy values (stored events and fixtures written before official snapshots)
+    NEW = "NEW"
+    CONTINUING = "CONTINUING"
+    UNKNOWN = "UNKNOWN"
+
+
+# a change proven by comparing two validated snapshots
+PROVEN_ENTRY = frozenset({Change.ENTERED_BAN, Change.ENTERED, Change.NEW})
+PROVEN_EXIT = frozenset({Change.EXITED_BAN, Change.REMOVED})
+NO_CHANGE = frozenset({Change.REMAINS_IN_BAN, Change.UNCHANGED, Change.CONTINUING})
+UNKNOWN_CHANGE = frozenset({Change.CHANGE_UNKNOWN, Change.UNKNOWN})
 
 
 @dataclass(frozen=True)
@@ -74,11 +95,17 @@ class SourceResult:
     reason: str = ""
     list_date: dt.date | None = None
     retrieved_at: str | None = None
+    # operations.connectivity verdict of the request itself: REACHABLE / BLOCKED / TIMEOUT /
+    # HTTP_ERROR / NOT_ATTEMPTED - kept apart from `status` (what the payload was worth)
+    connectivity: str = "REACHABLE"
+    list_name: str = ""          # FNO_BAN / ASM / GSM
 
     def to_dict(self) -> dict:
         return {"source_name": self.source_name, "status": self.status, "reason": self.reason,
+                "connectivity": self.connectivity, "list_name": self.list_name,
                 "list_date": self.list_date.isoformat() if self.list_date else None,
                 "retrieved_at": self.retrieved_at, "events": [e.to_dict() for e in self.events]}
 
 
-__all__ = ["EventFamily", "ExchangeEvent", "Change", "SourceResult", "IMPLEMENTED"]
+__all__ = ["EventFamily", "ExchangeEvent", "Change", "SourceResult", "IMPLEMENTED",
+           "PROVEN_ENTRY", "PROVEN_EXIT", "NO_CHANGE", "UNKNOWN_CHANGE"]

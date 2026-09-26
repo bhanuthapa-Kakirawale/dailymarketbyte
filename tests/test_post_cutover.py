@@ -147,8 +147,8 @@ def test_optional_sections_stay_optional_with_reason_codes(offline_pipeline, tmp
     assert not {"STRUCTURE", "EXCHANGE_WATCH", "IPO_WATCH", "IPO_BOARD"} & set(m["scenes"])
     assert opt["EXCHANGE_WATCH"]["code"] == "SOURCE_UNAVAILABLE"
     assert opt["IPO_WATCH"]["code"] == "SOURCE_UNAVAILABLE"
-    assert opt["MARKET_STRUCTURE"]["code"] in ("SOURCE_UNAVAILABLE", "NO_MEANINGFUL_OBSERVATION",
-                                                 "INSUFFICIENT_COVERAGE")
+    # nothing persisted a Market Structure snapshot for this session - never "source unavailable"
+    assert opt["MARKET_STRUCTURE"]["code"] == "SNAPSHOT_NOT_CAPTURED"
     assert m["scenes"][0] in ("DYNAMIC_HOOK", "HOOK") and m["scenes"][-1] == "CLOSING"
 
 
@@ -269,10 +269,13 @@ def test_unreachable_ipo_source_is_source_unavailable_not_no_event(tmp_path):
     """On a GitHub runner NSE often refuses the client; the fetcher then notes "NSE client
     unavailable: ..." - that must read as SOURCE_UNAVAILABLE, never as "no IPO today"."""
     from presentation.public_intelligence import load_public_intelligence
-    for note in ("NSE client unavailable: HTTP 403", "upcoming: UNAVAILABLE (Timeout)"):
-        intel = load_public_intelligence(FRIDAY, MONDAY, str(tmp_path), fetch=True,
+    morning = dt.datetime(2026, 9, 21, 7, 40, tzinfo=dt.timezone(dt.timedelta(hours=5, minutes=30)))
+    for i, note in enumerate(("NSE client unavailable: HTTP 403",
+                              "upcoming: UNAVAILABLE (Timeout)")):
+        out = tmp_path / str(i)
+        intel = load_public_intelligence(FRIDAY, MONDAY, str(out), fetch=True, now=morning,
                                          ipo_fn=lambda d, now, _n=note: ([], [_n]))
-        assert intel.ipo_status == "NOT_AVAILABLE", note
-    ok = load_public_intelligence(FRIDAY, MONDAY, str(tmp_path), fetch=True,
+        assert intel.ipo_snapshot["status"] == "SOURCE_UNAVAILABLE", note
+    ok = load_public_intelligence(FRIDAY, MONDAY, str(tmp_path / "ok"), fetch=True, now=morning,
                                   ipo_fn=lambda d, now: ([], []))
-    assert ok.ipo_status == "FETCHED"                       # read fine, nothing listed today
+    assert ok.ipo_snapshot["status"] == "NO_DATA"            # read fine, nothing listed today

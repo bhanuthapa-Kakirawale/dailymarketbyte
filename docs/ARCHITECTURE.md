@@ -96,6 +96,8 @@ not fetch anything or compute a new market fact.
 | Artifact QA    | `qa/`                              | deterministic video + readability checks |
 | Publication    | `upload.py`                        | unchanged                           |
 | Orchestration  | `main.py`                          | thin: obtain the canonical report (reuse it, else `produce_report`: collect → report → persist) → gate → plan → present → render → QA → publish; `--mode report` / `--mode premarket` route through `products.route(VideoRequest)` (POST is the default and runs `main.run`) |
+| Official snapshots | `official_snapshots/` | Acquisition -> durable state -> publication: `OfficialDailySnapshotService` captures the complete validated state of each official list per session (REPORT job; capture window = the current session only), immutable revisions + manifest, change detection vs the previous session's snapshot (`docs/PRODUCTION_SCHEDULE.md`) |
+| Durable state  | `state/`                           | `StateStore` (Local / GCS), hydrate before and persist after every scheduled job; immutable namespaces create-only; conditional writes (`docs/STATE_STORE.md`) |
 | Scheduling     | `products/report_job.py`, `operations/` | the REPORT job (canonical report + intelligence + Radar, no video, idempotent) and what the jobs share: calendar session resolution, canonical-report lookup, the GIFT publication gate, the connectivity diagnostic, the official-event reminder (`docs/PRODUCTION_SCHEDULE.md`) |
 
 ## What changed in Phase 2

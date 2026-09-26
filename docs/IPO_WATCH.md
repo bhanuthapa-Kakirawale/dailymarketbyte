@@ -27,6 +27,19 @@ the model cannot hold them, so it cannot publish them. Missing values are omitte
 inferred - e.g. NSE's current-issue rows carry no update timestamp, so their bid multiples are
 recorded as a note and **not published**; the issue size in shares is never converted to rupees.
 
+## Snapshot, then events
+
+The REPORT job stores the complete validated NSE issue-list state for the session
+(`ipo_snapshot.json`): company, symbol, board, issue dates, status, price band, and bid multiples
+exactly as listed. The list carries no timestamp, so bid multiples are stored as
+`unpublished_bid_multiples` and are never shown. It also records `source_date` and `retrieved_at`.
+A partially read state (one list failed) is never used. Offer-document figures are applied at
+planning time from the hand-verified SEBI file.
+
+`ipo_watch.derive_events` derives the day's events from the stored snapshot:
+`OPENS_TODAY`, `CLOSES_TODAY`, `LISTING_TODAY`, `ALLOTMENT_EVENT`, and `SUBSCRIPTION_UPDATE`
+(only with an exchange timestamp). They are recorded in the audit and carry no classification.
+
 ## Selection (deterministic - never "popularity")
 
 An IPO qualifies only with a dated event: LISTS / CLOSES / OPENS / ALLOTMENT today (POST: the

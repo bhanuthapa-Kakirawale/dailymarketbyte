@@ -1,0 +1,59 @@
+name: PRE-MARKET shadow (never uploads)
+# PRE shadow run: live pre-open data + the canonical previous-session report the REPORT job
+# built the evening before -> plan -> render -> QA -> run history -> output/pre_shadow/<date>/.
+# There is no upload step and no YouTube credential in this workflow. GIFT Nifty is fetched and
+# audited but NOT displayed (GIFT_NIFTY_PUBLICATION_ENABLED=false). See docs/PRODUCTION_SCHEDULE.md.
+on:
+  schedule:
+    - cron: "0 2 * * 1-5"     # 02:00 UTC = 07:30 IST (GitHub may start late; GIFT must be read before 09:15)
+  workflow_dispatch: {}
+concurrency:
+  group: daily-byte-state
+  cancel-in-progress: false
+jobs:
+  pre-shadow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GIFT_NIFTY_PUBLICATION_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: sudo apt-get install -y -qq fonts-dejavu-core
+      - run: pip install -r requirements.txt
+      - name: Restore persisted history
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            output/data
+            output/reports
+            output/radar
+            output/intelligence
+            output/report_jobs
+          key: daily-byte-state-${{ github.run_id }}
+          restore-keys: daily-byte-state-
+      - name: Connectivity diagnostic (informational - never gates the run)
+        continue-on-error: true
+        run: python validate_pre_production.py --connectivity-only --out output/pre_shadow/connectivity
+      - name: PRE shadow run
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python main.py --mode premarket --shadow
+      - name: Save persisted history (run records)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            output/data
+            output/reports
+            output/radar
+            output/intelligence
+            output/report_jobs
+          key: daily-byte-state-${{ github.run_id }}-${{ github.run_attempt }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pre-shadow-${{ github.run_id }}
+          retention-days: 30
+          path: output/pre_shadow/**

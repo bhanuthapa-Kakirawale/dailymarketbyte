@@ -76,11 +76,18 @@ not fetch anything or compute a new market fact.
 | Persistence    | `storage/`                         | Phase 3 - SQLite historical index   |
 | Intelligence   | `intelligence/`                    | Phase 4.1 - deterministic historical context |
 | Editorial      | `editorial/`                       | Phase 4.1.2 - selection, hook, readability, pacing |
+| Publication guards | `core/move_guard.py`, `editorial/movers_gate.py`, `presentation/radar_guard.py` | POST freeze - deterministic move guard (bad data / corporate action / extreme move) and the >= 90% universe coverage gate in front of every Movers / top-mover / Radar publication (`docs/SHORTS_EDITORIAL.md`) |
+| Session calendar | `core/trading_calendar.py`         | Data-reliability patch - canonical NSE sessions (holiday list + benchmark bars); every day-over-day / window calculation drops provider rows on non-sessions first, and the benchmark must carry the canonical previous session (`docs/VALIDATION_RULES.md` section 9) |
+| Benchmark gap recovery / cache repair | `market.recover_index_gaps`, `radar/cache_repair.py` | Second index source (NSE end-of-day index file) for a canonical session the Yahoo index series lacks, validated + anchored + provenance-recorded; the recap session itself only via
+`market.recover_recap_session` once the session is final (section 10.1), else publication is blocked; repair of cached non-final OHLCV bars (`docs/VALIDATION_RULES.md` sections 10-11) |
+| Hook engine    | `hooks/`                           | Hook Phase 1 - teaser + hook for PRE/POST/CUSTOM; Gemini chooses among approved candidates, strict validation, deterministic fallback (`docs/HOOK_ENGINE.md`) |
 | Presentation   | `presentation/`                    | the renderer boundary               |
+| PRE-MARKET     | `products/` (router + runner), `providers/premarket.py`, `core/freshness.py`, `core/event_calendar.py`, `presentation/pre_plan.py`, `daily_video/pre_storyboard.py`, `daily_video/pre_scenes.py` | PRE V1 - "before the bell" Short from the previous session's canonical report + dated/timestamped pre-open readings + verified schedules; deterministic `PreEditorialPlanner`; reuses the POST design system and the hook engine; never writes canonical history, never uploads (`docs/PRE_MARKET.md`) |
 | Rendering      | `video.py`, `chart.py`, `music.py` | scenes built from the editorial plan |
 | Artifact QA    | `qa/`                              | deterministic video + readability checks |
 | Publication    | `upload.py`                        | unchanged                           |
-| Orchestration  | `main.py`                          | thin: collect → report → persist → gate → plan → present → render → QA → publish |
+| Orchestration  | `main.py`                          | thin: obtain the canonical report (reuse it, else `produce_report`: collect → report → persist) → gate → plan → present → render → QA → publish; `--mode report` / `--mode premarket` route through `products.route(VideoRequest)` (POST is the default and runs `main.run`) |
+| Scheduling     | `products/report_job.py`, `operations/` | the REPORT job (canonical report + intelligence + Radar, no video, idempotent) and what the jobs share: calendar session resolution, canonical-report lookup, the GIFT publication gate, the connectivity diagnostic, the official-event reminder (`docs/PRODUCTION_SCHEDULE.md`) |
 
 ## What changed in Phase 2
 

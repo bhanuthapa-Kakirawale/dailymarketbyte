@@ -80,6 +80,21 @@ def find_missing_candidate_sessions(spine: list, target_session: dt.date, comple
     return [d for d in prior_window if d not in complete]
 
 
+def spine_repair_range(old_spine, new_spine, through: dt.date) -> list:
+    """History repair after a spine correction (benchmark-gap patch): the minimal sessions whose
+    candidate history must be recomputed. Every session before the FIRST date where the two
+    spines differ saw an identical spine - identical prior-session windows, identical novelty
+    lookback - so it is unaffected. Every canonical session from that date through `through`
+    was (or would have been) computed against the wrong spine. Returns them oldest first; `[]`
+    when the spines agree up to `through`."""
+    old_s, new_s = set(old_spine), set(new_spine)
+    diff = sorted((old_s ^ new_s))
+    diff = [d for d in diff if d <= through]
+    if not diff:
+        return []
+    return [d for d in sorted(new_s) if diff[0] <= d <= through]
+
+
 @dataclass
 class CandidateHistoryBackfillResult:
     """Structured diagnostics for one `backfill_candidate_history` call (packet spec section 19) -
@@ -231,6 +246,6 @@ def backfill_candidate_history(*, spine: list, universe: dict, benchmark_series:
             store.close()
 
 
-__all__ = ["find_missing_candidate_sessions", "backfill_candidate_history",
+__all__ = ["find_missing_candidate_sessions", "backfill_candidate_history", "spine_repair_range",
           "CandidateHistoryBackfillResult", "DEFAULT_BOOTSTRAP_DEPTH",
           "MAX_AUTO_BACKFILL_SESSIONS"]

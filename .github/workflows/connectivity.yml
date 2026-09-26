@@ -1,0 +1,21 @@
+name: Connectivity diagnostic
+# Can a GitHub runner reach NSE IX (GIFT live + settlement), NSE's end-of-day archive and Yahoo?
+# Informational only: no secrets are used or printed, and nothing publishes or persists.
+on:
+  workflow_dispatch: {}
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -r requirements.txt
+      - run: python validate_pre_production.py --connectivity-only --out output/connectivity
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: connectivity-${{ github.run_id }}
+          retention-days: 30
+          path: output/connectivity/**

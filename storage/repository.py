@@ -149,6 +149,34 @@ class StoredRun:
     failure_stage: str | None
     failure_reason: str | None
     details: dict = field(default_factory=dict)
+    target_date: str | None = None
+    run_status: str | None = None
+    job_type: str | None = None
+    source_session_date: str | None = None
+
+    @property
+    def job(self) -> str | None:
+        """The job this run belongs to - the stored v3 `job_type`, or, for a row written before
+        v3, the job its `mode` unambiguously implies."""
+        return self.job_type or job_type_of(self.mode)
+
+
+# Job types (schema v3). `mode` stays what it always was (a POST run's LOCAL/PRODUCTION/DEMO,
+# PRE's PRE_MARKET/PRE_MARKET_DEMO); `job_type` says WHICH job wrote the row, so a PRE run can
+# never read as a POST run and a report build is its own kind of run.
+JOB_REPORT_BUILD = "REPORT_BUILD"
+JOB_POST_MARKET = "POST_MARKET"
+JOB_PRE_MARKET = "PRE_MARKET"
+JOB_TYPES = (JOB_REPORT_BUILD, JOB_POST_MARKET, JOB_PRE_MARKET)
+_LEGACY_MODE_JOBS = {"LOCAL": JOB_POST_MARKET, "PRODUCTION": JOB_POST_MARKET,
+                     "DEMO": JOB_POST_MARKET, "PRE_MARKET": JOB_PRE_MARKET,
+                     "PRE_MARKET_DEMO": JOB_PRE_MARKET, "REPORT_BUILD": JOB_REPORT_BUILD,
+                     "REPORT_BUILD_DEMO": JOB_REPORT_BUILD}
+
+
+def job_type_of(mode: str | None) -> str | None:
+    """The job a run `mode` implies (read-side only: legacy rows are never rewritten)."""
+    return _LEGACY_MODE_JOBS.get(mode or "")
 
 
 # --------------------------------------------------------------------- repository
@@ -535,21 +563,27 @@ class MarketHistory:
 
     # ------------------------------------------------------------------ publication runs
     def start_run(self, mode: str, report_id: str | None = None,
-                  run_id: str | None = None) -> str:
+                  run_id: str | None = None, target_date=None, stage: str = "COLLECTED",
+                  job_type: str | None = None, source_session_date=None) -> str:
         run_id = run_id or f"run_{dt.datetime.now(dt.timezone.utc):%Y%m%dT%H%M%S}_{uuid.uuid4().hex[:8]}"
         with self.conn:
             self.conn.execute(
-                """INSERT INTO publication_runs (run_id, report_id, mode, stage, started_at)
-                   VALUES (?,?,?,?,?)""",
-                (run_id, report_id, mode, "COLLECTED",
-                 dt.datetime.now(dt.timezone.utc).isoformat()))
+                """INSERT INTO publication_runs (run_id, report_id, mode, stage, started_at,
+                                                 target_date, job_type, source_session_date)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (run_id, report_id, mode, stage,
+                 dt.datetime.now(dt.timezone.utc).isoformat(),
+                 _iso(target_date) if target_date is not None else None,
+                 job_type or job_type_of(mode),
+                 _iso(source_session_date) if source_session_date is not None else None))
         return run_id
 
     def update_run(self, run_id: str, **fields) -> None:
         """Update the mutable operational fields of a run. Unknown keys are ignored."""
         allowed = {"report_id", "stage", "completed_at", "data_qa_status", "content_qa_status",
                    "video_qa_status", "publication_status", "artifact_path",
-                   "youtube_video_id", "failure_stage", "failure_reason"}
+                   "youtube_video_id", "failure_stage", "failure_reason", "target_date",
+                   "run_status", "job_type", "source_session_date"}
         sets, params = [], []
         for key, value in fields.items():
             if key in allowed:
@@ -572,13 +606,54 @@ class MarketHistory:
                         failure_stage=failure_stage, failure_reason=failure_reason,
                         completed_at=dt.datetime.now(dt.timezone.utc).isoformat(), **fields)
 
-    def get_publication_runs(self, report_id: str | None = None, limit: int = 50) -> list:
+    def remove_contaminated_runs(self, run_ids: list) -> int:
+        """MANUAL RECOVERY TOOL (like `save_report(replace=True)`): delete run records that are
+        known contamination - e.g. rows a faulty test wrote into the real database. The table is
+        otherwise append-only; nothing in the pipeline may call this (a test parses main.py and
+        products/ with `ast`). Deletes only the exact `run_ids` given and never touches
+        `reports` or anything canonical. Returns the number of rows removed."""
+        ids = [str(r) for r in run_ids]
+        if not ids:
+            return 0
+        with self.conn:
+            cur = self.conn.execute(
+                "DELETE FROM publication_runs WHERE run_id IN (%s)" % ",".join("?" * len(ids)),
+                ids)
+        return cur.rowcount
+
+    def get_run_rows(self, run_ids: list) -> list:
+        """The raw stored rows for `run_ids`, as plain dicts (for backups/audits)."""
+        ids = [str(r) for r in run_ids]
+        if not ids:
+            return []
+        rows = self.conn.execute(
+            "SELECT * FROM publication_runs WHERE run_id IN (%s) ORDER BY started_at"
+            % ",".join("?" * len(ids)), ids).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_publication_runs(self, report_id: str | None = None, limit: int = 50,
+                             mode: str | None = None, target_date=None,
+                             job_type: str | None = None) -> list:
         sql = "SELECT * FROM publication_runs"
-        params: list = []
+        where, params = [], []
+        if job_type:
+            # a legacy (pre-v3) row has NULL job_type: match it through the mode it implies
+            modes = [m for m, j in _LEGACY_MODE_JOBS.items() if j == job_type]
+            where.append("(job_type = ? OR (job_type IS NULL AND mode IN (%s)))"
+                         % ",".join("?" * len(modes)))
+            params += [job_type, *modes]
         if report_id:
-            sql += " WHERE report_id = ?"
+            where.append("report_id = ?")
             params.append(report_id)
-        sql += " ORDER BY started_at DESC LIMIT ?"
+        if mode:
+            where.append("mode = ?")
+            params.append(mode)
+        if target_date is not None:
+            where.append("target_date = ?")
+            params.append(_iso(target_date))
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY started_at DESC, rowid DESC LIMIT ?"
         params.append(limit)
         return [self._run(r) for r in self.conn.execute(sql, params).fetchall()]
 
@@ -622,9 +697,12 @@ class MarketHistory:
             video_qa_status=row["video_qa_status"], publication_status=row["publication_status"],
             artifact_path=row["artifact_path"], youtube_video_id=row["youtube_video_id"],
             failure_stage=row["failure_stage"], failure_reason=row["failure_reason"],
-            details=_loads(row["details_json"]))
+            details=_loads(row["details_json"]), target_date=row["target_date"],
+            run_status=row["run_status"], job_type=row["job_type"],
+            source_session_date=row["source_session_date"])
 
 
 __all__ = ["MarketHistory", "default_db_path", "SchemaVersionError", "current_version",
            "StoredReport", "StoredFact", "StoredObservation", "StoredValidationResult",
-           "StoredRun", "StoredMetricPoint", "DEFAULT_DB_RELPATH"]
+           "StoredRun", "StoredMetricPoint", "DEFAULT_DB_RELPATH", "job_type_of", "JOB_TYPES",
+           "JOB_REPORT_BUILD", "JOB_POST_MARKET", "JOB_PRE_MARKET"]

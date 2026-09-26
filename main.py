@@ -5,6 +5,12 @@ Usage:
     python main.py --upload     # build + upload to YouTube (skips if yesterday was a holiday)
     python main.py --demo       # offline test with synthetic data (marked DEMO on screen)
     python main.py --force      # ignore holiday / already-posted checks
+    python main.py --mode report [--session-date D]    # canonical report only, no video
+    python main.py --mode premarket --shadow            # PRE shadow run (never uploads)
+
+POST renders from the canonical report the REPORT job already built for the session; it builds
+one itself (same code path, `produce_report`) only when none exists. See
+docs/PRODUCTION_SCHEDULE.md.
 """
 import argparse
 import datetime as dt
@@ -33,7 +39,10 @@ from presentation import ReportPresentation
 from providers import GeminiProvider, NewsProvider, NseProvider, YahooProvider
 from qa import check_video, write_qa_artifact
 from qa.readability_qa import check_plan as check_readability
-from storage import MarketHistory, default_db_path
+from operations.report_lookup import (ARTIFACT_MISSING, SESSION_MISMATCH, UNREADABLE,
+                                      find_canonical_report)
+from operations.sessions import latest_final_session, next_session
+from storage import JOB_POST_MARKET, MarketHistory, default_db_path
 
 RS = video.RS
 
@@ -215,17 +224,25 @@ def plan_short(report, snapshot, now=None):
     return editorial.plan_short(report, snapshot, now=now, is_safe=_is_safe)
 
 
-def collect(args, today):
+def collect(args, today, morning_facts=True):
     """Acquisition. Returns the raw session pieces, or None when the run should be skipped.
 
     This is the only place provider output exists as loose dictionaries; everything after
-    build_report() reads the canonical report instead.
+    build_report() reads the canonical report instead. `morning_facts=False` (a report built
+    the evening before the morning it is for) drops Gemini's "GIFT Nifty this morning" - that
+    reading cannot exist yet, so it is never accepted rather than trusted to be null.
     """
     if args.demo:
         m, gainers, losers, events, nifty_reason, tiles, fd, sec = demo_data()
         return {"m": m, "gainers": gainers, "losers": losers, "events": events,
                 "nifty_reason": nifty_reason, "tiles": tiles, "fd": fd, "sec": sec,
-                "ai_facts": {}, "nse_idx": {}}
+                "ai_facts": {}, "nse_idx": {},
+                # Synthetic universe: complete by construction, and labelled as such.
+                "movers_coverage": {"universe_expected": len(gainers) + len(losers),
+                                    "universe_observed": len(gainers) + len(losers),
+                                    "universe_validated": len(gainers) + len(losers),
+                                    "coverage_pct": 100.0, "excluded": [], "demo": True,
+                                    "coverage_basis": "validated / expected"}}
 
     print("[1/6] Fetching Nifty data...")
     m = market.get_market()
@@ -233,6 +250,20 @@ def collect(args, today):
     state_file = os.path.join(OUT_DIR, "last_session.txt")
     if args.upload and not args.force:
         if m["recap_date"] != prev_wd:
+            if (m["recap_date"] < prev_wd
+                    and market.session_calendar(m.get("session_dates")).is_session(prev_wd)):
+                # Not a holiday: NSE traded on prev_wd, and neither the primary benchmark nor
+                # NSE's official end-of-day file (`market.recover_recap_session`) could establish
+                # it. That is a failure to describe a real session, not a quiet day - block
+                # publication loudly (never a silent "holiday" skip, never an older session).
+                recs = [r for r in ((m.get("session_alignment") or {}).get("benchmark_recovery")
+                                    or []) if r.get("session_date") == prev_wd.isoformat()]
+                tried = (f"{recs[0].get('source')}: {recs[0].get('validation_status')}" if recs
+                         else "no official fallback record")
+                raise market.SessionAlignmentError(
+                    f"BENCHMARK_MISSING_RECAP_SESSION: {prev_wd} was a real NSE session but the "
+                    f"benchmark ends at {m['recap_date']} (primary missing; {tried}) - "
+                    "publication blocked")
             print(f"Latest session is {m['recap_date']}, expected {prev_wd} (market holiday?). Skipping.")
             return None
         if os.path.exists(state_file) and open(state_file).read().strip() == str(m["recap_date"]):
@@ -244,12 +275,20 @@ def collect(args, today):
     nse = market.NSE()
     idx = market.nse_all_indices(nse, m["recap_date"])
     fd = market.fii_dii_nse(nse, m["recap_date"])
-    sec = market.get_sectors(m["recap_date"], m["prev_date"], idx)
+    sector_recovery = []
+    sec = market.get_sectors(m["recap_date"], m["prev_date"], idx,
+                             session_dates=m.get("session_dates"), recovery_log=sector_recovery)
+    if m.get("session_alignment") is not None:
+        m["session_alignment"].setdefault("index_recovery", []).extend(sector_recovery)
+    _report_benchmark_fallback(m)
     tiles = market.get_globals()
 
     print("[3/6] Top gainers & losers...")
     universe = market.get_universe(UNIVERSE)
-    gainers, losers = market.get_movers(universe, m["recap_date"], m["prev_date"], TOP_N)
+    gainers, losers, movers_coverage = market.get_movers_audited(
+        universe, m["recap_date"], m["prev_date"], TOP_N, session_dates=m.get("session_dates"))
+    print(f"      mover coverage {movers_coverage['universe_validated']}/"
+          f"{movers_coverage['universe_expected']} ({movers_coverage['coverage_pct']}%)")
 
     print("[4/6] AI cross-check, reasons & events (single Gemini call)...")
     ai_facts, nifty_reason, events = news.ai_pass(m["recap_date"], today, m["close"],
@@ -259,12 +298,15 @@ def collect(args, today):
     ref = idx.get("NIFTY 50", {}).get("last") or ai_facts.get("nifty_close")
     if ref:
         diff = abs(ref / m["close"] - 1) * 100
-        print(f"      Nifty check: yahoo {m['close']:.2f} vs {ref:.2f} ({diff:.2f}% diff)")
+        print(f"      Nifty check: {m.get('close_source') or 'yahoo'} {m['close']:.2f} vs "
+              f"{ref:.2f} ({diff:.2f}% diff)")
         if diff > 0.2:
             raise RuntimeError("Nifty close mismatch between sources - not posting wrong numbers")
     else:
         print("      WARNING: no second source for Nifty close available today")
     fd = fd or ai_facts.get("fii_dii")
+    if not morning_facts and ai_facts.pop("gift", None) is not None:
+        print("      GIFT Nifty (Gemini) dropped: an evening build cannot observe the next morning")
     if ai_facts.get("gift"):
         tiles.insert(0, {"label": "GIFT NIFTY", "value": ai_facts["gift"]["value"],
                          "pct": ai_facts["gift"]["pct"], "dec": 0, "prefix": ""})
@@ -273,7 +315,22 @@ def collect(args, today):
                       "pct": ai_facts["brent"]["pct"], "dec": 2, "prefix": "$"})
     return {"m": m, "gainers": gainers, "losers": losers, "events": events,
             "nifty_reason": nifty_reason, "tiles": tiles, "fd": fd, "sec": sec,
-            "ai_facts": ai_facts, "nse_idx": idx}
+            "ai_facts": ai_facts, "nse_idx": idx, "movers_coverage": movers_coverage}
+
+
+def _report_benchmark_fallback(m):
+    """Make a second-source benchmark/index value impossible to miss in the run log."""
+    align = m.get("session_alignment") or {}
+    recs = list(align.get("benchmark_recovery") or []) + list(align.get("index_recovery") or [])
+    for r in recs:
+        print(f"      FALLBACK {r['index']} {r['session_date']}: {r['source']} "
+              f"-> {r['validation_status']}")
+    if align.get("previous_close_source") not in (None, "yahoo"):
+        print(f"      Nifty previous close ({m['prev_date']}) from "
+              f"{align.get('previous_close_source')}: {m['prev']:.2f}")
+    if align.get("recap_close_source") not in (None, "yahoo"):
+        print(f"      Nifty recap close ({m['recap_date']}) from "
+              f"{align.get('recap_close_source')}: {m['close']:.2f}")
 
 
 def build_report(raw, today, demo=False, content_safety=None):
@@ -309,7 +366,8 @@ def build_report(raw, today, demo=False, content_safety=None):
         observations=observations, tiles=raw["tiles"], flows=raw["fd"], sectors=raw["sec"],
         gainers=raw["gainers"], losers=raw["losers"], report_date=today,
         universe_label=UNIVERSE_LABEL.get(UNIVERSE, UNIVERSE), demo=demo, now=now,
-        content_safety=content_safety)
+        content_safety=content_safety, movers_coverage=raw.get("movers_coverage"),
+        session_alignment=raw["m"].get("session_alignment"))
 
 
 def check_publication(report, demo=False) -> bool:
@@ -363,17 +421,33 @@ def final_qa(plan, meta, out, upload_requested):
     return scan
 
 
+def may_become_canonical(report, demo=False) -> bool:
+    """THE canonical-storage rule (PRE shadow readiness, owner-approved): a MarketReport that
+    fails data validation never becomes canonical - whichever job built it (the evening REPORT
+    job or POST's inline fallback). It is written to reports/unfit/ for diagnosis, the run is
+    BLOCKED, and a later retry may build a fit report for the same session. A transient data gap
+    must not permanently lock an invalid canonical record (canonical history is immutable).
+    Demo reports are exempt: they are stored with is_demo=1 and excluded from every query."""
+    return bool(demo) or bool(report.publication_ready)
+
+
 def persist_report(report, artifact_path, demo=False, history=None):
     """Record the report in the historical index. Returns (ok, error).
 
-    A report that failed validation is still historically valuable - "why wasn't the 22 Sep
-    report published?" is only answerable if the unfit report was kept - so this runs for
-    every report, storing its real statuses rather than only the publishable ones.
+    Only a report that `may_become_canonical` is indexed; an unfit report is refused here as
+    well as upstream (defence in depth - this is the only route a recap report takes into
+    history). "Why wasn't the 22 Sep report published?" stays answerable: the unfit JSON is
+    kept under reports/unfit/ and the run row records its blocking issues and artifact path.
 
     Demo runs are written with is_demo=1 and excluded from every history query by default,
     so synthetic fixtures cannot contaminate real market history while still being available
     for debugging the pipeline itself.
     """
+    if not may_become_canonical(report, demo):
+        reason = ("refused: the report fails data validation and may not become canonical ("
+                  + "; ".join(report.validation_summary.blocking_issues) + ")")
+        print(f"      history: {reason}")
+        return False, reason
     try:
         owned = history is None
         history = history or MarketHistory(default_db_path(OUT_DIR))
@@ -481,6 +555,177 @@ def publish(out, meta, session_date):
     return vid
 
 
+# ----------------------------------------------------------------------------- report production
+class ReportOutcome:
+    """What `produce_report` / `obtain_post_report` ended with. `report`/`report_path` are set
+    only when a canonical report is in hand (freshly persisted, adopted or reused); otherwise the
+    run has already been closed in history with the reason, and `status` says why."""
+
+    def __init__(self, status, report=None, report_path=None, reason="", source=None):
+        self.status, self.report, self.report_path = status, report, report_path
+        self.reason, self.source = reason, source
+
+    @property
+    def ok(self) -> bool:
+        return self.report is not None
+
+
+def produce_report(args, today, history, run_id, *, expected_session=None, morning_facts=True):
+    """Acquire -> content safety -> build -> adopt-or-persist: the ONE report-building path.
+
+    Used by POST (`obtain_post_report`, when no canonical report exists yet) and by the REPORT
+    job (`products.report_job`). Both obey the same canonical-storage rule
+    (`may_become_canonical`): a report that fails data validation is written to reports/unfit/
+    for diagnosis, the run is BLOCKED, and nothing canonical is written - a retry can still
+    build a fit report for the session once the data settles. `expected_session` makes a
+    benchmark that ends on another session a hard stop BEFORE anything is persisted.
+    `morning_facts=False` (a report built the evening before its edition) drops readings that
+    only exist on the edition morning (Gemini's "GIFT Nifty this morning").
+
+    Raises market.SessionAlignmentError after recording it, exactly as before.
+    """
+    try:
+        raw = collect(args, today, morning_facts=morning_facts)
+    except market.SessionAlignmentError as exc:
+        print(f"Publication blocked: {exc}")
+        _finish(history, run_id, "FAILED", "BLOCKED", failure_stage="SESSION_ALIGNMENT",
+                failure_reason=str(exc)[:1000], run_status="BLOCKED")
+        raise
+    if raw is None:
+        _finish(history, run_id, "NO_UPLOAD", "SKIPPED", failure_stage="COLLECT",
+                failure_reason="holiday or already posted", run_status="SKIPPED")
+        return ReportOutcome("SKIPPED", reason="holiday or already posted")
+    recap = raw["m"]["recap_date"]
+    if expected_session is not None and recap != expected_session and not args.demo:
+        if recap < expected_session:
+            exc = market.SessionAlignmentError(
+                f"BENCHMARK_MISSING_RECAP_SESSION: {expected_session} is the latest final NSE "
+                f"session but the benchmark ends at {recap} - the report is not built from an "
+                "older session")
+            print(f"Report blocked: {exc}")
+            _finish(history, run_id, "FAILED", "BLOCKED", failure_stage="SESSION_ALIGNMENT",
+                    failure_reason=str(exc)[:1000], run_status="BLOCKED")
+            raise exc
+        reason = (f"HISTORICAL_REBUILD_UNSUPPORTED: requested {expected_session}, but live "
+                  f"acquisition describes {recap} - a past session's report is never rebuilt")
+        print(f"Report blocked: {reason}")
+        _finish(history, run_id, "FAILED", "BLOCKED", failure_stage="SESSION_RESOLUTION",
+                failure_reason=reason, run_status="BLOCKED")
+        return ReportOutcome("BLOCKED", reason=reason)
+    _stage(history, run_id, "COLLECTED", target_date=recap, source_session_date=recap)
+
+    # Content safety runs before the report is built, so the report stores publishable
+    # text and presentation inherits it rather than being cleaned separately downstream.
+    (raw["nifty_reason"], raw["gainers"], raw["losers"], raw["events"],
+     safety_findings) = apply_content_safety(raw["nifty_reason"], raw["gainers"],
+                                             raw["losers"], raw["events"])
+
+    print("[5/7] Building validated market report...")
+    # The report is FINALIZED here: content safety has already run, and nothing after
+    # this point may alter its facts, observations, validation, catalysts or provenance.
+    # Its report_date is the edition it recaps the session for (the next canonical session,
+    # which is the run date of an ordinary 07:40 run), so an evening build and a next-morning
+    # build of the same session share one report_id.
+    edition = today if args.demo else (next_session(recap) or today)
+    report = build_report(raw, edition, demo=args.demo,
+                          content_safety=summarize_content_safety(safety_findings))
+    print(f"      report: {report_builder.describe(report)}")
+    _stage(history, run_id, "REPORT_BUILT", report_id=report.report_id)
+
+    # A rerun of an already-canonical report adopts the stored artifact rather than
+    # regenerating over it; a first run writes the JSON and then indexes it. Either way
+    # the canonical artifact is written exactly once, ever.
+    adopted, adopted_path, artifact_error = adopt_existing_report(report, history)
+    if artifact_error:
+        print(f"Publication blocked: {artifact_error}")
+        _finish(history, run_id, "FAILED", "BLOCKED", failure_stage="CANONICAL_ARTIFACT",
+                failure_reason=artifact_error, run_status="BLOCKED")
+        return ReportOutcome("BLOCKED", reason=artifact_error)
+
+    if adopted is not None:
+        report, report_path = adopted, adopted_path
+        print(f"      canonical report {report.report_id} already exists - rendering from "
+              f"the stored artifact, not regenerating it")
+        _stage(history, run_id, "PERSISTED", report_id=report.report_id,
+               artifact_path=report_path)
+        return ReportOutcome("ADOPTED", report, report_path, source="ADOPTED_EXISTING")
+
+    if not may_become_canonical(report, args.demo):
+        # Not canonical: a retry may still produce a fit report once the data settles.
+        path = report_builder.save_unfit_report(report, OUT_DIR)
+        reason = "; ".join(report.validation_summary.blocking_issues)
+        print(f"Report NOT committed (fails data validation, retryable): {reason}")
+        print(f"      diagnostic artifact: {path}")
+        _finish(history, run_id, "DATA_QA_FAILED", "BLOCKED", failure_stage="DATA_QA",
+                failure_reason=reason, data_qa_status="FAILED", artifact_path=path,
+                run_status="BLOCKED")
+        return ReportOutcome("UNFIT", report_path=path, reason=reason)
+
+    # JSON artifact first, then the historical index: the file is the immutable record
+    # of what this run produced, and the database is an index over those files.
+    report_path = report_builder.save_report(report, OUT_DIR, demo=args.demo)
+    ok, error = persist_report(report, report_path, demo=args.demo, history=history)
+    if not ok:
+        _finish(history, run_id, "FAILED", "BLOCKED", failure_stage="PERSIST",
+                failure_reason=error, artifact_path=report_path, run_status="FAILED")
+        print("Publication blocked: the run could not be recorded in history.")
+        return ReportOutcome("PERSIST_FAILED", reason=error)
+    _stage(history, run_id, "PERSISTED", artifact_path=report_path)
+    return ReportOutcome("BUILT", report, report_path, source="BUILT")
+
+
+def _post_skip_reason(args, today, session):
+    """The POST publication preconditions, applied to a calendar-resolved session exactly as
+    `collect` applies them to the benchmark's: skip after a holiday, skip if already posted."""
+    if not args.upload or args.force:
+        return None
+    prev_wd = today - dt.timedelta(days={0: 3, 6: 2}.get(today.weekday(), 1))
+    if session != prev_wd:
+        return f"Latest session is {session}, expected {prev_wd} (market holiday?). Skipping."
+    state_file = os.path.join(OUT_DIR, "last_session.txt")
+    if os.path.exists(state_file) and open(state_file).read().strip() == str(session):
+        return f"Session {session} already posted. Skipping."
+    return None
+
+
+def obtain_post_report(args, today, history, run_id):
+    """POST consumes the canonical report the REPORT job built; it builds one only when none
+    exists (production policy: never cost a day's publication, recorded as
+    report_source=BUILT_INLINE). Returns a ReportOutcome; a non-ok one is already recorded."""
+    session = None if args.demo else latest_final_session(now_ist())
+    if session is not None and history is not None:
+        lookup = find_canonical_report(session, history=history)
+        if lookup.found:
+            skip = _post_skip_reason(args, today, session)
+            if skip:
+                print(skip)
+                _finish(history, run_id, "NO_UPLOAD", "SKIPPED", failure_stage="COLLECT",
+                        failure_reason="holiday or already posted", run_status="SKIPPED",
+                        target_date=session, source_session_date=session)
+                return ReportOutcome("SKIPPED", reason=skip)
+            print(f"[1/7] Canonical report for {session} already built ({lookup.report_id}) - "
+                  "POST renders from it; nothing is re-acquired")
+            _stage(history, run_id, "PERSISTED", report_id=lookup.report_id,
+                   artifact_path=lookup.path,
+                   details={"report_source": "REUSED_CANONICAL", "lookup": lookup.to_dict()})
+            return ReportOutcome("REUSED", lookup.report, lookup.path, source="REUSED_CANONICAL")
+        if lookup.status in (ARTIFACT_MISSING, UNREADABLE, SESSION_MISMATCH):
+            print(f"Publication blocked: canonical report for {session} is unusable: "
+                  f"{lookup.reason}")
+            _finish(history, run_id, "FAILED", "BLOCKED", failure_stage="CANONICAL_ARTIFACT",
+                    failure_reason=lookup.reason, run_status="BLOCKED",
+                    target_date=session, source_session_date=session)
+            return ReportOutcome("BLOCKED", reason=lookup.reason)
+        print(f"      no canonical report for {session} yet (REPORT job missing or failed) - "
+              "POST builds it with the same code path")
+    outcome = produce_report(args, today, history, run_id)
+    if outcome.ok:
+        if outcome.source == "BUILT" and session is not None:
+            outcome.source = "BUILT_INLINE"
+        _stage(history, run_id, "PERSISTED", details={"report_source": outcome.source})
+    return outcome
+
+
 def run(args):
     os.makedirs(OUT_DIR, exist_ok=True)
     today = now_ist().date()
@@ -488,60 +733,18 @@ def run(args):
     history, run_id = _open_history(mode)
 
     try:
-        raw = collect(args, today)
-        if raw is None:
-            _finish(history, run_id, "NO_UPLOAD", "SKIPPED", failure_stage="COLLECT",
-                    failure_reason="holiday or already posted")
+        outcome = obtain_post_report(args, today, history, run_id)
+        if not outcome.ok:
             return None
-        _stage(history, run_id, "COLLECTED")
-
-        # Content safety runs before the report is built, so the report stores publishable
-        # text and presentation inherits it rather than being cleaned separately downstream.
-        (raw["nifty_reason"], raw["gainers"], raw["losers"], raw["events"],
-         safety_findings) = apply_content_safety(raw["nifty_reason"], raw["gainers"],
-                                                 raw["losers"], raw["events"])
-
-        print("[5/7] Building validated market report...")
-        # The report is FINALIZED here: content safety has already run, and nothing after
-        # this point may alter its facts, observations, validation, catalysts or provenance.
-        report = build_report(raw, today, demo=args.demo,
-                              content_safety=summarize_content_safety(safety_findings))
-        print(f"      report: {report_builder.describe(report)}")
-        _stage(history, run_id, "REPORT_BUILT", report_id=report.report_id)
-
-        # A rerun of an already-canonical report adopts the stored artifact rather than
-        # regenerating over it; a first run writes the JSON and then indexes it. Either way
-        # the canonical artifact is written exactly once, ever.
-        adopted, adopted_path, artifact_error = adopt_existing_report(report, history)
-        if artifact_error:
-            print(f"Publication blocked: {artifact_error}")
-            _finish(history, run_id, "FAILED", "BLOCKED", failure_stage="CANONICAL_ARTIFACT",
-                    failure_reason=artifact_error)
-            return None
-
-        if adopted is not None:
-            report, report_path = adopted, adopted_path
-            print(f"      canonical report {report.report_id} already exists - rendering from "
-                  f"the stored artifact, not regenerating it")
-            _stage(history, run_id, "PERSISTED", report_id=report.report_id,
-                   artifact_path=report_path)
-        else:
-            # JSON artifact first, then the historical index: the file is the immutable record
-            # of what this run produced, and the database is an index over those files.
-            report_path = report_builder.save_report(report, OUT_DIR, demo=args.demo)
-            ok, error = persist_report(report, report_path, demo=args.demo, history=history)
-            if not ok:
-                _finish(history, run_id, "FAILED", "BLOCKED", failure_stage="PERSIST",
-                        failure_reason=error, artifact_path=report_path)
-                print("Publication blocked: the run could not be recorded in history.")
-                return None
-            _stage(history, run_id, "PERSISTED", artifact_path=report_path)
+        report, report_path = outcome.report, outcome.report_path
+        _stage(history, run_id, "PERSISTED", target_date=report.session_date,
+               source_session_date=report.session_date)
 
         # Gate 1 of 3: data validation.
         if not check_publication(report, demo=args.demo):
             _finish(history, run_id, "DATA_QA_FAILED", "BLOCKED", failure_stage="DATA_QA",
                     failure_reason="; ".join(report.validation_summary.blocking_issues),
-                    data_qa_status="FAILED", artifact_path=report_path)
+                    data_qa_status="FAILED", artifact_path=report_path, run_status="BLOCKED")
             print(f"Report written for diagnosis (no video rendered): {report_path}")
             return None
         _stage(history, run_id, "DATA_QA_PASSED", data_qa_status="PASSED")
@@ -558,8 +761,12 @@ def run(args):
               f"| hook: {plan.hook.primary_text} {plan.hook.primary_value}".rstrip())
 
         pres = ReportPresentation(report)
-        info = {"today_str": today.strftime("%A, %d %B %Y"),
-                "today_short": today.strftime("%a %d %b"),
+        # "today" on screen is the edition the report was built for (its report_date) - the
+        # run date on an ordinary morning, and still right when a reused report is rendered
+        # on another day: the report's events are that edition's events.
+        edition = report.report_date or today
+        info = {"today_str": edition.strftime("%A, %d %B %Y"),
+                "today_short": edition.strftime("%a %d %b"),
                 "recap_str": pres.session_date.strftime("%a, %d %b %Y")}
         tag = today.strftime("%Y-%m-%d")
         charts = chart.make_chart(pres.m, os.path.join(OUT_DIR, f"nifty_chart_{tag}"))
@@ -607,33 +814,105 @@ def run(args):
                video_qa_status=qa_result.status.value,
                content_qa_status="PASSED" if content_ok else "FAILED")
 
+        # RADAR_PUBLISHED is decided here, after the artifact and every QA gate - never by the
+        # REPORT job's selection. This renderer has no Radar section, so nothing is published.
+        _record_radar(history, run_id, report, out, demo=args.demo,
+                      qa_passed=qa_result.passed and content_ok and read_result.passed,
+                      qa={"video_qa": qa_result.status.value, "readability": read_result.passed,
+                          "content_qa": scan.status.value, "qa_artifact": qa_path})
+
         if not (qa_result.passed and content_ok and read_result.passed):
             stage = ("VIDEO_QA" if not qa_result.passed
                      else "READABILITY_QA" if not read_result.passed else "CONTENT_QA")
             reason = (qa_result.blocking_issues or read_result.blocking_issues
                       or scan.blocked_fields)
             _finish(history, run_id, "FAILED", "BLOCKED", failure_stage=stage,
-                    failure_reason="; ".join(reason), artifact_path=out)
+                    failure_reason="; ".join(reason), artifact_path=out, run_status="BLOCKED")
             return out
 
         if args.upload and not args.demo:
             vid = publish(out, meta, pres.session_date)
             _finish(history, run_id, "PUBLISHED", "PUBLISHED", artifact_path=out,
-                    youtube_video_id=vid)
+                    youtube_video_id=vid, run_status="SUCCESS")
         else:
-            _finish(history, run_id, "NO_UPLOAD", "NOT_ATTEMPTED", artifact_path=out)
+            _finish(history, run_id, "NO_UPLOAD", "NOT_ATTEMPTED", artifact_path=out,
+                    run_status="SUCCESS")
         return out
+    except Exception as exc:
+        # An unexpected crash still closes the run (a run left at COLLECTED says nothing).
+        # A failed POST render never touches the canonical report it was rendering from.
+        _fail_open_run(history, run_id, exc)
+        raise
     finally:
         if history:
             history.close()
 
 
-def _open_history(mode):
+def _record_radar(history, run_id, report, artifact_path, *, qa_passed, qa, demo=False):
+    """Record RADAR_SELECTED vs RADAR_PUBLISHED for this POST run (run details `radar`).
+    The legacy renderer (video.scenes_from_plan) draws no Radar story, so `rendered` is empty
+    and nothing is marked published. Never fatal."""
+    try:
+        from products import radar_publication as rp
+        session = report.session_date
+        rendered = []    # video.scenes_from_plan has no Radar section
+        confirm = rp.confirm_radar_publication(
+            session, rendered, qa_passed=qa_passed, out_dir=OUT_DIR, run_id=run_id,
+            artifact_path=artifact_path, qa=qa, demo=demo, confirmed_by="main.run")
+        sel = rp.radar_selection(session, OUT_DIR) if session else {}
+        pub = rp.radar_publication(session, OUT_DIR) if session else {}
+        record = {"selected_count": sel.get("selected_count", 0),
+                  "selected_symbols": sel.get("selected_symbols", []),
+                  "rendered_symbols": rendered,
+                  "published_count": pub.get("published_count", 0),
+                  "published_symbols": pub.get("published_symbols", []),
+                  "confirmation_status": confirm["status"],
+                  "confirmed_at": pub.get("confirmed_at"),
+                  "artifact_path": artifact_path, "qa": qa, "qa_passed": bool(qa_passed),
+                  "note": rp.LEGACY_RENDERER_NOTE}
+        _merge_details(history, run_id, radar=record)
+        print(f"      radar: selected {record['selected_count']} / published "
+              f"{record['published_count']} ({confirm['status']})")
+        return record
+    except Exception as exc:
+        print(f"      radar: publication record skipped ({type(exc).__name__}: {exc})")
+        return None
+
+
+def _merge_details(history, run_id, **extra):
+    """Add keys to a run's details without dropping what earlier stages recorded."""
+    if not (history and run_id):
+        return
+    try:
+        runs = [r for r in history.get_publication_runs(limit=200) if r.run_id == run_id]
+        details = dict(runs[0].details or {}) if runs else {}
+        details.update(extra)
+        history.update_run(run_id, details=details)
+    except Exception as exc:
+        print(f"[history] could not record details: {exc}")
+
+
+def _fail_open_run(history, run_id, exc, stage="EXCEPTION"):
+    """Close a run that is still open with FAILED; a run already closed is left as recorded."""
+    if not (history and run_id):
+        return
+    try:
+        runs = [r for r in history.get_publication_runs(limit=200) if r.run_id == run_id]
+        if runs and runs[0].completed_at:
+            return
+        history.finish_run(run_id, "FAILED", "BLOCKED", failure_stage=stage,
+                           failure_reason=f"{type(exc).__name__}: {exc}"[:1000],
+                           run_status="FAILED")
+    except Exception as inner:
+        print(f"[history] could not record the failure: {inner}")
+
+
+def _open_history(mode, job_type=JOB_POST_MARKET):
     """Open the history database and start a run record. Never fatal on its own - a failure
     here surfaces at the persistence gate, which is where refusing to publish belongs."""
     try:
         history = MarketHistory(default_db_path(OUT_DIR))
-        return history, history.start_run(mode)
+        return history, history.start_run(mode, job_type=job_type)
     except Exception as exc:
         print(f"[history] unavailable: {type(exc).__name__}: {exc}")
         return None, None
@@ -665,8 +944,22 @@ if __name__ == "__main__":
     ap.add_argument("--demo", action="store_true")
     ap.add_argument("--upload", action="store_true")
     ap.add_argument("--force", action="store_true")
+    # Product router. postmarket is the default and runs `run(args)`; the other modes' logic
+    # lives in products/, not here.
+    ap.add_argument("--mode", choices=("postmarket", "premarket", "report"), default="postmarket")
+    ap.add_argument("--session-date", help="premarket: the session about to open; report: the "
+                                            "session to build (default: latest final session)")
+    ap.add_argument("--shadow", action="store_true",
+                    help="premarket: shadow run -> output/pre_shadow/<date>/, never uploads")
+    ap.add_argument("--skip-radar", action="store_true", help="report: build the report only")
+    ap.add_argument("--as-of", help="premarket: IST cutoff (ISO datetime); default now")
+    ap.add_argument("--frames-only", action="store_true", help="premarket: frames + QA, no MP4")
+    ap.add_argument("--hook-ai", action="store_true",
+                    help="premarket: let Gemini choose among the approved hook candidates")
     try:
-        run(ap.parse_args())
+        from products import VideoRequest, route
+        _args = ap.parse_args()
+        route(VideoRequest.from_args(_args), _args, postmarket_runner=run)
     except Exception:
         traceback.print_exc()
         sys.exit(1)

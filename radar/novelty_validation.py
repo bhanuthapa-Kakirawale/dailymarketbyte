@@ -24,7 +24,7 @@ from config import OUT_DIR
 from storage.ohlcv_repository import OHLCVStore, default_db_path
 
 from . import historical_validation as hv
-from . import relative_acquisition
+from . import relative_acquisition, session_alignment
 from .models import NoveltyType
 from .novelty import classify_history
 from .thresholds import DEFAULT_NOVELTY_THRESHOLDS, NoveltyThresholds
@@ -308,7 +308,7 @@ def main(argv=None) -> int:
     benchmark_series_full = relative_acquisition.build_market_benchmark_series(period="1y")
     if args.end_date:
         end = dt.date.fromisoformat(args.end_date)
-        spine = sorted({row["date"] for row in benchmark_series_full if row["date"] <= end})
+        spine = session_alignment.canonical_session_list(benchmark_series_full, end=end)
         selected = spine[-args.sessions:]
         prev_dates = [spine[spine.index(d) - 1] for d in selected]
     else:

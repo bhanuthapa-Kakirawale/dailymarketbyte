@@ -45,6 +45,12 @@ Nifty -0.36% | 20 DMA | 50 DMA | Pivot | R1 | S1 | RSI | Volume
 
 ## The hook
 
+> The unified `daily_video` renderer now opens with the **Dynamic Hook Engine**
+> (`hooks/`, see `docs/HOOK_ENGINE.md`): 2-3 teaser beats and a curiosity + summary hook,
+> where Gemini may choose among deterministic, pre-approved candidates. The rule-based
+> selection below is still what the legacy `video.py` path (and the `ShortsPlan` HOOK scene)
+> uses.
+
 The first three seconds answer *why keep watching?*, not *what is this channel called?*.
 Branding is still present but small and below the fact.
 
@@ -273,3 +279,97 @@ everywhere. No model makes an editorial judgement.
 No predictions, no BUY/SELL/HOLD, no targets or stop losses, no recommendations, no
 clickbait. The hook creates curiosity from real market information or it falls back to
 stating the close plainly.
+
+## POST-MARKET section planning (Phase 3, unified `daily_video` Short)
+
+`presentation/post_plan.py` (`plan_post_sections` -> `PostSectionPlan`) decides which sections
+the POST Short contains, deterministically and with a written reason for every section in or
+out (`storyboard.post_plan`, `render_post_phase3.py` writes `post_section_plan_<date>.json`). No
+model is involved - Gemini stays inside the Dynamic Hook boundary. The storyboard only lays out
+the plan; the renderer only draws.
+
+Story: HOOK -> MARKET -> SECTORS -> [optional context] -> RADAR -> CLOSE. Radar is the last
+analytical section and the 2.6 s close follows it directly.
+
+| Section | Kind | Rule |
+|---|---|---|
+| Market pulse | core | Nifty close + change (one primary fact) and ONE support: close near the day's high/low (top/bottom quarter of the range), else which side of the open it finished. Headline graded: almost unchanged (<0.10%), slightly (<0.60%), plain (<1.25%), sharply. No Bank Nifty/VIX tiles. |
+| Nifty chart | optional | Only for a NEW structural event today: a 20-day range break, else a 20-day-average cross. A continuing state is not an event (replayed over 186 real sessions: fires on ~26%). Built from the Radar chart components with a brand edge and a card sized for a chart with no evidence strip (the pulse already carries the day's range). |
+| Sectors | core | Leader dominant, laggard visible, tone line "N of M sector indices closed higher", and every sector in a ranked heat strip. On a uniform day the words follow the direction: all down -> "All N sector indices fell; X fell least" (FELL LEAST / FELL MOST), all up -> "...rose; X led" (LEADER / ROSE LEAST) - "led" is never said of a sector that fell (found on the real 24 Sep 2026 session). |
+| Movers | optional | Only if a top gain/fall that is NOT a published Radar story moved >= 7%, or the top gain vs top fall spread is >= 12 pts (POST freeze; the old 4% / 6 pts fired on 90% of replayed sessions, the new rule on 24%). Only when the universe coverage gate passes (below). At most two cards. |
+| FII/DII | optional | Only with validated flows of at least Rs 1,000 cr. |
+| Global context | optional, rare | Renamed from "Overnight global cues" (a PRE topic). Only if a global move >= 1.5% on a day Nifty itself moved >= 1% the same way. |
+| Special event | optional, rare | Only a high-impact scheduled event (RBI/FED/BUDGET/POLICY); forward-looking "watch next" items are not POST facts. |
+| Radar | core | The 3 published stories (Phase 2, unchanged; no-event stories use the VOLUME / SESSION presentation below). |
+
+At most `OPTIONAL_BUDGET` (2) optional sections per Short, in priority Nifty chart > flows >
+movers > event > global; a qualifying section beyond the budget is recorded as omitted with the
+reason.
+
+Transitions (`daily_video/composer.py`): the outgoing scene stays whole until the cut, then lifts
+away while the incoming scene rises in. Its headline zone clears almost at once, so two
+headlines never overprint; the rest fades on an ease-in curve so the screen is never empty (the
+old fade-out-then-fade-in left a blank beat at every boundary; a test now measures every cut).
+The section chip slides in. A full-screen vertical push was rejected: inside a Short it looks
+like the feed's own swipe to the next video.
+
+
+## POST freeze: coverage gate and move guard
+
+**Universe coverage gate** (`editorial/movers_gate.py`). A top-gainer / top-loser ranking is
+only a fact about the universe it was computed over. `market.get_movers_audited` records, at
+acquisition, `universe_expected` (the universe size), `universe_observed` (stocks with a clean,
+date-aligned day-over-day change), `universe_validated` (those that also passed the move guard)
+and `coverage_pct = validated / expected`, into `report.metadata["movers_coverage"]`, together
+with the missing, date-gap and guard-held symbols. `plan_short` publishes the GAINERS / LOSERS
+scenes - and therefore every Movers card and every `top_gainer` / `top_loser` hook claim built
+from them - only when `coverage_pct >= MOVERS_MIN_COVERAGE_PCT` (90). Below it, or when the
+report has no coverage record at all (every report built before the gate: status UNKNOWN), the
+scenes are not built and `plan.omitted` records `universe_coverage` with the status, counts and
+reason. Nothing is ranked over what happened to arrive; nothing is removed from the report.
+
+**Move guard** (`core/move_guard.py`, see the module docstring for the exact rules). Acquisition
+ranks only publishable moves; a held move stays in `movers_coverage.excluded` with its raw
+open/high/low/close/previous close and verdict, and counts against coverage (a move that cannot
+be trusted is not an observation of the universe). The same guard runs on Market Radar stories
+before publication (`presentation/radar_guard.py`).
+
+Replay evidence (124 Nifty 100 sessions with local stock data, 24 Mar - 24 Sep 2026): Movers
+inclusion 90.3% -> 24.2%; the guard flagged 9 records (5 volume-confirmed extremes published,
+4 held - VEDL -64.9% on 30 Apr, and three >= 10% moves whose volume history was too short to
+confirm); the coverage gate suppressed 6 sessions (24 Sep at 81%, and the five sessions right
+after a date on which Yahoo carries stock rows but no Nifty row, where every stock's previous
+close is misaligned).
+
+## Radar stories without a technical event (POST final edge-case patch)
+
+Verified 24 Sep 2026: the selector published COROMANDEL on UNUSUAL volume (3.0x) plus relative
+performance, with no STRUCTURE event, on a -0.69% day. The Phase 2 renderer had no path for it.
+It drew an empty chart card reading "Something changed on the chart with unusually high volume."
+`presentation.radar_story` now gives such a story one of two families. The shell, the identity
+row, the price tag column and the takeaway line are the same as every other Radar story:
+
+- **VOLUME**: the Radar volume detector flagged the session. The upper panel holds the candles as
+  neutral price context: no ring, no callout, no reference level, and they step back when the
+  evidence arrives. The lower, larger panel is the volume histogram. It carries the detector's
+  own multiple ("3.0× normal volume"), the session's bar in amber, and a dashed line at the prior
+  20-session average ("20-DAY AVG"). The line spans only the 20 sessions it averages. It is drawn
+  only when the visible window reproduces the detector's multiple within 2%; otherwise there is
+  no line and a warning is recorded. Takeaway (fixed template): "Trading volume was
+  <above normal | unusually high | exceptionally high> while price finished <x>% <higher | lower>."
+- **SESSION**: neither an event nor flagged volume. Neutral candles plus the day-range strip.
+  Takeaway: "Price finished <x>% lower/higher [and closed near the day's high/low]."
+
+Rules: one main idea; one supporting fact; one price (the close); no claim that anything
+happened "on the chart"; no invented breakout, range or average event. The no-chart TEXT card
+never reuses the Radar planner's `context_line`, because it carries internal labels.
+
+**Direction.** A story's internal `direction` (`ALIGNED_POSITIVE` / `ALIGNED_NEGATIVE` /
+`MIXED`, from Radar's composite) and its derived `direction_label` ("Positive Alignment") and
+`editorial_selection_reason` ("... positive-direction development") describe multi-session
+STRUCTURE / RELATIVE_PERFORMANCE agreement. They are internal only, used by the selector's
+diversity slots, and never appear on screen. Every viewer-visible direction (change badge
+colour, close-tag colour, "higher"/"lower") comes from the story's validated session move
+(`price_change_pct`). COROMANDEL was `ALIGNED_POSITIVE`, and it is shown red with "0.7% lower".
+Normal event stories are pixel-identical to Phase 2 (frame hashes compared before and after).
+

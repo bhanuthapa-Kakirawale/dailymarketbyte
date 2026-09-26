@@ -34,6 +34,20 @@ def _isolate_config_out_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "OUT_DIR", str(tmp_path))
 
 
+@pytest.fixture(autouse=True)
+def _offline_index_fallback(monkeypatch):
+    """Benchmark gap recovery (`market.recover_index_gaps`) fetches NSE's end-of-day index file
+    whenever a synthetic series skips a canonical weekday. Tests stay offline: the default
+    fallback source is "unavailable"; a test that exercises recovery passes its own `fetch`
+    or patches `market.nse_index_close_archive`."""
+    import market
+    from radar import relative_acquisition
+    monkeypatch.setattr(market, "_ARCHIVE_CACHE", {})
+    monkeypatch.setattr(market, "nse_index_close_archive",
+                        lambda session_date: {"error": "network disabled in tests"})
+    monkeypatch.setattr(relative_acquisition, "_LAST_RECOVERY", [])
+
+
 def observation(value, source="yahoo_finance", kind=SourceType.SECONDARY,
                 metric=Metric.INDEX_CLOSE, instrument="NIFTY 50",
                 market_date=SESSION, unit=UNIT_POINTS, retrieved_at=NOW,
@@ -145,11 +159,14 @@ def candle_frame():
 def build_test_report(market_dict, gainers=None, losers=None, events=None, sectors=None,
                       tiles=None, ai_facts=None, nse_idx=None, flows=None,
                       nifty_reason=None, report_date=REPORT_DATE, demo=False,
-                      content_safety=None, now=NOW):
+                      content_safety=None, now=NOW, movers_coverage="FULL"):
     """Build a MarketReport through the real provider path, exactly as main.build_report does.
 
     Tests go through the providers rather than hand-assembling a report, so they exercise
     the acquisition-to-report wiring that Phase 2 is actually about.
+
+    `movers_coverage` defaults to a complete, healthy universe (the state every pre-freeze
+    test assumed); pass None for a report with no coverage record, or a dict to test the gate.
     """
     from adapters import report_builder
     from providers import GeminiProvider, NewsProvider, NseProvider, YahooProvider
@@ -179,4 +196,33 @@ def build_test_report(market_dict, gainers=None, losers=None, events=None, secto
         session=session_result.payload["index_session"], narrative=narrative,
         observations=observations, tiles=tiles, flows=flows, sectors=sectors,
         gainers=gainers, losers=losers, report_date=report_date,
-        universe_label="Nifty 100", demo=demo, now=now, content_safety=content_safety)
+        universe_label="Nifty 100", demo=demo, now=now, content_safety=content_safety,
+        movers_coverage=(full_movers_coverage() if movers_coverage == "FULL" else movers_coverage))
+
+
+def full_movers_coverage(expected=100, observed=None, validated=None, excluded=()):
+    """A `market.get_movers_audited` coverage record (all 100 Nifty 100 stocks by default)."""
+    observed = expected if observed is None else observed
+    validated = observed if validated is None else validated
+    return {"universe_expected": expected, "universe_observed": observed,
+            "universe_validated": validated,
+            "coverage_pct": round(100.0 * validated / expected, 2) if expected else 0.0,
+            "excluded": list(excluded), "coverage_basis": "validated / expected"}
+
+
+@pytest.fixture
+def declare_nse_holiday(monkeypatch):
+    """Register synthetic dates as official NSE trading holidays for one test.
+
+    Since the session-alignment patch the canonical calendar (`core.trading_calendar`) is NSE's
+    published holiday list plus the benchmark's own bars - a weekday merely ABSENT from a
+    synthetic benchmark is now a benchmark gap on a real session (the 2026-09-22 case), not a
+    holiday. A test that means "NSE was closed that day" must say so."""
+    from core import trading_calendar as tc
+
+    def _declare(*dates):
+        hol = {y: set(v) for y, v in tc.NSE_TRADING_HOLIDAYS.items()}
+        for d in dates:
+            hol.setdefault(d.year, set()).add(d)
+        monkeypatch.setattr(tc, "NSE_TRADING_HOLIDAYS", {y: frozenset(v) for y, v in hol.items()})
+    return _declare

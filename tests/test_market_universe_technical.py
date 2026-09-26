@@ -3,6 +3,7 @@ the technical-structure detector (Phase 4.2 Packet 2). Offline only -
 market._bulk_download_universe_ohlcv is monkeypatched, never a live yfinance call.
 """
 import market
+import pandas as pd
 from conftest_universe import fake_bulk_ohlcv, synthetic_universe
 
 
@@ -48,7 +49,13 @@ def test_invalid_ohlc_row_is_dropped_not_the_whole_symbol(monkeypatch):
 
     series, skip_reasons = market.get_universe_technical_series(universe, recap_date, prev_date)
     assert symbol not in skip_reasons
-    assert len(series[symbol]) == 62
+    # 63 fixture rows - the one invalid-OHLC row - fixture dates on real NSE holidays
+    # (business-day fixture; the session-alignment patch drops those placeholder-like rows).
+    fixture_dates = [r["date"] for r in series[symbol]]
+    holidays = [d for d in pd.bdate_range(end=recap_date, periods=63).date
+                if market.session_calendar().status(d) == "NON_SESSION"]
+    assert len(series[symbol]) == 62 - len(holidays)
+    assert not set(holidays) & set(fixture_dates)
 
 
 def test_skip_reason_no_recap_row(monkeypatch):

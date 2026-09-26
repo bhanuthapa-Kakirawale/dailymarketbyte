@@ -98,6 +98,12 @@ HEATMAP_COLUMNS = 3
 # it gets its own cap well above MAX_MOVERS_DISPLAYED/MAX_MAJOR_CARDS instead of stretching
 # the narrative ones.
 MAX_RANKED_MOVERS = 5
+# POST freeze - universe coverage gate. A top-gainer / top-loser ranking (and every Movers
+# claim built on it) is published only when at least this share of the mover universe
+# produced a validated, date-aligned move. Below it - or with no coverage record at all - the
+# ranking is unproven: the Movers scenes are suppressed, never ranked over what happened to
+# arrive (see editorial/movers_gate.py).
+MOVERS_MIN_COVERAGE_PCT = 90.0
 
 # Priced like the heatmap: a base orientation cost plus a small flat cost per row, not the
 # narrative per-card/per-value cost `estimate_scene` uses elsewhere - a rank, a symbol and a

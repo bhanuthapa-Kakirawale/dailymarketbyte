@@ -18,9 +18,11 @@ section 29 - 100% logical equivalence, or this packet stops).
 
 `select_session` takes only: a session date, a list of `(StockRadarCandidate, CandidateNovelty)`
 pairs already produced elsewhere (this module fetches no market data, runs no detector,
-computes no novelty), and `recently_selected` - a plain `{instrument: last_selected_date}` dict
+computes no novelty), and `recently_selected` - a plain `{instrument: last_published_date}` dict
 the CALLER already loaded from persistence (`storage.editorial_repository.EditorialStore.
-get_prior_selections`, one bounded query, never one per candidate). Neither the candidate nor
+get_prior_publications`, one bounded query, never one per candidate). PUBLISHED stories only,
+not every selection: a story the selector chose that no completed POST showed starts no
+cooldown (PRE shadow readiness - selection is not publication). Neither the candidate nor
 the novelty object is ever written to - every field this module reads off them is read-only.
 
 ## Frozen rules (packet spec section 2 - do not retune)
@@ -145,7 +147,7 @@ def _override_triggers(nc: _Normalized) -> list:
 def _apply_cooldown(ordered: list, recently_selected: dict) -> tuple[list, list]:
     """`recently_selected` must already be restricted to the prior `PUBLICATION_COOLDOWN_
     SESSIONS` valid trading sessions STRICTLY BEFORE the current session (the caller's
-    responsibility - `EditorialStore.get_prior_selections` already guarantees this with an
+    responsibility - `EditorialStore.get_prior_publications` already guarantees this with an
     exclusive upper bound, so a rerun for the SAME session never suppresses its own candidates -
     packet spec sections 7/18). Being 3-family is never itself an override (section 8/13)."""
     eligible, suppressed = [], []
@@ -252,7 +254,7 @@ def select_session(session_date: dt.date, candidate_novelty_pairs: list, recentl
                    as_of: dt.datetime | None = None) -> EditorialSelectionResult:
     """Pure - no I/O, no mutation of any input object. `recently_selected` must already be
     restricted to the prior cooldown window and MUST NOT include the current `session_date`
-    itself (see `_apply_cooldown`'s docstring) - `EditorialStore.get_prior_selections` already
+    itself (see `_apply_cooldown`'s docstring) - `EditorialStore.get_prior_publications` already
     guarantees both.
     """
     as_of = as_of or dt.datetime.now(dt.timezone.utc)
@@ -340,7 +342,8 @@ def run_and_persist(session_date: dt.date, candidate_novelty_pairs: list, store,
                     lookback_sessions: int = PUBLICATION_COOLDOWN_SESSIONS,
                     as_of: dt.datetime | None = None) -> EditorialSelectionResult:
     """The production integration boundary (packet spec section 25): loads prior publication
-    history from `store` (one bounded query via `EditorialStore.get_prior_selections`), runs the
+    PUBLICATION history from `store` (one bounded query via
+    `EditorialStore.get_prior_publications` - published stories, never mere selections), runs the
     pure `select_session`, persists the result (idempotent), and returns it.
 
     Persistence failure (packet spec section 26): if the history lookup itself fails - a locked
@@ -352,7 +355,7 @@ def run_and_persist(session_date: dt.date, candidate_novelty_pairs: list, store,
     """
     as_of = as_of or dt.datetime.now(dt.timezone.utc)
     try:
-        recently_selected = store.get_prior_selections(session_date, spine, lookback_sessions)
+        recently_selected = store.get_prior_publications(session_date, spine, lookback_sessions)
     except Exception as exc:
         return EditorialSelectionResult(
             session_date=session_date, selector_version=selector_version, selected=[],

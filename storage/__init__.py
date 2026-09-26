@@ -19,9 +19,10 @@ from .ohlcv_models import OHLCVBar, QualityStatus
 from .ohlcv_repository import (DEFAULT_DB_RELPATH as OHLCV_DEFAULT_DB_RELPATH, OHLCVRow,
                                OHLCVStore, OhlcvSchemaVersionError,
                                default_db_path as ohlcv_default_db_path)
-from .repository import (DEFAULT_DB_RELPATH, MarketHistory, StoredFact, StoredMetricPoint,
-                         StoredObservation, StoredReport, StoredRun, StoredValidationResult,
-                         default_db_path)
+from .repository import (DEFAULT_DB_RELPATH, JOB_POST_MARKET, JOB_PRE_MARKET,
+                         JOB_REPORT_BUILD, JOB_TYPES, MarketHistory, StoredFact,
+                         StoredMetricPoint, StoredObservation, StoredReport, StoredRun, StoredValidationResult,
+                         default_db_path, job_type_of)
 
 __all__ = ["MarketHistory", "default_db_path", "DEFAULT_DB_RELPATH", "SCHEMA_VERSION",
            "SchemaVersionError", "current_version", "initialise", "StoredReport", "StoredFact",
@@ -33,4 +34,5 @@ __all__ = ["MarketHistory", "default_db_path", "DEFAULT_DB_RELPATH", "SCHEMA_VER
            "EDITORIAL_DEFAULT_DB_RELPATH",
            "CandidateHistoryStore", "StoredCandidateState", "CandidateHistorySchemaVersionError",
            "candidate_history_default_db_path", "CANDIDATE_HISTORY_DEFAULT_DB_RELPATH",
-           "RunStatus", "StoredRunMarker"]
+           "RunStatus", "StoredRunMarker", "job_type_of", "JOB_TYPES", "JOB_REPORT_BUILD",
+           "JOB_POST_MARKET", "JOB_PRE_MARKET"]

@@ -58,14 +58,28 @@ def _normalize_index(df: pd.DataFrame) -> pd.DataFrame:
     if idx.tz is not None:
         idx = idx.tz_convert(IST).tz_localize(None)
     df.index = idx.normalize()
-    return df[~df.index.duplicated(keep="last")]
+    # Duplicates keep the LAST provider occurrence, then oldest-first order: every caller reads
+    # `index[-1]`/`index[-2]` positionally, so an out-of-order provider frame must not reach it.
+    return df[~df.index.duplicated(keep="last")].sort_index(kind="stable")
+
+
+# A session's daily bar is treated as final only at/after this IST time on the session's own
+# date (NSE's close is 15:30; the closing-price calculation settles by ~15:40). Single constant
+# shared by `_clean`, the OHLCV write-through guard and `radar.cache_repair`.
+SESSION_FINAL_TIME = dt.time(15, 40)
+
+
+def session_in_progress(session_date: dt.date, now: dt.datetime | None = None) -> bool:
+    """True while `session_date`'s bar can still change (its own date, before
+    `SESSION_FINAL_TIME` IST)."""
+    now = now or now_ist()
+    return session_date == now.date() and now.time() < SESSION_FINAL_TIME
 
 
 def _clean(df: pd.DataFrame) -> pd.DataFrame:
     df = _normalize_index(df.dropna(subset=["Close"]))
-    now = now_ist()
     # never use a session that is still running
-    if len(df) and df.index[-1].date() == now.date() and now.time() < dt.time(15, 40):
+    if len(df) and session_in_progress(df.index[-1].date()):
         df = df.iloc[:-1]
     return df
 
@@ -89,6 +103,61 @@ def _truncate_to_recap(d: pd.DataFrame, recap_date: dt.date) -> pd.DataFrame:
     invariant the rest of this file's `iloc[-1]`/`iloc[-2]` logic already assumes.
     """
     return d[d.index.date <= recap_date]
+
+
+class SessionAlignmentError(RuntimeError):
+    """A SESSION-level alignment failure: the benchmark index's own series cannot establish the
+    requested session or its canonical previous session, so no day-over-day figure for that
+    session can be trusted. Distinct from a symbol-level problem (one stock's gap/placeholder),
+    which only ever removes that symbol."""
+
+
+def session_calendar(session_dates=None):
+    """The canonical NSE session rule (`core.trading_calendar`), informed by the benchmark
+    index's own bar dates when the caller has them (`get_market()`'s `m["session_dates"]`)."""
+    from core.trading_calendar import SessionCalendar
+    return SessionCalendar.from_index_dates(session_dates or ())
+
+
+def _drop_non_sessions(d: pd.DataFrame, calendar, audit=None) -> pd.DataFrame:
+    """Drop every row the canonical calendar calls NON_SESSION - a provider placeholder on an
+    NSE holiday (verified: 2026-05-01/05-28/06-26/09-14, O=H=L=C = previous close, volume 0 on
+    ~200 stocks). Must run BEFORE any positional `iloc[-2]`/`index[-2]` read: otherwise the
+    placeholder IS the "previous session" and every real stock looks like it has a date gap.
+    A missing canonical session is never filled - a gap stays a gap."""
+    from core.trading_calendar import NON_SESSION, UNKNOWN
+    if calendar is None or d.empty:
+        return d
+    status = [calendar.status(ts.date()) for ts in d.index]
+    keep = [s != NON_SESSION for s in status]
+    if audit is not None:
+        dropped = [ts.date().isoformat() for ts, s in zip(d.index, status) if s == NON_SESSION]
+        audit.non_session_rows_ignored += len(dropped)
+        for iso in dropped:
+            audit.non_session_dates[iso] = audit.non_session_dates.get(iso, 0) + 1
+        if dropped:
+            audit.symbols_with_non_session_rows += 1
+        audit.unknown_date_rows_kept += sum(1 for s in status if s == UNKNOWN)
+        if any(not calendar.covers(ts.date()) for ts in d.index):
+            audit.calendar_covered = False
+    return d[keep]
+
+
+def _prepare_series(full: pd.DataFrame, recap_date: dt.date, calendar=None,
+                    audit=None) -> pd.DataFrame:
+    """Provider frame -> the session-aligned frame every day-over-day/window calculation reads:
+    `_clean` (NaN-Close rows out, dates normalised, duplicates keep-last, in-progress session
+    out) -> `_truncate_to_recap` (no look-ahead) -> `_drop_non_sessions` (no placeholder can
+    become a "previous session"). The raw frame is untouched (OHLCV write-through keeps raw)."""
+    d = _truncate_to_recap(_clean(full), recap_date)
+    if audit is not None:
+        audit.provider_rows_seen += len(full)
+        audit.duplicate_rows_removed += int(
+            pd.to_datetime(full.index).normalize().duplicated().sum()) if len(full) else 0
+    d = _drop_non_sessions(d, calendar, audit)
+    if audit is not None:
+        audit.canonical_rows_used += len(d)
+    return d
 
 
 def retry(fn, tries=3, wait=4):
@@ -160,22 +229,395 @@ def _nifty_history_with_backfill_check(period: str = "1y", max_extra_attempts: i
     return d
 
 
+# ----------------------------------------------------------------------------- benchmark gap recovery
+# Second source for an INDEX bar the primary (Yahoo) feed is missing on a real session.
+# Verified 2026-09-25: every Yahoo Indian index feed lacks Tue 2026-09-22, a real NSE session, so
+# 23 Sep's one-session Nifty change could not be established and the run stopped. NSE's own
+# end-of-day index file (one CSV per session, every NSE index's OHLC + points change) carries it:
+# Nifty 50 22-Sep O 23454.05 H 23489 L 23285.75 C 23329.0, change -85.3 - and 23329.0 + 85.3 is
+# exactly Yahoo's 21-Sep close, which is what the continuity check below requires.
+# Static archive files, not the cookie-gated /api/ endpoints the `NSE` class needs.
+NSE_INDEX_ARCHIVE_URLS = (
+    "https://nsearchives.nseindia.com/content/indices/ind_close_all_{ddmmyyyy}.csv",
+    "https://archives.nseindia.com/content/indices/ind_close_all_{ddmmyyyy}.csv",
+)
+INDEX_FALLBACK_SOURCE = "NSE_INDEX_CLOSE_ARCHIVE"
+# Yahoo ticker -> NSE's index name (compared case-insensitively). Only these can be recovered.
+INDEX_ARCHIVE_NAMES = {"^NSEI": "NIFTY 50", "^NSEBANK": "NIFTY BANK"}
+# The implied previous close (close - NSE's own points change) must match the adjacent session's
+# close we already hold within this fraction - a wrong-day or wrong-index row can't pass it.
+RECOVERY_ANCHOR_TOLERANCE = 0.0005
+# NSE's index-level circuit breaker halts the market at 20%: nothing beyond is a real session move.
+RECOVERY_MAX_ABS_PCT = 20.0
+# Most-recent-first cap on archive fetches per series; older gaps stay gaps (recorded, not fatal).
+RECOVERY_MAX_FETCHES = 5
+
+_ARCHIVE_CACHE: dict = {}
+
+
+def nse_index_close_archive(session_date: dt.date) -> dict:
+    """NSE's end-of-day file for every index on `session_date` -> `{"rows": {NAME: row},
+    "url", "retrieved_at", "published_at"}`, or `{"error": ...}`. One fetch per date per process
+    (a run recovering Nifty, Bank Nifty and sectors for the same gap reuses it). Never raises."""
+    if session_date in _ARCHIVE_CACHE:
+        return _ARCHIVE_CACHE[session_date]
+    errors = []
+    out = None
+    for tmpl in NSE_INDEX_ARCHIVE_URLS:
+        url = tmpl.format(ddmmyyyy=session_date.strftime("%d%m%Y"))
+        try:
+            r = requests.get(url, headers=UA, timeout=20)
+            r.raise_for_status()
+            df = pd.read_csv(io.StringIO(r.text))
+            rows = {}
+            for rec in df.to_dict("records"):
+                name = str(rec.get("Index Name", "")).strip()
+                if name:
+                    rows[name.upper()] = rec
+            if not rows:
+                raise ValueError("no index rows")
+            out = {"rows": rows, "url": url,
+                   "retrieved_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                   "published_at": r.headers.get("Last-Modified")}
+            break
+        except Exception as exc:
+            errors.append(f"{url}: {type(exc).__name__}: {str(exc)[:120]}")
+    out = out or {"error": "; ".join(errors)}
+    _ARCHIVE_CACHE[session_date] = out
+    return out
+
+
+def _archive_float(rec: dict, key: str):
+    try:
+        v = float(str(rec.get(key, "")).replace(",", "").strip())
+        return None if np.isnan(v) else v
+    except (TypeError, ValueError):
+        return None
+
+
+def _recover_one(ticker: str, name: str, day: dt.date, anchor_date, anchor_close,
+                 fetch) -> dict:
+    """One gap -> a provenance record. `validation_status` is VALIDATED only when every check
+    passes; the row is used only then."""
+    rec = {"index": ticker, "archive_index_name": name, "session_date": day.isoformat(),
+           "source": INDEX_FALLBACK_SOURCE, "primary_source": "yahoo",
+           "fallback_reason": (f"PRIMARY_MISSING_CANONICAL_SESSION: the canonical NSE calendar "
+                               f"has a session on {day} and the primary {ticker} series has no "
+                               f"bar for it"),
+           "anchor_session": anchor_date.isoformat() if anchor_date else None,
+           "anchor_close": anchor_close}
+    archive = fetch(day)
+    rec["source_url"] = archive.get("url")
+    rec["retrieval_time"] = archive.get("retrieved_at")
+    rec["source_published_at"] = archive.get("published_at")
+    if "error" in archive:
+        rec["validation_status"] = "REJECTED_SOURCE_UNAVAILABLE"
+        rec["detail"] = archive["error"]
+        return rec
+    row = archive["rows"].get(name.upper())
+    if row is None:
+        rec["validation_status"] = "REJECTED_INDEX_NOT_IN_SOURCE"
+        return rec
+    try:
+        row_date = dt.datetime.strptime(str(row.get("Index Date", "")).strip(), "%d-%m-%Y").date()
+    except ValueError:
+        row_date = None
+    o, h, l, c = (_archive_float(row, k) for k in ("Open Index Value", "High Index Value",
+                                                    "Low Index Value", "Closing Index Value"))
+    chg, chg_pct = _archive_float(row, "Points Change"), _archive_float(row, "Change(%)")
+    rec["values"] = {"open": o, "high": h, "low": l, "close": c,
+                     "points_change": chg, "change_pct": chg_pct}
+    if row_date != day:
+        rec["validation_status"] = "REJECTED_DATE_MISMATCH"
+        rec["detail"] = f"source row is dated {row_date}"
+        return rec
+    if None in (o, h, l, c) or min(o, h, l, c) <= 0 or l > min(o, c) or h < max(o, c):
+        rec["validation_status"] = "REJECTED_INVALID_OHLC"
+        return rec
+    if chg is None or anchor_close is None:
+        # Without an adjacent close to tie it to, a plausible wrong number would pass.
+        rec["validation_status"] = "REJECTED_NO_CONTINUITY_ANCHOR"
+        return rec
+    implied_prev = c - chg
+    anchor_diff = abs(implied_prev / anchor_close - 1)
+    pct = (c / anchor_close - 1) * 100
+    rec["checks"] = {"implied_previous_close": round(implied_prev, 4),
+                     "anchor_relative_diff": round(anchor_diff, 7),
+                     "anchor_tolerance": RECOVERY_ANCHOR_TOLERANCE,
+                     "pct_vs_anchor": round(pct, 4),
+                     "source_change_pct": chg_pct}
+    if anchor_diff > RECOVERY_ANCHOR_TOLERANCE:
+        rec["validation_status"] = "REJECTED_CONTINUITY_MISMATCH"
+        return rec
+    if abs(pct) >= RECOVERY_MAX_ABS_PCT or (chg_pct is not None and abs(chg_pct - pct) > 0.01):
+        rec["validation_status"] = "REJECTED_CHANGE_INCONSISTENT"
+        return rec
+    rec["validation_status"] = "VALIDATED"
+    return rec
+
+
+def recover_index_gaps(d: pd.DataFrame, ticker: str, calendar=None, *, fetch=None,
+                       name: str | None = None,
+                       max_fetches: int = RECOVERY_MAX_FETCHES) -> tuple:
+    """Fill a primary index series' missing CANONICAL sessions from NSE's end-of-day index file.
+
+    Used only when all three hold: the canonical calendar (`core.trading_calendar`, built from
+    NSE's holiday list) says the session existed, the primary series has no bar for it, and the
+    fallback row passes validation. Validation: the source row's own date equals the session,
+    the OHLC is internally consistent, and the row is anchored - its implied previous close
+    (close - NSE's points change) matches the adjacent canonical session's close already held
+    (primary, or an earlier recovered row) within `RECOVERY_ANCHOR_TOLERANCE`, and the stated %
+    change agrees with it. Never infers a close from constituents, never interpolates, and never
+    extends the series past the primary's own last bar (the recap session stays the primary's).
+    Only gaps strictly inside the series' range are candidates; volume stays NaN (NSE's index
+    volume is a different unit from Yahoo's). A rejected or unattempted gap stays a gap - the
+    session-level check downstream then stops the run if that gap is the previous session.
+
+    Returns `(frame, records)`; `records` is one provenance dict per gap (source, session_date,
+    retrieval_time, validation_status, fallback_reason, ...), empty when nothing was missing.
+    """
+    from core.trading_calendar import as_date
+    name = name or INDEX_ARCHIVE_NAMES.get(ticker)
+    if d is None or d.empty or name is None:
+        return d, []
+    calendar = calendar or session_calendar([ts.date() for ts in d.index])
+    have = {ts.date() for ts in d.index}
+    first, last = min(have), max(have)
+    gaps = [g for g in calendar.sessions_between(first, last)
+            if g not in have and calendar.covers(g)]
+    if not gaps:
+        return d, []
+    fetch = fetch or nse_index_close_archive
+    closes = {ts.date(): float(v) for ts, v in d.Close.items()}
+    records, new_rows = [], {}
+    attempted = sorted(gaps)[-max_fetches:]
+    for g in sorted(gaps):
+        if g not in attempted:
+            records.append({"index": ticker, "session_date": g.isoformat(),
+                            "source": INDEX_FALLBACK_SOURCE,
+                            "validation_status": "NOT_ATTEMPTED_FETCH_CAP",
+                            "fallback_reason": "older than the most recent "
+                                               f"{max_fetches} gaps", "retrieval_time": None})
+            continue
+        prev = calendar.previous_session(g)
+        anchor = closes.get(prev) if prev else None
+        rec = _recover_one(ticker, name, as_date(g), prev, anchor, fetch)
+        records.append(rec)
+        if rec["validation_status"] == "VALIDATED":
+            v = rec["values"]
+            closes[g] = v["close"]
+            new_rows[pd.Timestamp(g)] = {"Open": v["open"], "High": v["high"], "Low": v["low"],
+                                         "Close": v["close"], "Volume": np.nan}
+    for rec in records:
+        print(f"[market] {ticker} {rec['session_date']} missing from primary -> "
+              f"{rec['source']}: {rec['validation_status']}")
+    if not new_rows:
+        return d, records
+    add = pd.DataFrame.from_dict(new_rows, orient="index")
+    add = add[[c for c in d.columns if c in add.columns]]
+    out = pd.concat([d, add]).sort_index(kind="stable")
+    return out, records
+
+
+# Recap-session recovery (POST final edge-case patch). `recover_index_gaps` never extends a
+# series past its own last bar, so when Yahoo lacks the RECAP session itself (verified: every
+# Yahoo Indian index feed has no 2026-09-22 bar, so the 23 Sep 07:40 run could only see 21 Sep
+# and skipped 22 Sep entirely) nothing could publish it. The same NSE end-of-day file, under the
+# same validation, may now supply the latest completed canonical session(s) after the primary's
+# last bar. Extra gates, all required: the calendar covers and calls the date a session; the
+# session is FINAL (`SESSION_FINAL_TIME` passed on its own date, or an earlier date) - never an
+# intraday value; the row anchors to the previous canonical close we already hold; chained
+# oldest-first and stopping at the first failure. More than this many trailing sessions missing
+# means the primary is broken, not lagging - nothing is filled and the run must stop.
+RECAP_RECOVERY_MAX_SESSIONS = 2
+RECAP_FALLBACK_ROLE = "RECAP_SESSION"
+
+
+def recover_recap_session(d: pd.DataFrame, ticker: str, calendar=None, *, now=None, fetch=None,
+                          name: str | None = None, until: dt.date | None = None,
+                          max_sessions: int = RECAP_RECOVERY_MAX_SESSIONS) -> tuple:
+    """Fill the primary's MISSING TRAILING canonical sessions - the recap day itself - from NSE's
+    official end-of-day index file, only after the session is final.
+
+    Candidates: canonical sessions after the primary's last bar up to `until` (default: today),
+    each of which the calendar covers (NSE holiday list) and calls a SESSION, and whose close is
+    FINAL. A session still in progress (`session_in_progress`) is not a candidate at all - it is
+    not missing, its end-of-day value does not exist yet - so it is never fetched, never used and
+    never recorded (a morning run would otherwise log today's session as "missing" every day). Each fetched row passes `_recover_one`'s full
+    validation (source date = session, sane OHLC, implied previous close within
+    `RECOVERY_ANCHOR_TOLERANCE` of the previous canonical close we hold, stated % agrees).
+    Never interpolates, never infers from constituents, volume stays NaN.
+
+    Returns `(frame, records)`; each record carries `role: RECAP_SESSION` plus the finality check.
+    An unrecovered recap stays missing: the caller must then refuse to publish that session."""
+    from core.trading_calendar import as_date
+    name = name or INDEX_ARCHIVE_NAMES.get(ticker)
+    if d is None or d.empty or name is None:
+        return d, []
+    now = now or now_ist()
+    calendar = calendar or session_calendar([ts.date() for ts in d.index])
+    last = max(ts.date() for ts in d.index)
+    end = min(as_date(until), now.date()) if until else now.date()
+    if end <= last:
+        return d, []
+    candidates = [s_ for s_ in calendar.sessions_between(last + dt.timedelta(days=1), end)
+                  if calendar.covers(s_)]
+    if not candidates:
+        return d, []
+
+    final_check = {"now_ist": now.isoformat(),
+                   "session_final_time": SESSION_FINAL_TIME.isoformat(), "final": True}
+    # never intraday: a session whose close is not final yet is not a candidate
+    final = [c for c in candidates if not session_in_progress(c, now) and c <= now.date()]
+    if not final:
+        return d, []
+    if len(final) > max_sessions:
+        records = [{"index": ticker, "archive_index_name": name, "session_date": c.isoformat(),
+                    "source": INDEX_FALLBACK_SOURCE, "primary_source": "yahoo",
+                    "role": RECAP_FALLBACK_ROLE, "validation_status": "NOT_ATTEMPTED_PRIMARY_STALE",
+                    "fallback_reason": f"primary {ticker} is missing {len(final)} trailing "
+                                       f"sessions (limit {max_sessions}) - a broken feed, not a "
+                                       "lag; nothing filled",
+                    "retrieval_time": None, "session_final_check": dict(final_check)}
+                   for c in final]
+        for rec in records:
+            print(f"[market] {ticker} {rec['session_date']} recap fallback: "
+                  f"{rec['validation_status']}")
+        return d, records
+    fetch = fetch or nse_index_close_archive
+    closes = {ts.date(): float(v) for ts, v in d.Close.items()}
+    new_rows, out_recs = {}, []
+    for day in final:
+        prev = calendar.previous_session(day)
+        rec = _recover_one(ticker, name, as_date(day), prev, closes.get(prev) if prev else None,
+                           fetch)
+        rec["role"] = RECAP_FALLBACK_ROLE
+        rec["fallback_reason"] = (f"PRIMARY_MISSING_RECAP_SESSION: the canonical NSE calendar has "
+                                  f"a completed session on {day} and the primary {ticker} series "
+                                  f"ends at {last}")
+        rec["session_final_check"] = dict(final_check)
+        out_recs.append(rec)
+        if rec["validation_status"] != "VALIDATED":
+            break                               # a later session could not be anchored anyway
+        v = rec["values"]
+        closes[day] = v["close"]
+        new_rows[pd.Timestamp(day)] = {"Open": v["open"], "High": v["high"], "Low": v["low"],
+                                       "Close": v["close"], "Volume": np.nan}
+    records = out_recs
+    for rec in records:
+        print(f"[market] {ticker} {rec['session_date']} recap session missing from primary -> "
+              f"{rec['source']}: {rec['validation_status']}")
+    if not new_rows:
+        return d, records
+    add = pd.DataFrame.from_dict(new_rows, orient="index")
+    add = add[[c for c in d.columns if c in add.columns]]
+    return pd.concat([d, add]).sort_index(kind="stable"), records
+
+
+def check_index_session_alignment(index_dates, calendar=None, recovery=None) -> dict:
+    """Session-level check on the benchmark index's own series: its last two bars must be the
+    recap session and that session's CANONICAL previous session.
+
+    Raises `SessionAlignmentError` when the index skips a canonical session between them -
+    verified 2026-09-25: every Yahoo Indian index series (^NSEI, ^NSEBANK, ^CNXIT, ^BSESN,
+    ^INDIAVIX) has no bar for Tue 2026-09-22, a real NSE session (not on NSE's holiday list;
+    every stock traded). `analyze()` would then report 21 Sep -> 23 Sep, a two-session change,
+    as the 23 Sep day's move. That is a wrong headline number, not a symbol problem, so it stops
+    the run rather than degrading. A later run (after Yahoo backfills) or a second index source
+    is the recovery, never a relabelled multi-session change.
+
+    `recovery` (benchmark gap recovery, `recover_index_gaps`): the provenance records for any
+    canonical session the primary lacked. `index_dates` then already include VALIDATED recovered
+    sessions; a previous session supplied that way is reported as ALIGNED_WITH_FALLBACK, and a
+    rejected fallback is named in the error so the stop is explained."""
+    from core.trading_calendar import as_date
+    recovery = list(recovery or [])
+    dates = sorted({as_date(d) for d in index_dates})
+    calendar = calendar or session_calendar(dates)
+    recap = dates[-1]
+    canonical_prev = calendar.previous_session(recap)
+    index_prev = dates[-2] if len(dates) >= 2 else None
+    info = {"recap_date": recap.isoformat(),
+            "canonical_previous_session": canonical_prev.isoformat() if canonical_prev else None,
+            "index_previous_bar": index_prev.isoformat() if index_prev else None,
+            "calendar_covered": calendar.covers(recap),
+            "benchmark_missing_sessions": [d.isoformat() for d in calendar.benchmark_gaps()],
+            "benchmark_bars_on_listed_holidays":
+                [d.isoformat() for d in calendar.benchmark_bars_on_listed_holidays()],
+            "benchmark_recovered_sessions": [r["session_date"] for r in recovery
+                                             if r.get("validation_status") == "VALIDATED"],
+            "benchmark_recovery": recovery}
+    if canonical_prev is None:
+        info["status"] = "PREVIOUS_SESSION_UNKNOWN"
+        raise SessionAlignmentError(f"cannot establish the canonical previous session for "
+                                    f"{recap}: {info}")
+    if index_prev != canonical_prev:
+        info["status"] = "BENCHMARK_MISSING_PREVIOUS_SESSION"
+        tried = [r for r in recovery if r.get("session_date") == canonical_prev.isoformat()]
+        fallback = (f"; fallback {tried[0].get('source')}: {tried[0].get('validation_status')}"
+                    if tried else "; no fallback attempted")
+        raise SessionAlignmentError(
+            f"benchmark index has no bar for canonical session {canonical_prev} (its previous "
+            f"bar is {index_prev}){fallback}; the {recap} one-session index change cannot be "
+            f"established - not publishing a multi-session change as a daily move")
+    recovered = set(info["benchmark_recovered_sessions"])
+    info["status"] = ("ALIGNED_WITH_FALLBACK"
+                      if {canonical_prev.isoformat(), recap.isoformat()} & recovered
+                      else "ALIGNED")
+    info["previous_close_source"] = (INDEX_FALLBACK_SOURCE
+                                     if canonical_prev.isoformat() in recovered else "yahoo")
+    # The recap session's own close: primary, or NSE's official EOD file (recap-session recovery).
+    info["recap_close_source"] = (INDEX_FALLBACK_SOURCE if recap.isoformat() in recovered
+                                  else "yahoo")
+    return info
+
+
 def get_market() -> dict:
     nifty = _nifty_history_with_backfill_check("1y")
     if len(nifty) < 60:
         raise RuntimeError("Not enough Nifty history returned")
+    calendar = session_calendar([ts.date() for ts in nifty.index])
+    nifty = _drop_non_sessions(nifty, calendar)
+    # A real session the primary lacks -> NSE's own end-of-day index file, validated, with
+    # provenance (never interpolated, never inferred from stocks). Unrecovered = still a gap.
+    nifty, recovery = recover_index_gaps(nifty, "^NSEI", calendar)
+    # The recap session itself missing from the primary -> the same official EOD file, only once
+    # that session is final. Unrecovered = the benchmark still ends earlier; `main.collect`
+    # then refuses to publish a real session it cannot establish.
+    nifty, recap_recovery = recover_recap_session(nifty, "^NSEI", calendar)
+    alignment = check_index_session_alignment([ts.date() for ts in nifty.index], calendar,
+                                              recovery=recovery + recap_recovery)
+    recap = nifty.index[-1].date()
     bank_pct = vix = None
+    bank_close_source = "yahoo"
     try:
-        b = history("^NSEBANK", "1mo")
+        b = _drop_non_sessions(history("^NSEBANK", "1mo"), calendar)
+        b, bank_recovery = recover_index_gaps(b, "^NSEBANK", calendar)
+        b, bank_recap = recover_recap_session(b, "^NSEBANK", calendar, until=recap)
+        alignment["index_recovery"] = bank_recovery + bank_recap
         if b.index[-1] == nifty.index[-1] and b.index[-2] == nifty.index[-2]:
             bank_pct = float((b.Close.iloc[-1] / b.Close.iloc[-2] - 1) * 100)
+            if any(r["validation_status"] == "VALIDATED" and r["session_date"] == recap.isoformat()
+                   for r in bank_recap):
+                bank_close_source = INDEX_FALLBACK_SOURCE
     except Exception as e:
         print(f"[market] Bank Nifty failed: {e}")
     try:
-        vix = float(history("^INDIAVIX", "1mo").Close.iloc[-1])
+        # Dated like every other reading: a VIX bar from an earlier session is not this one's.
+        v = _drop_non_sessions(history("^INDIAVIX", "1mo"), calendar)
+        if v.index[-1].date() == recap:
+            vix = float(v.Close.iloc[-1])
+        else:
+            print(f"[market] VIX dropped: latest bar {v.index[-1].date()} != recap {recap}")
     except Exception as e:
         print(f"[market] VIX failed: {e}")
-    return analyze(nifty, bank_pct, vix)
+    m = analyze(nifty, bank_pct, vix)
+    m["session_dates"] = tuple(ts.date() for ts in nifty.index)
+    m["session_alignment"] = alignment
+    m["prev_source"] = alignment["previous_close_source"]
+    m["close_source"] = alignment["recap_close_source"]
+    m["bank_close_source"] = bank_close_source
+    return m
 
 
 # Relative volume, defined explicitly because "2.4x average volume" is meaningless without
@@ -212,7 +654,17 @@ def relative_volume(volumes, lookback: int = RELATIVE_VOLUME_LOOKBACK):
     return float(current) / mean_prior
 
 
-def get_movers(universe: dict, recap_date: dt.date, prev_date: dt.date, n: int = 5):
+def get_movers(universe: dict, recap_date: dt.date, prev_date: dt.date, n: int = 5,
+               session_dates=None):
+    """Top-n gainers and losers. See `get_movers_audited` for the rules; this keeps the
+    original two-value return for existing callers."""
+    gainers, losers, _ = get_movers_audited(universe, recap_date, prev_date, n,
+                                            session_dates=session_dates)
+    return gainers, losers
+
+
+def get_movers_audited(universe: dict, recap_date: dt.date, prev_date: dt.date, n: int = 5,
+                       session_dates=None):
     """prev_date: the actual previous trading session, from the Nifty index's own calendar -
     every mover's day-over-day % is only trusted if ITS previous close lands on that same date.
     yfinance can silently drop a day for a specific stock (verified 2026-09-18: ADANIGREEN's
@@ -229,9 +681,29 @@ def get_movers(universe: dict, recap_date: dt.date, prev_date: dt.date, n: int =
     row with no Close, but this signature (recap_date's row exists pre-dropna, just with a
     NaN Close) is a backfill lag, not missing data, so it gets a few retries with a wait
     before giving up - a plain re-request, not `retry()`, since the fetch itself didn't
-    raise anything."""
+    raise anything.
+
+    POST freeze: returns `(gainers, losers, audit)`. Every clean row goes through
+    `core.move_guard.validate_move`; only publishable moves are ranked, and a held move stays in
+    `audit["excluded"]` with its raw values (never deleted). `audit` also records the universe
+    coverage the ranking rests on - universe_expected, universe_observed (clean, date-aligned
+    rows), universe_validated (those that passed the guard) and coverage_pct =
+    validated / expected - so the editorial layer can refuse to publish a ranking built on a
+    partial universe.
+
+    Session alignment (data-reliability patch): every symbol's frame goes through
+    `_prepare_series`, which drops provider rows on dates the canonical NSE calendar calls
+    non-sessions BEFORE the `[-2] == prev_date` check - a holiday placeholder can never be a
+    previous close, and can never make a real stock look date-gapped (2026-09-15 aborted with
+    ~0 clean rows because ~198 stocks carried a 2026-09-14 placeholder). `session_dates` is the
+    benchmark index's own bar dates (`m["session_dates"]`), extra session evidence on top of
+    NSE's holiday list. The move guard runs AFTER alignment, on aligned closes. A symbol that
+    raises while its row is built is excluded (`audit["symbols_excluded"]`), never fatal."""
     import yfinance as yf
+    from core.move_guard import validate_move
+    from core.trading_calendar import AlignmentAudit
     syms = list(universe)
+    calendar = session_calendar(session_dates)
 
     def _fetch():
         # 3mo rather than 1mo: relative volume needs 20 prior sessions plus the current one,
@@ -241,18 +713,21 @@ def get_movers(universe: dict, recap_date: dt.date, prev_date: dt.date, n: int =
                            auto_adjust=False, progress=False, threads=True)
 
     raw = retry(_fetch)
-    rows, skipped_gap, pending_backfill = [], [], []
+    rows, skipped_gap, pending_backfill, malformed = [], [], [], []
+    align = AlignmentAudit()
     for attempt in range(3):
-        rows, skipped_gap, pending_backfill = [], [], []
+        rows, skipped_gap, pending_backfill, malformed = [], [], [], []
+        align = AlignmentAudit()
         for s in syms:
             try:
                 full = raw[s + ".NS"][["Open", "High", "Low", "Close", "Volume"]]
             except Exception:
                 continue
-            has_recap_row = recap_date in {ts.date() for ts in _normalize_index(full).index}
             try:
-                d = _truncate_to_recap(_clean(full), recap_date)
+                has_recap_row = recap_date in {ts.date() for ts in _normalize_index(full).index}
+                d = _prepare_series(full, recap_date, calendar, align)
             except Exception:
+                malformed.append(s)
                 continue
             if len(d) < 3 or d.index[-1].date() != recap_date:
                 if has_recap_row:
@@ -261,10 +736,17 @@ def get_movers(universe: dict, recap_date: dt.date, prev_date: dt.date, n: int =
             if d.index[-2].date() != prev_date:
                 skipped_gap.append(s)
                 continue
-            c, v = d.Close, d.Volume
-            rows.append({"symbol": s, "name": universe[s], "close": float(c.iloc[-1]),
-                         "pct": float((c.iloc[-1] / c.iloc[-2] - 1) * 100),
-                         "volx": relative_volume(v)})
+            try:
+                c, v = d.Close, d.Volume
+                last = d.iloc[-1]
+                rows.append({"symbol": s, "name": universe[s], "close": float(c.iloc[-1]),
+                             "pct": float((c.iloc[-1] / c.iloc[-2] - 1) * 100),
+                             "volx": relative_volume(v),
+                             "open": float(last.Open), "high": float(last.High),
+                             "low": float(last.Low), "prev_close": float(c.iloc[-2]),
+                             "prev_date": d.index[-2].date().isoformat()})
+            except Exception:
+                malformed.append(s)
         if len(rows) >= 2 * n or not pending_backfill or attempt == 2:
             break
         wait = 30 * (attempt + 1)
@@ -272,12 +754,51 @@ def get_movers(universe: dict, recap_date: dt.date, prev_date: dt.date, n: int =
               f"backfilled by Yahoo - retrying in {wait}s (attempt {attempt + 1}/3)")
         time.sleep(wait)
         raw = _fetch()
+    if align.non_session_rows_ignored:
+        print(f"[market] session alignment ignored {align.non_session_rows_ignored} provider "
+              f"row(s) on non-session dates {align.non_session_dates}")
     if skipped_gap:
         print(f"[market] dropped {len(skipped_gap)} stocks with a data gap vs {prev_date}: {skipped_gap}")
+    if malformed:
+        print(f"[market] excluded {len(malformed)} malformed stock series: {malformed}")
     if len(rows) < 2 * n:
         raise RuntimeError(f"Only {len(rows)} stocks had clean data for {recap_date}")
-    df = pd.DataFrame(rows).sort_values("pct", ascending=False)
-    return df.head(n).to_dict("records"), df.tail(n).iloc[::-1].to_dict("records")
+    valid, excluded = [], []
+    for r in rows:
+        verdict = validate_move(close=r["close"], prev_close=r["prev_close"], open_=r["open"],
+                                high=r["high"], low=r["low"], change_pct=r["pct"],
+                                relative_volume=r["volx"], prev_date=r["prev_date"],
+                                expected_prev_date=prev_date).to_dict()
+        r["validation"] = verdict
+        (valid if verdict["publishable"] else excluded).append(r)
+    if excluded:
+        print(f"[market] move guard held {len(excluded)} stocks: "
+              f"{[(r['symbol'], round(r['pct'], 2), r['validation']['status']) for r in excluded]}")
+    expected = len(syms)
+    audit = {"universe_expected": expected, "universe_observed": len(rows),
+             "universe_validated": len(valid),
+             "coverage_pct": round(100.0 * len(valid) / expected, 2) if expected else 0.0,
+             "missing": sorted(set(syms) - {r["symbol"] for r in rows}),
+             "skipped_date_gap": sorted(skipped_gap),
+             "excluded": [dict(r) for r in excluded],
+             "session_date": recap_date.isoformat(), "previous_session_date": prev_date.isoformat(),
+             "coverage_basis": "validated / expected",
+             "symbols_excluded": {"date_gap": sorted(skipped_gap), "malformed": sorted(malformed),
+                                  "backfill_pending": sorted(pending_backfill)},
+             "session_alignment": {**align.to_dict(),
+                                   "status": _alignment_status(align, skipped_gap, malformed)}}
+    if not valid:
+        return [], [], audit
+    df = pd.DataFrame(valid).sort_values("pct", ascending=False)
+    return df.head(n).to_dict("records"), df.tail(n).iloc[::-1].to_dict("records"), audit
+
+
+def _alignment_status(align, skipped_gap, malformed) -> str:
+    if not align.calendar_covered:
+        return "ALIGNED_INDEX_SPINE_FALLBACK"
+    if align.non_session_rows_ignored or skipped_gap or malformed:
+        return "ALIGNED_WITH_EXCLUSIONS"
+    return "ALIGNED"
 
 
 def _bulk_download_universe_ohlcv(symbols: list, period: str = "3mo") -> pd.DataFrame:
@@ -297,7 +818,7 @@ def _bulk_download_universe_ohlcv(symbols: list, period: str = "3mo") -> pd.Data
 
 
 def get_universe_relative_volume(universe: dict, recap_date: dt.date, prev_date: dt.date,
-                                 period: str = "3mo"):
+                                 period: str = "3mo", session_dates=None, audit=None):
     """Relative volume (the SAME `relative_volume()` formula `get_movers` uses, never a
     second one) for every symbol in `universe` - not just the top gainers/losers.
 
@@ -315,6 +836,7 @@ def get_universe_relative_volume(universe: dict, recap_date: dt.date, prev_date:
                              "insufficient_relative_volume_history"}
     """
     syms = list(universe)
+    calendar = session_calendar(session_dates)
     raw = _bulk_download_universe_ohlcv(syms, period=period)
 
     rows, skip_reasons, pending_backfill = [], {}, []
@@ -328,7 +850,10 @@ def get_universe_relative_volume(universe: dict, recap_date: dt.date, prev_date:
                 continue
             has_recap_row = recap_date in {ts.date() for ts in _normalize_index(full).index}
             try:
-                d = _truncate_to_recap(_clean(full), recap_date)
+                # Non-session provider rows out BEFORE the [-2] == prev_date check and before
+                # any window (RVOL's prior 20, SMA/range) counts sessions.
+                d = _prepare_series(full, recap_date, calendar,
+                                    audit if attempt == 0 else None)
             except Exception:
                 skip_reasons[s] = "no_recap_row"
                 continue
@@ -365,7 +890,7 @@ MIN_TECHNICAL_SESSIONS = 21
 
 
 def get_universe_technical_series(universe: dict, recap_date: dt.date, prev_date: dt.date,
-                                  period: str = "1y"):
+                                  period: str = "1y", session_dates=None, audit=None):
     """Per-symbol OHLC session history for the Market Intelligence Radar's technical-structure
     detector (Phase 4.2 Packet 2) - close/high/low across the whole bulk-fetched window, not
     just today's row.
@@ -391,6 +916,7 @@ def get_universe_technical_series(universe: dict, recap_date: dt.date, prev_date
                     for the 20-session detector, the shortest one this package implements.
     """
     syms = list(universe)
+    calendar = session_calendar(session_dates)
     raw = _bulk_download_universe_ohlcv(syms, period=period)
 
     series, skip_reasons, pending_backfill = {}, {}, []
@@ -404,7 +930,10 @@ def get_universe_technical_series(universe: dict, recap_date: dt.date, prev_date
                 continue
             has_recap_row = recap_date in {ts.date() for ts in _normalize_index(full).index}
             try:
-                d = _truncate_to_recap(_clean(full), recap_date)
+                # Non-session provider rows out BEFORE the [-2] == prev_date check and before
+                # any window (RVOL's prior 20, SMA/range) counts sessions.
+                d = _prepare_series(full, recap_date, calendar,
+                                    audit if attempt == 0 else None)
             except Exception:
                 skip_reasons[s] = "no_recap_row"
                 continue
@@ -465,6 +994,12 @@ def _write_through_ohlcv(raw, syms: list, recap_date: dt.date, source: str = "ya
         return
 
     retrieved_at = dt.datetime.now(dt.timezone.utc)
+    # `_clean`'s rule, applied to the cache too: a session still trading is never persisted as a
+    # finished OK bar. Verified 2026-09-25: a 11:44 IST run stored 200 intraday 25 Sep bars as
+    # OK (RELIANCE 1221.0 / 6.4M vs the real close 1226.0 / 13.1M), which the next run's
+    # warm-cache read would have treated as that session's final closes.
+    now = now_ist()
+    in_progress = now.date() if session_in_progress(now.date(), now) else None
     bars = []
     for s in syms:
         try:
@@ -478,6 +1013,8 @@ def _write_through_ohlcv(raw, syms: list, recap_date: dt.date, source: str = "ya
                                  retrieved_at=retrieved_at, quality_status=QualityStatus.NO_DATA))
             continue
         for ts, r in _normalize_index(full).iterrows():
+            if ts.date() == in_progress:
+                continue
             close = None if pd.isna(r.Close) else float(r.Close)
             open_ = None if pd.isna(r.Open) else float(r.Open)
             high = None if pd.isna(r.High) else float(r.High)
@@ -682,18 +1219,33 @@ SECTORS = [("Bank", "NIFTY BANK", "^NSEBANK"), ("IT", "NIFTY IT", "^CNXIT"),
            ("Realty", "NIFTY REALTY", "^CNXREALTY"), ("Energy", "NIFTY ENERGY", "^CNXENERGY"),
            ("PSU Bank", "NIFTY PSU BANK", "^CNXPSUBANK"), ("Fin Serv", "NIFTY FINANCIAL SERVICES", "NIFTY_FIN_SERVICE.NS"),
            ("Media", "NIFTY MEDIA", "^CNXMEDIA"), ("Infra", "NIFTY INFRASTRUCTURE", "^CNXINFRA")]
+# Sector indices can be gap-recovered from the same NSE end-of-day file as the benchmark.
+INDEX_ARCHIVE_NAMES.update({yt: nse_name for _label, nse_name, yt in SECTORS})
 
 
-def get_sectors(recap_date, prev_date, nse_idx: dict) -> list:
+def get_sectors(recap_date, prev_date, nse_idx: dict, session_dates=None,
+                recovery_log: list | None = None) -> list:
     """prev_date: same-calendar guard as get_movers() - a sector index with the same yfinance
-    day-gap issue would otherwise silently report a multi-day move as if it were one day."""
+    day-gap issue would otherwise silently report a multi-day move as if it were one day.
+    Rows on canonical non-session dates are dropped before that check (session alignment).
+    A canonical session the Yahoo sector series lacks is recovered from NSE's end-of-day index
+    file (`recover_index_gaps`); its provenance records are appended to `recovery_log`, and a
+    sector whose previous close came from it says so in `prev_close_source`."""
+    calendar = session_calendar(session_dates)
     out = []
     for label, nse_name, yt in SECTORS:
         if nse_name in nse_idx:
             out.append({"name": label, "pct": nse_idx[nse_name]["pct"]})
             continue
         try:
-            d = history(yt, "1mo")
+            d = _drop_non_sessions(history(yt, "1mo"), calendar)
+            d, recovered = recover_index_gaps(d, yt, calendar)
+            d, recap_rec = recover_recap_session(d, yt, calendar, until=recap_date)
+            recovered = recovered + recap_rec
+            if recovery_log is not None:
+                recovery_log.extend(recovered)
+            fallback_prev = any(r["validation_status"] == "VALIDATED"
+                                and r["session_date"] == prev_date.isoformat() for r in recovered)
             if len(d) < 2:
                 # A confirmed real failure mode for some NSE sector-index tickers on Yahoo:
                 # `.history()` returns exactly one row (a live/current spot quote) regardless
@@ -703,7 +1255,13 @@ def get_sectors(recap_date, prev_date, nse_idx: dict) -> list:
                 print(f"[market] sector {label} dropped: yfinance {yt} returned only "
                       f"{len(d)} daily bar(s) (last={last}), no usable day-over-day history")
             elif d.index[-1].date() == recap_date and d.index[-2].date() == prev_date:
-                out.append({"name": label, "pct": float((d.Close.iloc[-1] / d.Close.iloc[-2] - 1) * 100)})
+                row = {"name": label, "pct": float((d.Close.iloc[-1] / d.Close.iloc[-2] - 1) * 100)}
+                if fallback_prev:
+                    row["prev_close_source"] = INDEX_FALLBACK_SOURCE
+                if any(r["validation_status"] == "VALIDATED" and r["session_date"] ==
+                       recap_date.isoformat() for r in recap_rec):
+                    row["close_source"] = INDEX_FALLBACK_SOURCE
+                out.append(row)
             elif d.index[-1].date() == recap_date:
                 print(f"[market] sector {label} dropped: prev-close date {d.index[-2].date()} != {prev_date}")
             else:

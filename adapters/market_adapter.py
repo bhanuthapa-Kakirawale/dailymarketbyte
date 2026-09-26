@@ -18,6 +18,8 @@ from core.models import (UNIT_INR, UNIT_INR_CRORE, UNIT_PERCENT, UNIT_POINTS, UN
 # Source names are stable identifiers, not display strings. Keep them lowercase and terse.
 SRC_YAHOO = "yahoo_finance"
 SRC_NSE = "nse_website"
+SRC_NSE_ARCHIVE = "nse_index_close_archive"
+FALLBACK_SOURCE_TAG = "NSE_INDEX_CLOSE_ARCHIVE"     # market.INDEX_FALLBACK_SOURCE
 SRC_DEMO = "demo_fixture"
 
 # Which global tiles market.get_globals() produces, and how to classify each.
@@ -96,15 +98,32 @@ class MarketAdapter:
 
     # ------------------------------------------------------------------ index
     def observe_nifty(self, m: dict) -> list[Observation]:
-        """Yahoo's view of the session: the numbers the video actually displays."""
+        """The benchmark's view of the session: the numbers the video actually displays.
+
+        Normally Yahoo's. When Yahoo lacked the recap session and NSE's official end-of-day
+        index file supplied it (`market.recover_recap_session`, `m["close_source"]`), the close
+        and the change built on it are NSE's - said here, where the number is observed."""
+        from_archive = m.get("close_source") == FALLBACK_SOURCE_TAG
+        src, kind = ((SRC_NSE_ARCHIVE, SourceType.PRIMARY) if from_archive
+                     else (SRC_YAHOO, SourceType.SECONDARY))
+        recap_meta = ({"close_source": FALLBACK_SOURCE_TAG,
+                       "fallback_reason": "PRIMARY_MISSING_RECAP_SESSION"} if from_archive else {})
+        bank_archive = m.get("bank_close_source") == FALLBACK_SOURCE_TAG
         out = [
             self._obs(Metric.INDEX_CLOSE, "NIFTY 50", m.get("close"), UNIT_POINTS,
-                      SRC_YAHOO, SourceType.SECONDARY, ticker="^NSEI"),
+                      src, kind, ticker="^NSEI", **recap_meta),
             self._obs(Metric.INDEX_CHANGE_PCT, "NIFTY 50", m.get("pct"), UNIT_PERCENT,
-                      SRC_YAHOO, SourceType.SECONDARY, ticker="^NSEI",
-                      previous_close=m.get("prev"), change_points=m.get("chg")),
+                      src, kind, ticker="^NSEI", **recap_meta,
+                      previous_close=m.get("prev"), change_points=m.get("chg"),
+                      # Benchmark gap recovery: the previous close came from NSE's end-of-day
+                      # index file, not Yahoo - said here, where the number is observed.
+                      **({"previous_close_source": m["prev_source"],
+                          "previous_session_date": str(m.get("prev_date"))}
+                         if m.get("prev_source") not in (None, "yahoo") else {})),
             self._obs(Metric.INDEX_CHANGE_PCT, "BANK NIFTY", m.get("bank_pct"), UNIT_PERCENT,
-                      SRC_YAHOO, SourceType.SECONDARY, ticker="^NSEBANK"),
+                      *((SRC_NSE_ARCHIVE, SourceType.PRIMARY) if bank_archive
+                        else (SRC_YAHOO, SourceType.SECONDARY)), ticker="^NSEBANK",
+                      **({"close_source": FALLBACK_SOURCE_TAG} if bank_archive else {})),
             self._obs(Metric.VOLATILITY_INDEX, "INDIA VIX", m.get("vix"), UNIT_POINTS,
                       SRC_YAHOO, SourceType.SECONDARY, ticker="^INDIAVIX"),
         ]
@@ -177,10 +196,16 @@ class MarketAdapter:
         for row in sectors or []:
             label = row.get("name")
             from_nse = self._sector_nse.get(label) in nse_idx
+            from_archive = row.get("close_source") == FALLBACK_SOURCE_TAG
             source, kind = ((SRC_NSE, SourceType.PRIMARY) if from_nse
+                            else (SRC_NSE_ARCHIVE, SourceType.PRIMARY) if from_archive
                             else (SRC_YAHOO, SourceType.SECONDARY))
+            extra = ({"previous_close_source": row["prev_close_source"]}
+                     if row.get("prev_close_source") else {})
+            if from_archive:
+                extra["close_source"] = FALLBACK_SOURCE_TAG
             out.append(self._obs(Metric.SECTOR_CHANGE_PCT, label, row.get("pct"), UNIT_PERCENT,
-                                 source, kind))
+                                 source, kind, **extra))
         return [o for o in out if o]
 
     # ------------------------------------------------------------------ flows

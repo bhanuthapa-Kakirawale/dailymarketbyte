@@ -114,9 +114,10 @@ class _FakeDataset:
         self.warnings = []
 
 
-def test_align_dataset_removes_holiday_row_and_updates_series():
+def test_align_dataset_removes_holiday_row_and_updates_series(declare_nse_holiday):
     full_dates, holiday_date, spine_dates = _weekday_range_with_holiday(
         market.MIN_TECHNICAL_SESSIONS + 5, holiday_index=15)
+    declare_nse_holiday(holiday_date)
     stock_series = [_row(d, 100.0 + i) for i, d in enumerate(full_dates)]
     dataset = _FakeDataset(full_dates[-1], {"AAA": stock_series})
 
@@ -157,10 +158,11 @@ def test_align_dataset_no_benchmark_leaves_series_untouched_with_warning():
 
 
 # --------------------------------------------------------------------------- RVOL / technical exclude holiday
-def test_rvol_prior_20_excludes_holiday():
+def test_rvol_prior_20_excludes_holiday(declare_nse_holiday):
     import pandas as pd
 
     full_dates, holiday_date, spine_dates = _weekday_range_with_holiday(22, holiday_index=10)
+    declare_nse_holiday(holiday_date)
     volumes_by_date = {d: 1_000_000.0 + i * 1000 for i, d in enumerate(spine_dates)}
     volumes_by_date[holiday_date] = 999_999_999.0  # deliberately extreme placeholder volume
 
@@ -180,8 +182,9 @@ def test_rvol_prior_20_excludes_holiday():
     assert rvol_aligned == rvol_clean
 
 
-def test_sma20_and_range_exclude_holiday():
+def test_sma20_and_range_exclude_holiday(declare_nse_holiday):
     full_dates, holiday_date, spine_dates = _weekday_range_with_holiday(61, holiday_index=30)
+    declare_nse_holiday(holiday_date)
     closes_by_date = {d: 100.0 + i * 0.1 for i, d in enumerate(spine_dates)}
     closes_by_date[holiday_date] = 9999.0  # deliberately extreme placeholder close
 
@@ -204,8 +207,9 @@ def test_sma20_and_range_exclude_holiday():
     assert sma_clean == sum(r["close"] for r in aligned[-20:]) / 20
 
 
-def test_compression_window_excludes_holiday():
+def test_compression_window_excludes_holiday(declare_nse_holiday):
     full_dates, holiday_date, spine_dates = _weekday_range_with_holiday(61, holiday_index=45)
+    declare_nse_holiday(holiday_date)
     closes_by_date = {d: 100.0 + (i % 3) * 0.2 for i, d in enumerate(spine_dates)}
     closes_by_date[holiday_date] = 100.0  # placeholder close, but with a deliberately wide range
 
@@ -225,8 +229,9 @@ def test_compression_window_excludes_holiday():
 
 
 # --------------------------------------------------------------------------- relative alignment
-def test_relative_1d_5d_20d_alignment_restores_benchmark_matches():
+def test_relative_1d_5d_20d_alignment_restores_benchmark_matches(declare_nse_holiday):
     full_dates, holiday_date, spine_dates = _weekday_range_with_holiday(26, holiday_index=19)
+    declare_nse_holiday(holiday_date)
     closes_by_date = {d: 100.0 + i * 0.4 for i, d in enumerate(spine_dates)}
     closes_by_date[holiday_date] = closes_by_date[spine_dates[18]]  # same close as the prior real session
 

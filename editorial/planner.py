@@ -23,6 +23,7 @@ from .config import (MAX_CONTEXT_INSIGHTS, MAX_EVENTS, MAX_GLOBAL_CUES, MAX_HEAT
                      MIN_SECTORS_FOR_HEATMAP, RANK_NOTABLE_FRACTION, TICKER_SCENES,
                      min_items_for)
 from .models import EditorialItem, ScenePlan, SceneType, ShortsPlan
+from .movers_gate import movers_coverage_verdict, row_publishable
 from .readability import apply_timing, trim_to_fit
 
 # Which global cues matter most to an Indian pre-market viewer, in order. A fixed preference
@@ -334,7 +335,8 @@ def gainers_scene(report) -> ScenePlan | None:
     move that still made the cut. Zero and invalid (missing `change_pct`) rows never appear;
     fewer than 5 real gainers means fewer than 5 rows, never invented ones."""
     rows = [r for r in report.gainers or []
-           if r.get("change_pct") is not None and float(r["change_pct"]) > 0]
+           if r.get("change_pct") is not None and float(r["change_pct"]) > 0
+           and row_publishable(r)]
     ordered = sorted(rows, key=lambda r: (-float(r["change_pct"]), r.get("symbol") or ""))
     return _ranked_scan_scene(ordered, SceneType.GAINERS, "TOP 5 GAINERS")
 
@@ -343,7 +345,8 @@ def losers_scene(report) -> ScenePlan | None:
     """Top 5 Losers scan scene: largest absolute negative move first, down to the smaller
     (still negative) moves that made the cut. Mirrors `gainers_scene`'s rules exactly."""
     rows = [r for r in report.losers or []
-           if r.get("change_pct") is not None and float(r["change_pct"]) < 0]
+           if r.get("change_pct") is not None and float(r["change_pct"]) < 0
+           and row_publishable(r)]
     ordered = sorted(rows, key=lambda r: (float(r["change_pct"]), r.get("symbol") or ""))
     return _ranked_scan_scene(ordered, SceneType.LOSERS, "TOP 5 LOSERS")
 
@@ -483,13 +486,25 @@ def plan_short(report, snapshot=None, now: dt.datetime | None = None,
     plan.scenes.append(hook_scene)
     plan.notes.append(f"hook: {chosen.candidate_id}")
 
+    # POST freeze: a ranking over a partial (or unproven) universe is never published.
+    gate = movers_coverage_verdict(report)
+    plan.notes.append(f"movers coverage gate: {gate['status']} - {gate['reason']}")
+    if not gate["publishable"]:
+        plan.omitted.append({"scene": "movers", "reason": "universe_coverage",
+                             "status": gate["status"], "detail": gate["reason"],
+                             "coverage_pct": gate["coverage_pct"],
+                             "universe_expected": gate["universe_expected"],
+                             "universe_validated": gate["universe_validated"]})
+    for held in gate["guard_excluded"]:
+        plan.omitted.append({"scene": "movers", "reason": "move_guard", "item": held["symbol"],
+                             "status": held["status"], "detail": held["reason"]})
     builders = [
         _global_scene(report),
         _nifty_scene(report, snapshot, used_insights),
         _flows_scene(report, snapshot, used_insights),
         _sectors_scene(report),
-        gainers_scene(report),
-        losers_scene(report),
+        gainers_scene(report) if gate["publishable"] else None,
+        losers_scene(report) if gate["publishable"] else None,
     ]
     for scene in builders:
         if scene is None:
@@ -520,11 +535,11 @@ def plan_short(report, snapshot=None, now: dt.datetime | None = None,
             scene.metadata["sectors_displayed"] = len(scene.items)
             scene.metadata["sectors_omitted"] = max(0, eligible - len(scene.items))
 
-    _record_omissions(plan, report, snapshot)
+    _record_omissions(plan, report, snapshot, movers_gated=not gate["publishable"])
     return plan
 
 
-def _record_omissions(plan, report, snapshot) -> None:
+def _record_omissions(plan, report, snapshot, movers_gated: bool = False) -> None:
     """Note what the canonical record holds but the Short chose not to show."""
     def _count(section):
         return len([x for x in (section or [])])
@@ -538,7 +553,7 @@ def _record_omissions(plan, report, snapshot) -> None:
     shown_gainers = len((plan.scene(SceneType.GAINERS) or ScenePlan("", SceneType.GAINERS)).items)
     shown_losers = len((plan.scene(SceneType.LOSERS) or ScenePlan("", SceneType.LOSERS)).items)
     total_movers = _count(report.gainers) + _count(report.losers)
-    if total_movers > shown_gainers + shown_losers:
+    if total_movers > shown_gainers + shown_losers and not movers_gated:
         plan.omitted.append({"scene": "movers", "reason": "editorial_cap",
                              "count": total_movers - (shown_gainers + shown_losers)})
 

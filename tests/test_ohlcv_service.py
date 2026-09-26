@@ -387,10 +387,12 @@ def _benchmark(dates: list, base=20000.0) -> list:
 
 
 # A - holiday placeholder: usable once spine-filtered
-def test_spine_case_a_holiday_placeholder_becomes_usable(tmp_path, monkeypatch):
+def test_spine_case_a_holiday_placeholder_becomes_usable(tmp_path, monkeypatch,
+                                                        declare_nse_holiday):
     monkeypatch.setattr(market, "_bulk_download_universe_ohlcv", _raise_if_called)
     universe = synthetic_universe(5)
     full_dates, spine_dates, holiday, session_date, prev_date = _session_around_holiday()
+    declare_nse_holiday(holiday)
     store = _store(tmp_path)
     _seed_ok(store, universe, pd.DatetimeIndex(full_dates))  # store carries the holiday row
     store.close()

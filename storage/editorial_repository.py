@@ -2,7 +2,10 @@
 in this one module, matching `storage/repository.py`/`storage/ohlcv_repository.py`'s convention.
 
 Selector code (`radar.editorial_selector`) depends on this small API, never on raw SQL - see
-`save_selections`, `get_prior_selections`, `get_session_selections`, `update_publication_state`.
+`save_selections`, `get_prior_selections`, `get_session_selections`, `update_publication_state`,
+and (v2) the RADAR_PUBLISHED ledger: `record_publication`, `get_session_publications`,
+`get_prior_publications`. Selection is what the selector chose; publication is what a completed,
+QA-passed POST artifact actually showed. The publication cooldown reads publication.
 """
 from __future__ import annotations
 
@@ -118,6 +121,81 @@ class EditorialStore:
                 "UPDATE editorial_selections SET lifecycle_state = ?, updated_at = ? "
                 "WHERE selection_id = ?", (state, _iso(updated_at), selection_id))
         return cur.rowcount > 0
+
+    # ------------------------------------------------------------------ publication (v2)
+    def record_publication(self, session_date: dt.date, instruments: list, *,
+                           post_run_id: str | None = None, artifact_path: str | None = None,
+                           qa: dict | None = None, confirmed_at: dt.datetime | None = None,
+                           metadata: dict | None = None) -> dict:
+        """RADAR_PUBLISHED: `instruments` (in on-screen order) appeared in a completed POST
+        artifact that passed QA. The caller (`products.radar_publication`) has checked QA.
+
+        Exactly once per session: if the session already has publication rows, nothing is
+        written (a rerun must not duplicate history or re-advance cooldown) and the result says
+        whether this artifact showed the same stories. On a first confirmation the matching
+        selection rows move to lifecycle PUBLISHED in the same transaction."""
+        confirmed_at = confirmed_at or dt.datetime.now(dt.timezone.utc)
+        session = _iso(session_date)
+        ordered = list(dict.fromkeys(str(i) for i in instruments))
+        existing = self.get_session_publications(session_date)
+        if existing:
+            prior = [p["instrument"] for p in existing]
+            return {"status": "ALREADY_CONFIRMED", "inserted": 0, "published": prior,
+                    "matches_prior": prior == ordered,
+                    "first_confirmed_at": existing[0]["confirmed_at"]}
+        with self.conn:
+            for rank, inst in enumerate(ordered, start=1):
+                sel = self.conn.execute(
+                    "SELECT selection_id FROM editorial_selections WHERE session_date = ? AND "
+                    "instrument = ? ORDER BY selector_version DESC LIMIT 1",
+                    (session, inst)).fetchone()
+                self.conn.execute(
+                    """INSERT INTO radar_publications (publication_id, session_date, instrument,
+                           story_rank, selection_id, post_run_id, artifact_path, qa_json,
+                           confirmed_at, metadata_json)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(session_date, instrument) DO NOTHING""",
+                    (f"{session}|{inst}", session, inst, rank,
+                     sel["selection_id"] if sel else None, post_run_id, artifact_path,
+                     _dumps(qa), _iso(confirmed_at), _dumps(metadata)))
+                self.conn.execute(
+                    "UPDATE editorial_selections SET lifecycle_state = ?, updated_at = ? "
+                    "WHERE session_date = ? AND instrument = ?",
+                    ("PUBLISHED", _iso(confirmed_at), session, inst))
+        return {"status": "CONFIRMED", "inserted": len(ordered), "published": ordered,
+                "matches_prior": None, "first_confirmed_at": _iso(confirmed_at)}
+
+    def get_session_publications(self, session_date: dt.date) -> list:
+        """The session's published stories, in on-screen order (story_rank, then instrument)."""
+        rows = self.conn.execute(
+            "SELECT * FROM radar_publications WHERE session_date = ? "
+            "ORDER BY story_rank ASC, instrument ASC", (_iso(session_date),)).fetchall()
+        return [{"session_date": r["session_date"], "instrument": r["instrument"],
+                 "story_rank": r["story_rank"], "selection_id": r["selection_id"],
+                 "post_run_id": r["post_run_id"], "artifact_path": r["artifact_path"],
+                 "qa": _loads(r["qa_json"]), "confirmed_at": r["confirmed_at"],
+                 "metadata": _loads(r["metadata_json"])} for r in rows]
+
+    def get_prior_publications(self, before_session_date: dt.date, spine: list,
+                               lookback_sessions: int) -> dict:
+        """`{instrument: last_PUBLISHED_session_date}` over the same spine-position window as
+        `get_prior_selections` - the input the publication cooldown needs. A story that was
+        selected but never shown to a viewer does not start a cooldown."""
+        prior_spine = [d for d in spine if d < before_session_date]
+        window_start = prior_spine[-lookback_sessions] if len(prior_spine) >= lookback_sessions \
+            else (prior_spine[0] if prior_spine else before_session_date)
+        rows = self.conn.execute(
+            "SELECT instrument, session_date FROM radar_publications "
+            "WHERE session_date >= ? AND session_date < ? ORDER BY session_date ASC",
+            (_iso(window_start), _iso(before_session_date))).fetchall()
+        return {row["instrument"]: _parse_date(row["session_date"]) for row in rows}
+
+    def get_selection_sessions(self) -> list:
+        """Every session with a selection or a publication row, ascending (audits)."""
+        rows = self.conn.execute(
+            "SELECT session_date FROM editorial_selections UNION "
+            "SELECT session_date FROM radar_publications ORDER BY session_date").fetchall()
+        return [_parse_date(r[0]) for r in rows]
 
     # ------------------------------------------------------------------ reading
     def get_prior_selections(self, before_session_date: dt.date, spine: list,

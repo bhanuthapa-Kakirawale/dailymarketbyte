@@ -608,6 +608,13 @@ disagreement) produces `MIXED`. No directional family active at all (reachable o
 lowers `min_independent_families` below 2, since `VOLUME` alone can never be directional) is
 `NON_DIRECTIONAL`.
 
+**Internal only, never on screen.** A story's direction, its presentation `direction_label`
+("Positive Alignment") and the selector's `editorial_selection_reason` ("positive-direction
+development") are not the session's price move. COROMANDEL on 24 Sep 2026 was `ALIGNED_POSITIVE`
+from 5/20-day outperformance, on a day it closed -0.69%. The published POST Short never shows
+any of them. The Radar story scene takes every visible direction from the validated
+`price_change_pct` (docs/SHORTS_EDITORIAL.md, "Radar stories without a technical event").
+
 ### Attention level
 
 `radar.models.AttentionLevel` has exactly two values - `NOTABLE` (2 active families) and
@@ -707,3 +714,88 @@ fundamentals/filings as a fourth evidence family once `StockRadarCandidate.funda
 implemented; and, as a clearly separate research track, historical-outcome analysis (what
 happened after a candidate was flagged) - deliberately NOT started in Packet 4 per its own scope
 boundary.
+
+## Phase 2 (video): Radar stock stories in the unified Daily Market Byte Short
+
+Presentation only - no detector, scoring, novelty, selector, cooldown or history code changed.
+
+- **Publication limit.** The POST Short publishes the selector's first
+  `daily_video.storyboard.RADAR_PUBLISH_LIMIT` (= 3) stories, in the selector's own persisted
+  order. No second selector. The rest are listed in the storyboard's `omitted` with the reason, and
+  the hook's Radar counts follow the published three.
+- **Evidence.** `RadarVisualEvidence` gained `open_series` / `high_series` / `low_series`
+  (additive, default `None`) from the same aligned, `end_date=session_date`-bounded rows as
+  `close_series`, so the chart can draw real candles. No detector math changed.
+- **Presentation model** (`presentation/radar_story.py`, `RadarStoryModel`): one event (detector
+  priority, longer-window range breaks first), its reference level (prior N-day high/low or the
+  N-day average), at most two exact prices (reference + latest close), and exactly one supporting
+  fact in locked priority - (1) volume when the volume detector flagged the session, worded as its
+  own level (ELEVATED "above-normal", UNUSUAL "unusually high", EXTREME "exceptionally high"),
+  never upgraded; (2) otherwise where the close sat in the session's own range (top/bottom quarter
+  = near the high/low, else mid-range, with nothing claimed). The takeaway is a fixed template of
+  (event, fact). Relative strength, sector/peer comparison and novelty stay in the backend.
+- **Scene** (`daily_video/radar_story_scene.py`, `RadarStockScene`): one shell for every story -
+  identity, 24-session candlestick card with the prior range shaded (or the one average), the
+  event candle ringed and called out, a price-tag column, one evidence strip (volume bars aligned
+  to the candles, or a day-range bar), one sentence. 6.8 s per story; the intro
+  (`RadarIntroScene`) is unchanged. The pre-Phase-2 `RadarStoryScene` remains in
+  `daily_video/radar_scenes.py` but is no longer wired in.
+- Previews: `python render_radar_phase2.py` -> `output/radar_phase2/`.
+
+
+## POST freeze: publication move guard
+
+Before the POST Short takes the selector's first `RADAR_PUBLISH_LIMIT` stories,
+`presentation/radar_guard.py` runs each story's session move through the same deterministic
+`core.move_guard.validate_move` used for Movers, fed from the story's own chart evidence
+(close / previous close, the session bar, window dates against the report's session and
+previous session, the stated `price_change_pct`, and relative volume). A held story is skipped
+and the next story in the selector's own order takes its place; the storyboard records every
+verdict (`Storyboard.radar_guard`) and each held story in `omitted` with its raw move and
+reason. Detectors, novelty, selection and ranking are untouched - the guard only decides what
+may be published. Found on 24 Sep 2026: a -36.0% story (opened -10%, closed on its low, 18.9x
+volume) ranked 4th; it is now held as UNRESOLVED_EXTREME_MOVE wherever it ranks. Without chart
+evidence only the magnitude rules run, and the verdict says so.
+
+## Session-alignment patch (canonical NSE calendar)
+
+`radar.session_alignment.canonical_session_spine` is now `core.trading_calendar`: benchmark
+bars ∪ weekdays NSE's holiday list does not close, within the benchmark's range. All spine
+lists (`daily_pipeline`, `historical_validation`, `novelty_validation`,
+`editorial_policy_validation_60`) come from `canonical_session_list`. The old ^NSEI-only spine
+wrongly discarded Tue 2026-09-22, a real session Yahoo's index feed lacks, from every stock (200
+rows). Every 20/50-session window spanning it reached one session too far back, and 23 Sep was
+measured against 21 Sep. Consequences, verified by `validate_session_alignment.py radar`:
+- 15 / 21 Sep Radar output: identical (placeholders were already filtered).
+- 24 Sep: the selector's order changes (composite candidates 45 → 36, technical events 85 → 94,
+  and 22 Sep candidate history is backfilled). Published stories INDUSINDBK / LTF / MCX become
+  MFSL / COROMANDEL / HDFCLIFE (POLICYBZR is still held by the move guard).
+- A session the benchmark has no bar for (22 Sep) is a spine session. Relative performance
+  looks the benchmark close up by date; see "Benchmark gap recovery" below for how that close is
+  now supplied.
+
+## Benchmark gap recovery + history repair
+
+- **Benchmark.** `build_market_benchmark_series` fills a canonical session ^NSEI lacks from
+  NSE's end-of-day index file (docs/VALIDATION_RULES.md section 10), validated and anchored,
+  after the Yahoo write-through. The recovered row carries `source`/`provenance`, and the run's
+  issues say so: `BENCHMARK_SESSION_RECOVERED_FROM_FALLBACK` (INFO) or `..._REJECTED` (WARNING).
+  22 Sep now has a benchmark close, so 1/5/20-session market-relative windows spanning it are
+  computed rather than suppressed.
+- **Cache.** The 52 BACKFILL_PENDING 24 Sep rows (and 200 intraday 25 Sep rows) were repaired
+  (`radar.cache_repair`). The 24 Sep usable universe went from 148 to 200.
+- **History repair.** `candidate_history_backfill.spine_repair_range(old, new, through)`: every
+  session before the first spine difference saw an identical spine, so it is unaffected; every
+  session from it through the target is recomputed. `CandidateHistoryStore.invalidate_sessions`
+  is the manual tool that removes exactly those sessions' rows and markers, returning them for
+  the audit. The daily pipeline never calls it. The backfill then recomputes them through the
+  production `_run_detectors` path. Run 2026-09-25 (`recover_benchmark_gap.py radar-history`,
+  audit in `output/benchmark_gap_recovery/`):
+  - Rebuilt 22, 23 and 24 Sep only; 16-21 Sep untouched.
+  - 23 Sep: 32 old-spine rows deleted, 30 recomputed. Its old price changes were two-session
+    moves (e.g. CONCOR -4.60% vs a real -0.50%).
+  - 22 Sep: 20 new; 24 Sep: 36 new. No editorial selections existed in the range.
+  - Corrected 24 Sep Radar: composite 36, volume events 18, technical events 94, usable 200/200.
+    Stories MFSL, POLICYBZR (held by the move guard), COROMANDEL, BAJAJFINSV, APLAPOLLO. The POST
+    publishes MFSL / COROMANDEL / BAJAJFINSV and is the new 24 Sep reference
+    (`output/benchmark_gap_recovery/2026-09-24/full_post_corrected.mp4`).

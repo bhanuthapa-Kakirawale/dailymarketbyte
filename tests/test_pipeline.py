@@ -10,7 +10,7 @@ import os
 
 import pytest
 
-from conftest import IST, PREV_SESSION, SESSION
+from conftest import IST, PREV_SESSION, SESSION, full_movers_coverage
 
 import main
 from core import MarketReport, Metric, ValidationStatus
@@ -45,7 +45,8 @@ def offline_pipeline(monkeypatch, tmp_path, market_dict, movers, sectors, tiles,
     monkeypatch.setattr(main.market, "get_sectors", lambda *a, **k: list(sectors))
     monkeypatch.setattr(main.market, "get_globals", lambda: list(tiles))
     monkeypatch.setattr(main.market, "get_universe", lambda name: {"STOCK-A": "Alpha Ltd"})
-    monkeypatch.setattr(main.market, "get_movers", lambda *a, **k: (list(gainers), list(losers)))
+    monkeypatch.setattr(main.market, "get_movers_audited",
+                        lambda *a, **k: (list(gainers), list(losers), full_movers_coverage()))
     monkeypatch.setattr(main.news, "ai_pass", lambda *a, **k: (
         dict(ai_facts),
         {"text": "Broad-based buying lifted the index.", "source": "GEMINI", "publisher": None},

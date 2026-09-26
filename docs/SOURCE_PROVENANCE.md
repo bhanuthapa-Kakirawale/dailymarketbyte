@@ -39,6 +39,7 @@ notes                       what to know about its failure modes
 | Source | Type | Family | Independence group |
 | --- | --- | --- | --- |
 | `nse_website` | PRIMARY | EXCHANGE | `NSE` |
+| `nse_index_close_archive` | PRIMARY | EXCHANGE | `NSE` (same exchange, one witness) |
 | `yahoo_finance` | SECONDARY | MARKET_DATA_AGGREGATOR | `YAHOO` |
 | `gemini` | AI | AI_DISCOVERY | `GEMINI` |
 | `google_news_rss` | NEWS | NEWS_DISCOVERY | `PUBLISHER:<publisher>` |
@@ -85,6 +86,23 @@ throughout, because nothing is inferred any more.
 If content safety blocks a reason, its attribution is cleared to `NO_VERIFIED_CATALYST` —
 keeping the publisher would credit a headline the viewer never sees.
 
+### Second-source index bars
+
+A benchmark or sector index bar recovered from NSE's end-of-day index file
+(`NSE_INDEX_CLOSE_ARCHIVE`, docs/VALIDATION_RULES.md section 10) carries its provenance from the
+moment it is fetched. The record holds `source`, `source_url`, `session_date`, `retrieval_time`,
+`source_published_at`, `validation_status`, `fallback_reason` and the continuity anchor. When the
+Nifty previous close came from it, the NIFTY 50 change observation says so in
+`previous_close_source`. The observation's own source stays Yahoo, because the displayed close is
+Yahoo's.
+
+The recap session itself can come from the file (recap-session recovery, VALIDATION_RULES section
+10.1). In that case the displayed close IS NSE's, so the NIFTY 50 INDEX_CLOSE and INDEX_CHANGE_PCT
+observations are recorded under `nse_index_close_archive` (PRIMARY) with
+`close_source: NSE_INDEX_CLOSE_ARCHIVE`, and are never labelled Yahoo. The same applies to a Bank
+Nifty or sector change built on a recovered close. The archive shares NSE's independence group,
+so it can never corroborate NSE's own API as a second witness.
+
 ## Market timestamps
 
 NSE is the only source here that publishes its own "as of" time. `nse_all_indices` used to
@@ -94,6 +112,36 @@ rather than *when did we happen to fetch it*.
 
 Yahoo and Gemini publish no market timestamp, so their observations carry `observed_at = None`
 and fall back to `retrieved_at`. That is recorded honestly rather than filled in with a guess.
+
+### Pre-open readings (PRE-MARKET V1)
+
+`providers/premarket.py` records, for every overnight cue / India VIX / GIFT reading, a
+`PreMarketQuote` (or `VixReading`) with `source`, `source_type`, `independence_group`,
+`retrieved_at`, the `market_date` of the session it belongs to, the `market_timestamp` of a LIVE
+reading (the END of the last 5-minute bar completed before the cutoff) and a `core.freshness`
+verdict - all at acquisition. Yahoo publishes no timestamp for a daily bar, so a US close is
+dated by its bar and judged FRESH only if that bar is the expected overnight session and was
+final at the cutoff. The readings are written to the run's own `pre_acquisition_<date>.json`;
+they are not canonical market history and are never written into a MarketReport.
+
+GIFT Nifty is acquired from the exchange that lists it, NSE IX (`providers/gift_nifty.py`):
+`nseix_market_rate` (live NIFTY FUTIDX rows; `TIMESTMP` = the contract's last-trade time,
+recorded as `market_timestamp`) and `nseix_settlement_file` (the dated Daily Settlement Price
+file the change is measured from). Both are PRIMARY / EXCHANGE and share ONE independence group
+(`NSE_IX`) - one venue, one witness; its `validation_status` is `SINGLE_SOURCE` (or
+`CONFLICT`/`REJECTED`/`UNAVAILABLE`, never shown). The reading's `provenance` block keeps the
+contract, every contract seen, the settlement URL and attempts, the implied reference and the
+consistency verdict. Gemini's GIFT answer (`news.ai_pass`) is still POST-only context and is
+never a PRE source.
+
+Official schedules: `rbi_press_release` and `federal_reserve_calendar` are REGULATOR sources
+(schedule only, never a number). RBI entries live in `data/official_events.json` with their
+URL, release number, quoted line, `retrieved_at` and `verified_on` - see docs/PRE_MARKET.md.
+
+`presentation/pre_provenance.py` audits every freshness-sensitive PRE fact (US/Asian indices,
+GIFT, India VIX, previous-session Nifty/FII-DII/sectors from the report's own observations,
+events, news headlines) and `render_pre` BLOCKS if a displayed fact has AI provenance. FII/DII
+or a sector whose canonical fact has only AI observations is dropped from PRE upstream.
 
 ## Traceability
 

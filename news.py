@@ -93,8 +93,12 @@ def clip_words(s: str, n: int = 13) -> str:
     return s if len(w) <= n else " ".join(w[:n]).rstrip(",;:-") + "..."
 
 
-def ask_gemini(prompt: str, search: bool = True, tries: int = 5):
-    """404/503 on generateContent is a documented, unresolved server-side Gemini API issue
+def ask_gemini(prompt: str, search: bool = True, tries: int = 5, timeout: int = 180,
+               generation_config: dict | None = None):
+    """`generation_config` (optional) replaces the default `{"temperature": 0.2}` - the hook
+    engine uses it to request structured JSON (`responseMimeType`/`responseSchema`).
+
+    404/503 on generateContent is a documented, unresolved server-side Gemini API issue
     (confirmed on Google's own developer forum, Sep 2026): the exact same request intermittently
     404s or 503s even with a valid key/model/project, and can succeed on a later retry. So both
     are treated as transient and retried with backoff, not as "this model/key is wrong".
@@ -108,12 +112,12 @@ def ask_gemini(prompt: str, search: bool = True, tries: int = 5):
         return None
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
     body = {"contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.2}}
+            "generationConfig": generation_config or {"temperature": 0.2}}
     if search:
         body["tools"] = [{"google_search": {}}]
     for i in range(tries):
         try:
-            r = requests.post(url, json=body, timeout=180,
+            r = requests.post(url, json=body, timeout=timeout,
                               headers={"x-goog-api-key": key, "Content-Type": "application/json"})
             if r.status_code == 429:
                 print(f"[gemini] 429 quota exceeded - not retrying: {r.text[:300]}")

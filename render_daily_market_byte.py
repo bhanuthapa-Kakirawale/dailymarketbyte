@@ -1,0 +1,149 @@
+"""Render the unified Daily Market Byte video (main sections + Market Radar) from EXISTING,
+already-validated artifacts. No network access: the report, the Radar artifacts and the local
+OHLCV cache are all read from disk.
+
+    python render_daily_market_byte.py                       # 2026-09-21 validation artifacts
+    python render_daily_market_byte.py --frames-only         # freeze frames + QA, no MP4
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import sys
+
+import editorial
+import intelligence
+from config import OUT_DIR
+from core import MarketReport
+from core.content_safety import SafetyStatus, classify_text, scan_publication
+from daily_video import Composer, build_storyboard
+from daily_video.typography import font_report
+from presentation import ReportPresentation
+from radar.visual_evidence import build_visual_evidence_for_presentation
+from storage import MarketHistory, default_db_path
+
+FREEZE_NAMES = {"HOOK": "hook", "DYNAMIC_HOOK": "hook", "PULSE": "market_overview", "NIFTY": "nifty", "FLOWS": "fii_dii",
+                "SECTORS": "sectors", "MOVERS": "movers", "RADAR_INTRO": "radar_intro",
+                "AHEAD": "look_ahead", "CLOSING": "closing"}
+
+
+def load_inputs(report_path, radar_dir, session: str):
+    report = MarketReport.from_json(open(report_path, encoding="utf-8").read())
+    history = MarketHistory(default_db_path(OUT_DIR))
+    try:
+        snapshot = intelligence.build_snapshot(report, history)
+    finally:
+        history.close()
+    plan = editorial.plan_short(report, snapshot, now=report.generated_at,
+                                is_safe=lambda s: classify_text(s).status is not SafetyStatus.BLOCKED)
+    pres = ReportPresentation(report)
+    pres_path = os.path.join(radar_dir, "presentation", f"radar_presentation_{session}.json")
+    result_path = os.path.join(radar_dir, f"daily_radar_{session}.json")
+    radar_pres = json.load(open(pres_path, encoding="utf-8")) if os.path.exists(pres_path) else None
+    radar_result = json.load(open(result_path, encoding="utf-8")) if os.path.exists(result_path) else None
+    evidence = (build_visual_evidence_for_presentation(radar_pres, radar_result)
+                if radar_pres and radar_result else {})
+    universe = (report.metadata or {}).get("universe") or "Nifty 100"
+    sources = {"market_report": report_path, "radar_presentation": pres_path,
+               "radar_result": result_path, "ohlcv_store": default_db_path(OUT_DIR)}
+    return plan, pres, radar_pres, radar_result, evidence, universe, sources
+
+
+def freeze_names(sb):
+    out = []
+    for s in sb.scenes:
+        if s.kind == "RADAR_STORY":
+            out.append("radar_" + s.texts["symbol"].lower())
+        else:
+            out.append(FREEZE_NAMES.get(s.kind, s.kind.lower()))
+    return out
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--report", default=os.path.join(OUT_DIR, "reports", "premarket_2026-09-23.json"))
+    ap.add_argument("--radar-dir", default=os.path.join(OUT_DIR, "radar"))
+    ap.add_argument("--out-dir", default=os.path.join(OUT_DIR, "daily_market_byte_redesign"))
+    ap.add_argument("--frames-only", action="store_true")
+    ap.add_argument("--out", default=None, help="MP4 path (default: output/"
+                    "daily_market_byte_redesign_<session>.mp4)")
+    ap.add_argument("--no-hook-ai", action="store_true",
+                    help="open with the deterministic hook; never call Gemini")
+    ap.add_argument("--confirm-publication", action="store_true",
+                    help="after a successful render + QA, mark the Radar stories this MP4 shows "
+                         "as PUBLISHED (products.radar_publication). Off by default: previews "
+                         "and validation renders must never advance publication history")
+    args = ap.parse_args(argv)
+
+    report = MarketReport.from_json(open(args.report, encoding="utf-8").read())
+    session = (report.session_date or report.report_date).isoformat()
+    plan, pres, radar_pres, radar_result, evidence, universe, sources = load_inputs(
+        args.report, args.radar_dir, session)
+    # Gemini chooses among approved hook candidates when a key is configured; any failure
+    # falls back to the deterministic hook inside the engine.
+    sb = build_storyboard(plan, pres, radar_pres, radar_result, evidence, universe, sources,
+                          hook_ai=not args.no_hook_ai)
+    if sb.hook_plan:
+        hp = sb.hook_plan
+        print(f"hook: {hp['archetype']} via {hp['source']}"
+              + (f" ({hp['fallback_reason']})" if hp["fallback_reason"] else "")
+              + f" - \"{hp['curiosity_line']}\"")
+
+    scan = scan_publication(sb.public_text())
+    if scan.status is not SafetyStatus.SAFE:
+        print("Content safety BLOCKED:", scan.blocked_fields)
+        return 2
+
+    os.makedirs(args.out_dir, exist_ok=True)
+    with open(os.path.join(args.out_dir, f"storyboard_{session}.json"), "w", encoding="utf-8") as fh:
+        json.dump(sb.to_dict(), fh, indent=2, ensure_ascii=False, default=str)
+    if sb.hook_plan:
+        with open(os.path.join(args.out_dir, f"hook_plan_{session}.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump(sb.hook_plan, fh, indent=2, ensure_ascii=False, default=str)
+
+    comp = Composer(sb)
+    names = freeze_names(sb)
+    progressive = {}
+    for name, spec in zip(names, sb.scenes):
+        if spec.kind == "RADAR_STORY":
+            progressive[name] = {"first_frame": 0.02, "chart_settled": 2.65}
+    qa = comp.export_freeze_frames(os.path.join(args.out_dir, "freeze_frames"), names, progressive)
+    print(f"storyboard: {len(sb.scenes)} scenes, {sb.total_duration:.1f}s | freeze-frame QA "
+          f"{'PASS' if qa['passed'] else 'FAIL'}")
+    for e in qa["scenes"]:
+        if not e["qa"]["passed"]:
+            print("  ", e["scene"], e["qa"]["issues"])
+    if args.frames_only:
+        return 0
+
+    out = args.out or os.path.join(OUT_DIR, f"daily_market_byte_redesign_{session}.mp4")
+    result = comp.render(out)
+    manifest = {"render": result, "session_date": session, "total_duration": sb.total_duration,
+                "scene_count": len(sb.scenes), "sections": sb.sections(), "sources": sources,
+                "omitted": sb.omitted, "fonts": font_report(), "hook_plan": sb.hook_plan,
+                "content_safety": scan.status.value,
+                "rendered_at": dt.datetime.now(dt.timezone.utc).isoformat()}
+    if args.confirm_publication:
+        # RADAR_PUBLISHED: only the stories this completed artifact shows, only after QA.
+        from products.radar_publication import confirm_radar_publication, rendered_radar_stories
+        qa_ok = bool(result.get("ok")) and bool(qa.get("passed")) and             scan.status is SafetyStatus.SAFE
+        manifest["radar_publication"] = confirm_radar_publication(
+            report.session_date, rendered_radar_stories(sb), qa_passed=qa_ok, out_dir=OUT_DIR,
+            artifact_path=out, qa={"render_ok": bool(result.get("ok")),
+                                   "freeze_frame_qa": bool(qa.get("passed")),
+                                   "content_safety": scan.status.value},
+            confirmed_by="render_daily_market_byte.py --confirm-publication")
+        rp = manifest["radar_publication"]
+        print(f"radar publication: {rp['status']} {rp.get('published')}")
+    with open(os.path.join(args.out_dir, f"render_manifest_{session}.json"), "w",
+              encoding="utf-8") as fh:
+        json.dump(manifest, fh, indent=2, ensure_ascii=False, default=str)
+    print(json.dumps(result, indent=2))
+    return 0 if result["ok"] else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

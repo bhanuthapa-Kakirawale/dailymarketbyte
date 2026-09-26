@@ -122,6 +122,28 @@ class CandidateHistoryStore:
                  status.value if isinstance(status, RunStatus) else status,
                  candidate_count, _iso(processed_at)))
 
+    def invalidate_sessions(self, session_dates) -> dict:
+        """Manual recovery tool (history repair), never called by the daily pipeline: remove
+        the candidate rows AND run markers of exactly `session_dates`, so a later backfill
+        recomputes them. One transaction. Returns what was removed (raw column values) so the
+        caller can keep it in an audit - nothing is discarded without a record."""
+        isos = sorted({_iso(d) for d in session_dates})
+        if not isos:
+            return {"candidates": [], "runs": []}
+        marks = ",".join("?" * len(isos))
+        with self.conn:
+            cands = [dict(r) for r in self.conn.execute(
+                f"SELECT * FROM radar_candidate_history WHERE session_date IN ({marks}) "
+                "ORDER BY session_date, instrument", isos).fetchall()]
+            runs = [dict(r) for r in self.conn.execute(
+                f"SELECT * FROM candidate_history_runs WHERE session_date IN ({marks}) "
+                "ORDER BY session_date", isos).fetchall()]
+            self.conn.execute(f"DELETE FROM radar_candidate_history WHERE session_date IN ({marks})",
+                              isos)
+            self.conn.execute(f"DELETE FROM candidate_history_runs WHERE session_date IN ({marks})",
+                              isos)
+        return {"candidates": cands, "runs": runs}
+
     def get_run_status(self, session_date: dt.date, calculation_version: str) -> StoredRunMarker | None:
         row = self.conn.execute(
             "SELECT * FROM candidate_history_runs WHERE session_date = ? AND calculation_version = ?",

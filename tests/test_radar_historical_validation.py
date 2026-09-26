@@ -164,11 +164,13 @@ def test_select_session_dates_excludes_holiday_placeholder():
     assert selected == sorted(selected)
 
 
-def test_holiday_row_dropped_from_series_in_run_one_session(tmp_path, monkeypatch):
+def test_holiday_row_dropped_from_series_in_run_one_session(tmp_path, monkeypatch,
+                                                            declare_nse_holiday):
     monkeypatch.setattr(market, "_bulk_download_universe_ohlcv", _raise_if_called)
     universe = _synthetic_universe(3)
     dates = _bdate_dates(RECAP, 70)
     holiday = dates[40]                     # a weekday strictly inside the covered range
+    declare_nse_holiday(holiday)
     spine_dates = [d for d in dates if d != holiday]
     session_date = dates[-1]
     prev_date = dates[-2]

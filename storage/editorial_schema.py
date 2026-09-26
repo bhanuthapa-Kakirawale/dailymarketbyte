@@ -17,7 +17,9 @@ different decision, not a correction of the old one, so both remain queryable si
 """
 from __future__ import annotations
 
-SCHEMA_VERSION = 1
+# v2 (PRE shadow readiness): `radar_publications` - which selected stories actually appeared in
+# a completed, QA-passed POST artifact. Selection (editorial_selections) is NOT publication.
+SCHEMA_VERSION = 2
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS editorial_selections (
@@ -48,6 +50,27 @@ CREATE INDEX IF NOT EXISTS idx_editorial_selections_session
     ON editorial_selections (session_date);
 CREATE INDEX IF NOT EXISTS idx_editorial_selections_instrument
     ON editorial_selections (instrument, session_date);
+
+-- v2: RADAR_PUBLISHED. One row per (session, instrument) that appeared in a completed POST
+-- artifact which passed every QA gate. Written ONCE per session by the first confirmation
+-- (a rerun is a no-op), never by the REPORT job. Publication cooldown reads THIS table; the
+-- selection table above only says what the selector chose.
+CREATE TABLE IF NOT EXISTS radar_publications (
+    publication_id    TEXT PRIMARY KEY,
+    session_date      TEXT NOT NULL,
+    instrument        TEXT NOT NULL,
+    story_rank        INTEGER NOT NULL,
+    selection_id      TEXT,
+    post_run_id       TEXT,
+    artifact_path     TEXT,
+    qa_json           TEXT,
+    confirmed_at      TEXT NOT NULL,
+    metadata_json     TEXT,
+    UNIQUE (session_date, instrument)
+);
+
+CREATE INDEX IF NOT EXISTS idx_radar_publications_session
+    ON radar_publications (session_date, story_rank);
 """
 
 __all__ = ["SCHEMA_SQL", "SCHEMA_VERSION"]

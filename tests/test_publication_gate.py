@@ -133,8 +133,14 @@ def test_report_is_built_before_presentation():
     report must be built and gated before any scene or render call."""
     import inspect
     source = inspect.getsource(main.run)
+    # The report is obtained first - reused from canonical history, or built by the one
+    # report-building path (`produce_report`), which itself never renders anything.
     order = [source.index(marker) for marker in
-             ("build_report(", "check_publication(", "plan_short(", "ReportPresentation(",
+             ("obtain_post_report(", "check_publication(", "plan_short(", "ReportPresentation(",
               "scenes_from_plan(", "video.render(")]
     assert order == sorted(order), \
         "the report must precede the editorial plan, presentation and rendering"
+    builder = inspect.getsource(main.produce_report)
+    assert "build_report(" in builder
+    assert not any(m in builder for m in ("scenes_from_plan(", "video.render(", "plan_short("))
+    assert "produce_report(" in inspect.getsource(main.obtain_post_report)

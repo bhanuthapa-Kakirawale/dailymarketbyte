@@ -25,13 +25,27 @@ history stays raw, untouched by anything downstream of acquisition" guarantee.
 """
 from __future__ import annotations
 
+import datetime as dt
 from dataclasses import dataclass, field
 
 import market
+from core.trading_calendar import SessionCalendar
 
 
 def canonical_session_spine(benchmark_series: list) -> frozenset:
-    """The set of calendar dates the market benchmark's own series carries.
+    """The canonical NSE trading sessions across the market benchmark's own covered range.
+
+    Data-reliability patch (holiday / session alignment): this used to be the benchmark's bar
+    dates alone. That spine is missing a REAL session - Yahoo's ^NSEI (and every other Indian
+    index feed, even BSE's ^BSESN) has no bar for Tue 2026-09-22, which NSE's own holiday list
+    confirms was a trading day and on which every stock has a genuine bar. It is now
+    `core.trading_calendar.SessionCalendar`: benchmark bar dates UNION the weekdays NSE's
+    published holiday list does not close, inside [first, last] benchmark date. Years the list
+    doesn't cover fall back to the benchmark bar dates exactly as before. The returned set can
+    therefore contain a session the benchmark itself has no bar for - callers that need the
+    benchmark's close on a date must still look it up by date and treat absence as absence.
+
+    Original rationale, still true of the benchmark's bars:
 
     An INDEX's own history is not subject to the per-stock holiday-placeholder artifact
     described above - an index is computed only from constituents that actually traded that
@@ -41,7 +55,24 @@ def canonical_session_spine(benchmark_series: list) -> frozenset:
     already fetched once per run for relative-performance detection, never a second/new
     acquisition.
     """
-    return frozenset(row["date"] for row in benchmark_series if row.get("date") is not None)
+    index_dates = frozenset(row["date"] for row in benchmark_series if row.get("date") is not None)
+    if not index_dates:
+        return frozenset()
+    cal = SessionCalendar.from_index_dates(index_dates)
+    return frozenset(cal.sessions_between(min(index_dates), max(index_dates)))
+
+
+def canonical_session_list(benchmark_series: list, end: dt.date | None = None) -> list:
+    """`canonical_session_spine` as an oldest-first list (optionally cut at `end` inclusive) -
+    the one way a spine LIST (for `spine[idx - 1]` previous-session lookups) is built."""
+    spine = sorted(canonical_session_spine(benchmark_series))
+    return [d for d in spine if end is None or d <= end]
+
+
+def benchmark_missing_sessions(benchmark_series: list) -> list:
+    """Canonical sessions the benchmark has no bar for (e.g. 2026-09-22) - audit only."""
+    index_dates = frozenset(row["date"] for row in benchmark_series if row.get("date") is not None)
+    return SessionCalendar.from_index_dates(index_dates).benchmark_gaps()
 
 
 @dataclass
@@ -136,5 +167,5 @@ def align_dataset_to_spine(dataset, benchmark_series: list) -> AlignmentReport:
     return report
 
 
-__all__ = ["canonical_session_spine", "align_series_to_spine", "align_dataset_to_spine",
-          "AlignmentReport"]
+__all__ = ["canonical_session_spine", "canonical_session_list", "benchmark_missing_sessions",
+          "align_series_to_spine", "align_dataset_to_spine", "AlignmentReport"]

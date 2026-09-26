@@ -21,8 +21,11 @@ whatever presentation layer a later packet builds, not a trigger for one.
   "was this symbol Radar-interesting recently" - the input `radar.novelty.classify_history`
   needs to classify TODAY's candidates. Nothing here ever substitutes editorial/publication
   history for this - they are different questions about different things.
-* **Editorial (publication) history** (`storage.editorial_repository.EditorialStore`) answers
-  "did we PUBLISH this symbol recently" - the input `radar.editorial_selector`'s cooldown needs.
+* **Editorial history** (`storage.editorial_repository.EditorialStore`) holds two separate
+  facts: what the selector SELECTED (`editorial_selections`, written here) and what a completed,
+  QA-passed POST artifact actually PUBLISHED (`radar_publications`, written only by
+  `products.radar_publication` after the POST render). "Did we PUBLISH this symbol recently" -
+  the input `radar.editorial_selector`'s cooldown needs - reads the second, never the first.
 
 ## Canonical spine ownership (packet spec section 4)
 
@@ -105,6 +108,10 @@ _ISSUE_PATTERNS: tuple = (
     # INFO: expected, by-design conditions - visible, never suppressed (packet spec section 25).
     ("no historical database available", "RVOL_PERCENTILE_HISTORY_UNAVAILABLE", IssueSeverity.INFO),
     ("session spine filter:", "SESSION_PLACEHOLDER_ROWS_FILTERED", IssueSeverity.INFO),
+    # Benchmark gap recovery: a validated second-source bar is usable but must be visible;
+    # a rejected one leaves a gap in market-relative windows (reduced coverage).
+    ("benchmark fallback used:", "BENCHMARK_SESSION_RECOVERED_FROM_FALLBACK", IssueSeverity.INFO),
+    ("benchmark fallback rejected:", "BENCHMARK_SESSION_FALLBACK_REJECTED", IssueSeverity.WARNING),
     # WARNING: output remains usable, but coverage/confidence is materially reduced.
     ("session alignment skipped: benchmark series unavailable",
      "SESSION_SPINE_UNAVAILABLE_FOR_ALIGNMENT", IssueSeverity.WARNING),
@@ -505,8 +512,13 @@ def run_daily_radar(session_date: dt.date | None = None, *, universe_name: str =
     except Exception as exc:
         return _failed_result(session_date, as_of, f"benchmark/spine acquisition failed: {exc}",
                               dry_run=dry_run, issue_code="BENCHMARK_SPINE_ACQUISITION_FAILED")
-    spine = sorted({r["date"] for r in benchmark_series_full if r.get("date") is not None})
+    spine = session_alignment.canonical_session_list(benchmark_series_full)
     timings["benchmark_ms"] = round((time.time() - t0) * 1000, 1)
+    for rec in relative_acquisition.last_benchmark_recovery():
+        verb = "used" if rec.get("validation_status") == "VALIDATED" else "rejected"
+        warnings.append(f"benchmark fallback {verb}: {rec.get('index')} {rec.get('session_date')} "
+                        f"from {rec.get('source')} ({rec.get('validation_status')}; "
+                        f"retrieved {rec.get('retrieval_time')})")
 
     t0 = time.time()
     if not spine:
@@ -638,7 +650,9 @@ def run_daily_radar(session_date: dt.date | None = None, *, universe_name: str =
     t0 = time.time()
     try:
         editorial_store = EditorialStore(editorial_db_path(out_dir))
-        recently_selected = editorial_store.get_prior_selections(
+        # cooldown = stories a completed POST actually PUBLISHED, never mere selections: this
+        # job selects; only a QA-passed POST artifact publishes (products.radar_publication)
+        recently_selected = editorial_store.get_prior_publications(
             session_date, spine, es.PUBLICATION_COOLDOWN_SESSIONS)
     except Exception as exc:
         return _failed_result(session_date, as_of,

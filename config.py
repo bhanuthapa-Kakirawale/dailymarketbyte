@@ -3,8 +3,22 @@ import os
 import datetime as dt
 from zoneinfo import ZoneInfo
 
-IST = ZoneInfo("Asia/Kolkata")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Local secrets (GEMINI_API_KEY, etc.) live in a git-ignored .env file next to this module -
+# see .env.example for the template. `config.py` is the first project module every entry point
+# imports (main.py, render_daily_market_byte.py, news.py all import it before touching any
+# env var), so loading here - and nowhere else - guarantees the key is populated before the
+# first `os.getenv("GEMINI_API_KEY")` call, wherever that happens to be.
+# `override=False` (python-dotenv's default) means a real environment variable already set by
+# the shell or by GitHub Actions secrets always wins over .env - .env only fills gaps locally.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(BASE_DIR, ".env"))
+except ImportError:
+    pass    # python-dotenv not installed: .env is skipped, real env vars still work
+
+IST = ZoneInfo("Asia/Kolkata")
 ASSETS_DIR = os.path.join(BASE_DIR, "assets")
 OUT_DIR = os.getenv("DAILY_BYTE_OUT", os.path.join(BASE_DIR, "output"))
 

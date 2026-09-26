@@ -25,6 +25,7 @@ from .enums import SourceType
 class SourceFamily(str, Enum):
     """What kind of operation produced the number - the shape of its failure modes."""
     EXCHANGE = "EXCHANGE"                              # NSE, BSE: the venue itself
+    REGULATOR = "REGULATOR"                            # RBI, the Fed: an official publisher
     MARKET_DATA_AGGREGATOR = "MARKET_DATA_AGGREGATOR"  # Yahoo: redistributes venue data
     NEWS_DISCOVERY = "NEWS_DISCOVERY"                  # Google News RSS: finds publishers
     AI_DISCOVERY = "AI_DISCOVERY"                      # Gemini: finds and paraphrases
@@ -36,6 +37,9 @@ class SourceFamily(str, Enum):
 # Independence groups. Distinct constants rather than free strings so a typo cannot silently
 # split one group into two and manufacture "independent" corroboration.
 GROUP_NSE = "NSE"
+GROUP_NSEIX = "NSE_IX"          # NSE International Exchange (GIFT City) - a separate venue from NSE
+GROUP_RBI = "RBI"
+GROUP_FED = "FEDERAL_RESERVE"
 GROUP_YAHOO = "YAHOO"
 GROUP_GEMINI = "GEMINI"
 GROUP_INTERNAL = "INTERNAL"
@@ -92,12 +96,18 @@ class SourceMetadata:
 
 
 SRC_NSE = "nse_website"
+SRC_NSE_ARCHIVE = "nse_index_close_archive"
 SRC_YAHOO = "yahoo_finance"
 SRC_GEMINI = "gemini"
 SRC_GOOGLE_NEWS = "google_news_rss"
 SRC_RULE_EXPIRY = "expiry_calendar_rule"
 SRC_DERIVED = "daily_byte_derived"
 SRC_DEMO = "demo_fixture"
+# PRE-MARKET official sources (pre-data-sources phase)
+SRC_NSEIX_LIVE = "nseix_market_rate"          # GIFT Nifty live quote, NSE IX website API
+SRC_NSEIX_DSP = "nseix_settlement_file"       # GIFT Nifty daily settlement price file
+SRC_RBI_PRESS = "rbi_press_release"           # RBI's own press release (MPC schedule)
+SRC_FED_CALENDAR = "federal_reserve_calendar"  # the Fed's own FOMC calendar page
 
 _REGISTRY: dict[str, SourceMetadata] = {
     SRC_NSE: SourceMetadata(
@@ -106,6 +116,16 @@ _REGISTRY: dict[str, SourceMetadata] = {
         reference="https://www.nseindia.com", market_timestamp_available=True,
         display_rights_status="UNREVIEWED",
         notes="The venue itself. Often blocks cloud IPs, so absence is routine, not an error."),
+    SRC_NSE_ARCHIVE: SourceMetadata(
+        source_name=SRC_NSE_ARCHIVE, source_type=SourceType.PRIMARY,
+        source_family=SourceFamily.EXCHANGE, independence_group=GROUP_NSE,
+        retrieval_method="https GET nsearchives.nseindia.com/content/indices/ind_close_all_<DDMMYYYY>.csv",
+        reference="https://nsearchives.nseindia.com", market_timestamp_available=True,
+        display_rights_status="UNREVIEWED",
+        notes="NSE's official end-of-day index file. Same independence group as nse_website - "
+              "one exchange, one witness. Used only for a benchmark/sector session the primary "
+              "(Yahoo) lacks, after validation (market.recover_index_gaps / "
+              "recover_recap_session)."),
     SRC_YAHOO: SourceMetadata(
         source_name=SRC_YAHOO, source_type=SourceType.SECONDARY,
         source_family=SourceFamily.MARKET_DATA_AGGREGATOR, independence_group=GROUP_YAHOO,
@@ -142,6 +162,37 @@ _REGISTRY: dict[str, SourceMetadata] = {
         independence_group=GROUP_DEMO, retrieval_method="synthetic fixture",
         display_rights_status="OWN_CONTENT",
         notes="Synthetic demo data. Never to be mistaken for a real reading."),
+    SRC_NSEIX_LIVE: SourceMetadata(
+        source_name=SRC_NSEIX_LIVE, source_type=SourceType.PRIMARY,
+        source_family=SourceFamily.EXCHANGE, independence_group=GROUP_NSEIX,
+        retrieval_method="https GET www.nseix.com/api/market-rate?type=derivative",
+        reference="https://www.nseix.com", market_timestamp_available=True,
+        display_rights_status="UNREVIEWED",
+        notes="The venue that lists GIFT Nifty (NIFTY index futures on NSE IX). Undocumented "
+              "website API: each contract row carries its own last-trade timestamp (TIMESTMP). "
+              "Used only for the PRE GIFT Nifty strip, only when FRESH (core.freshness)."),
+    SRC_NSEIX_DSP: SourceMetadata(
+        source_name=SRC_NSEIX_DSP, source_type=SourceType.PRIMARY,
+        source_family=SourceFamily.EXCHANGE, independence_group=GROUP_NSEIX,
+        retrieval_method="https GET www.nseix.com/api/content/daily_report/G_T_DSP_PRICE_<DDMMYYYY>.CSV",
+        reference="https://www.nseix.com", market_timestamp_available=True,
+        display_rights_status="UNREVIEWED",
+        notes="NSE IX's official daily settlement price file. Same independence group as "
+              "nseix_market_rate - one exchange, one witness. The reference a GIFT Nifty "
+              "change is measured from."),
+    SRC_RBI_PRESS: SourceMetadata(
+        source_name=SRC_RBI_PRESS, source_type=SourceType.PRIMARY,
+        source_family=SourceFamily.REGULATOR, independence_group=GROUP_RBI,
+        retrieval_method="manual entry from www.rbi.org.in press release, re-checked by "
+                         "verify_official_events.py", reference="https://www.rbi.org.in",
+        display_rights_status="OWN_CONTENT",
+        notes="The regulator's own publication. Schedule only - never a number."),
+    SRC_FED_CALENDAR: SourceMetadata(
+        source_name=SRC_FED_CALENDAR, source_type=SourceType.PRIMARY,
+        source_family=SourceFamily.REGULATOR, independence_group=GROUP_FED,
+        retrieval_method="manual entry from federalreserve.gov FOMC calendar",
+        reference="https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
+        display_rights_status="OWN_CONTENT", notes="Schedule only - never a number."),
 }
 
 
@@ -199,5 +250,6 @@ def registry_snapshot(source_names) -> dict:
 __all__ = ["SourceMetadata", "SourceFamily", "source_metadata", "independence_group_for",
            "register_source", "registry_snapshot", "news_source",
            "SRC_NSE", "SRC_YAHOO", "SRC_GEMINI", "SRC_GOOGLE_NEWS", "SRC_RULE_EXPIRY",
-           "SRC_DERIVED", "SRC_DEMO", "GROUP_NSE", "GROUP_YAHOO", "GROUP_GEMINI",
+           "SRC_DERIVED", "SRC_DEMO", "SRC_NSEIX_LIVE", "SRC_NSEIX_DSP", "SRC_RBI_PRESS",
+           "SRC_FED_CALENDAR", "GROUP_NSE", "GROUP_NSEIX", "GROUP_RBI", "GROUP_FED", "GROUP_YAHOO", "GROUP_GEMINI",
            "GROUP_INTERNAL", "GROUP_DEMO", "GROUP_UNKNOWN", "NEWS_GROUP_PREFIX"]

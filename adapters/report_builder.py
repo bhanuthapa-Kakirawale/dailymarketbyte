@@ -74,12 +74,19 @@ def build_report(session, narrative, observations: list[Observation], tiles: lis
                  flows: dict, sectors: list, gainers: list, losers: list,
                  report_date: dt.date, universe_label: str = "", demo: bool = False,
                  now: dt.datetime | None = None,
-                 content_safety: dict | None = None) -> MarketReport:
+                 content_safety: dict | None = None,
+                 movers_coverage: dict | None = None,
+                 session_alignment: dict | None = None) -> MarketReport:
     """Build the PRE_MARKET report for `report_date` describing `session.session_date`.
 
     `session` is a providers.IndexSession, `narrative` a providers.NarrativeBundle - typed
     provider output, not raw dictionaries. Everything displayed downstream is derived from
     what this function puts into the report.
+
+    `movers_coverage` is the acquisition audit from `market.get_movers_audited` (universe
+    expected / observed / validated, coverage_pct, guard-held rows). It is recorded as-is in
+    `metadata["movers_coverage"]`; absent, the report simply carries no coverage record and the
+    editorial coverage gate treats its ranking as unproven.
     """
     now = now or _now_ist()
     facts = facts_from(observations, now=now)
@@ -124,6 +131,10 @@ def build_report(session, narrative, observations: list[Observation], tiles: lis
             "universe": universe_label,
             "session_date": session.session_date.isoformat(),
             "previous_session_date": (session.prev_date.isoformat() if session.prev_date else None),
+            **({"movers_coverage": dict(movers_coverage)} if movers_coverage is not None else {}),
+            # Index-level session check (`market.check_index_session_alignment`): canonical
+            # previous session, benchmark gaps. Diagnostics only - never read by presentation.
+            **({"session_alignment": dict(session_alignment)} if session_alignment else {}),
             "notes": ("Phase 2: this report is the authoritative input to presentation. Every "
                       "number rendered in the video is derived from these facts and sections."),
         },
@@ -148,6 +159,7 @@ def _movers_section(rows: list, facts: list[Fact], narrative) -> list:
             "symbol": symbol, "name": row.get("name"), "close": row.get("close"),
             "change_pct": row.get("pct"), "relative_volume": row.get("volx"),
             "catalyst": catalyst.to_dict() if catalyst else None,
+            **({"validation": row["validation"]} if row.get("validation") else {}),
             "fact_ids": [i for i in (_ids(facts, Metric.STOCK_CLOSE, symbol),
                                      _ids(facts, Metric.STOCK_CHANGE_PCT, symbol),
                                      _ids(facts, Metric.STOCK_RELATIVE_VOLUME, symbol)) if i],
@@ -161,6 +173,19 @@ def save_report(report: MarketReport, out_dir: str, demo: bool = False) -> str:
     os.makedirs(directory, exist_ok=True)
     suffix = "_DEMO" if demo else ""
     path = os.path.join(directory, f"premarket_{report.report_date:%Y-%m-%d}{suffix}.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(report.to_json())
+    return path
+
+
+def save_unfit_report(report: MarketReport, out_dir: str) -> str:
+    """A report that failed data validation in the REPORT job: written for diagnosis under
+    reports/unfit/ with a timestamp, NEVER at the canonical path and never indexed in history,
+    so a later retry can still produce the canonical report for that session."""
+    directory = os.path.join(out_dir, REPORT_DIR, "unfit")
+    os.makedirs(directory, exist_ok=True)
+    stamp = (report.generated_at or _now_ist()).strftime("%Y%m%dT%H%M%S")
+    path = os.path.join(directory, f"{report.report_id}_{stamp}.json")
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(report.to_json())
     return path

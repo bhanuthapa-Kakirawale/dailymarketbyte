@@ -103,5 +103,5 @@ def test_fetch_window_is_long_enough_for_the_definition():
     """A one-month download lands right on the 21-session boundary, so a single missing day
     would drop the metric for the whole universe."""
     import inspect
-    source = inspect.getsource(market.get_movers)
+    source = inspect.getsource(market.get_movers_audited)
     assert 'period="3mo"' in source

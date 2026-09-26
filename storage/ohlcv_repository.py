@@ -113,7 +113,46 @@ class OHLCVStore:
                      else bar.quality_status))
         return len(bars)
 
+    def replace_non_final_bar(self, bar, expected_retrieved_at, expected_quality) -> bool:
+        """Cache repair only (`radar.cache_repair`): overwrite ONE stored row with a final bar,
+        but only if it is still exactly the non-final row the repair scanned - same
+        `retrieved_at` and `quality_status`. A row another run has since rewritten (e.g. a
+        post-close write-through) is left alone. Returns whether the row was replaced."""
+        with self.conn:
+            cur = self.conn.execute(
+                """UPDATE daily_ohlcv SET open=?, high=?, low=?, close=?, volume=?,
+                                          retrieved_at=?, quality_status=?
+                   WHERE symbol=? AND session_date=? AND source=?
+                     AND retrieved_at=? AND quality_status=?""",
+                (bar.open, bar.high, bar.low, bar.close, bar.volume, _iso_dt(bar.retrieved_at),
+                 bar.quality_status.value if isinstance(bar.quality_status, QualityStatus)
+                 else bar.quality_status,
+                 bar.symbol, _iso_date(bar.session_date), bar.source,
+                 _iso_dt(expected_retrieved_at),
+                 expected_quality.value if isinstance(expected_quality, QualityStatus)
+                 else expected_quality))
+            return cur.rowcount == 1
+
     # ------------------------------------------------------------------ reading
+    def get_possibly_non_final(self, source: str | None = None) -> list:
+        """Rows that MIGHT not be a session's final bar: BACKFILL_PENDING (Close missing), or
+        retrieved no later than the session's own UTC date (the only rows that can have been
+        fetched before that session's IST close). `radar.cache_repair` makes the exact call."""
+        sql = ("SELECT * FROM daily_ohlcv WHERE (quality_status = ? "
+               "OR substr(retrieved_at, 1, 10) <= session_date)")
+        params: list = [QualityStatus.BACKFILL_PENDING.value]
+        if source:
+            sql += " AND source = ?"
+            params.append(source)
+        sql += " ORDER BY session_date, symbol"
+        return [self._row(r) for r in self.conn.execute(sql, params).fetchall()]
+
+    def get_bar(self, symbol: str, session_date, source: str) -> OHLCVRow | None:
+        row = self.conn.execute(
+            "SELECT * FROM daily_ohlcv WHERE symbol = ? AND session_date = ? AND source = ?",
+            (symbol, _iso_date(session_date), source)).fetchone()
+        return self._row(row) if row else None
+
     def get_range(self, symbols, start_date, end_date, source: str | None = None) -> list:
         """Bars for `symbols` with `start_date <= session_date <= end_date`, oldest first."""
         symbols = list(symbols)

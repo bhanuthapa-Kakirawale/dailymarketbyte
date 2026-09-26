@@ -304,6 +304,9 @@ def test_persistence_failure_returns_degraded_result_not_silent_success():
         def get_prior_selections(self, *a, **k):
             raise RuntimeError("simulated: database unavailable")
 
+        def get_prior_publications(self, *a, **k):     # the cooldown input (published only)
+            raise RuntimeError("simulated: database unavailable")
+
     pairs = [make_pair("AAA", _date(0))]
     result = es.run_and_persist(_date(0), pairs, BrokenStore(), spine=[_date(0)])
     assert result.degraded is True

@@ -10,7 +10,12 @@ produce". Rows here carry `json_artifact_path` so the authoritative file is alwa
 """
 from __future__ import annotations
 
-SCHEMA_VERSION = 1
+# v2 (PRE data-sources phase): publication_runs gains target_date + run_status so PRE-MARKET
+# runs (which never upload) are auditable in the same operational history as POST runs.
+# v3 (PRE production scheduling): publication_runs gains job_type (REPORT_BUILD / POST_MARKET /
+# PRE_MARKET - `mode` alone was ambiguous: a POST run's mode is LOCAL/PRODUCTION/DEMO) and
+# source_session_date (the canonical session whose report the job built or consumed).
+SCHEMA_VERSION = 3
 
 # Composite primary keys throughout: a fact_id is canonical *within* a report
 # (fact_index-close-nifty-50-2026-09-18), but two different reports could legitimately
@@ -163,11 +168,17 @@ CREATE TABLE IF NOT EXISTS publication_runs (
     youtube_video_id   TEXT,
     failure_stage      TEXT,
     failure_reason     TEXT,
-    details_json       TEXT
+    details_json       TEXT,
+    target_date        TEXT,   -- v2: the session the run is FOR (PRE: the session about to open)
+    run_status         TEXT,   -- v2: SUCCESS / DEGRADED / BLOCKED / FAILED / SKIPPED
+    job_type           TEXT,   -- v3: REPORT_BUILD / POST_MARKET / PRE_MARKET (NULL = legacy row)
+    source_session_date TEXT   -- v3: the canonical session whose report the job built/consumed
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_report ON publication_runs (report_id);
 CREATE INDEX IF NOT EXISTS idx_runs_started ON publication_runs (started_at);
+CREATE INDEX IF NOT EXISTS idx_runs_mode_target ON publication_runs (mode, target_date);
+CREATE INDEX IF NOT EXISTS idx_runs_job_target ON publication_runs (job_type, target_date);
 """
 
 __all__ = ["SCHEMA_SQL", "SCHEMA_VERSION"]

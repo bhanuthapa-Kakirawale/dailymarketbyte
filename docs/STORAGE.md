@@ -120,12 +120,24 @@ tested in production is a gate nobody trusts.
 
 ## Schema versioning
 
-`PRAGMA user_version`, with `SCHEMA_VERSION = 1` in `storage/schema.py`.
+`PRAGMA user_version`, with `SCHEMA_VERSION = 3` in `storage/schema.py`.
 
 - Fresh database → created at the current version.
 - Equal version → opened as-is.
-- Older version → migrations in `MIGRATIONS` applied in order (none exist yet; the mechanism
-  does, so the first real migration is a data change rather than an architecture change).
+- Older version → migrations in `MIGRATIONS` applied in order.
+  - **v1 → v2 (PRE data-sources phase):** `publication_runs` gains `target_date` (the session
+    a run is FOR) and `run_status` (`SUCCESS`/`DEGRADED`/`BLOCKED`/`FAILED`), plus the index
+    `(mode, target_date)`. Additive `ALTER TABLE ... ADD COLUMN` only: no canonical table and no
+    existing row is touched; POST rows carry NULL in both. This is what makes PRE-MARKET runs
+    (mode `PRE_MARKET`, which never upload) auditable in the same operational history as POST
+    runs rather than a second system - see docs/PRE_MARKET.md "Run history".
+  - **v2 → v3 (PRE production scheduling):** `publication_runs` gains `job_type`
+    (`REPORT_BUILD` / `POST_MARKET` / `PRE_MARKET`) and `source_session_date` (the canonical
+    session whose report the job built or consumed), plus the index `(job_type, target_date)`.
+    `mode` alone was ambiguous - a POST run's mode is `LOCAL`/`PRODUCTION`/`DEMO`. Additive only:
+    legacy rows keep NULL and are never rewritten; `StoredRun.job` derives a legacy row's job
+    from its mode (`job_type_of`), and `get_publication_runs(job_type=...)` matches both. See
+    docs/PRODUCTION_SCHEDULE.md "Run history".
 - **Newer version → `SchemaVersionError`, refused.** Writing into a schema written by a newer
   build would corrupt history quietly, which is the one outcome worth real code to prevent.
 
@@ -152,8 +164,12 @@ get_facts(metric=None, instrument=None, start_date=None, end_date=None,
 get_observations(fact_id, report_id=None) -> list
 get_validation_results(fact_id, report_id=None) -> list
 get_catalysts(report_id) / get_events(report_id) / get_source(source_name)
-start_run(mode, report_id=None) / update_run(run_id, **fields) / finish_run(...)
-get_publication_runs(report_id=None, limit=50) -> list
+start_run(mode, report_id=None, run_id=None, target_date=None, stage="COLLECTED",
+          job_type=None, source_session_date=None)       # job_type defaults from mode
+update_run(run_id, **fields) / finish_run(...)      # fields incl. target_date, run_status,
+                                                    # job_type, source_session_date
+get_publication_runs(report_id=None, limit=50, mode=None, target_date=None,
+                     job_type=None) -> list
 ```
 
 Phase 4.1 added two bulk retrievals for the intelligence layer:

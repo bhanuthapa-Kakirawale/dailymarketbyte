@@ -293,3 +293,17 @@ follow-up, deliberately deferred rather than folded in here.
 - No change to any detector's thresholds, math, or composite semantics.
 - No change to video/editorial/publication gates, and nothing here is called from `main.py`.
 - The NIFTY benchmark fetch (relative-performance detector) is not yet routed through the store.
+
+## Non-final bars and second-source index bars (benchmark-gap patch)
+
+- `market.SESSION_FINAL_TIME` (15:40 IST) decides when a bar is final. The write-through never
+  stores an in-progress session. `radar.cache_repair` repairs rows cached before that guard
+  existed: `BACKFILL_PENDING` rows, and `OK` rows retrieved before their own session's final
+  time. It uses `OHLCVStore.get_possibly_non_final` (scan) and
+  `OHLCVStore.replace_non_final_bar`, a conditional UPDATE that lands only if `retrieved_at` and
+  `quality_status` are unchanged since the scan, so a final bar is never overwritten. Every row
+  is read back, checked against NSE's bhavcopy, and recorded in the audit. See
+  docs/VALIDATION_RULES.md section 11.
+- Index bars recovered from NSE's end-of-day file (VALIDATION_RULES section 10) are
+  **never written to this store**. `source="yahoo"` rows remain exactly what Yahoo returned.
+

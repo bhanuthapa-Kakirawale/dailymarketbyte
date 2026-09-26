@@ -24,9 +24,16 @@ def _set_version(conn: sqlite3.Connection, version: int) -> None:
     conn.execute(f"PRAGMA user_version = {int(version)}")
 
 
-# Upgrade steps, applied in order for any database below SCHEMA_VERSION. Empty today because
-# version 1 is the first schema - see storage/migrations.py for the same convention.
-MIGRATIONS: list = []
+def _v2_radar_publications(conn: sqlite3.Connection) -> None:
+    """v1 -> v2: add the RADAR_PUBLISHED ledger. Additive only - existing selection rows keep
+    their lifecycle_state; nothing is backfilled (no v1 selection was ever confirmed as
+    published, so none is published)."""
+    conn.executescript(SCHEMA_SQL)
+
+
+# Upgrade steps, applied in order for any database below SCHEMA_VERSION - see
+# storage/migrations.py for the same convention.
+MIGRATIONS: list = [(2, _v2_radar_publications)]
 
 
 def initialise(conn: sqlite3.Connection) -> int:

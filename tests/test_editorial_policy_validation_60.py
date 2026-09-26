@@ -34,9 +34,10 @@ def test_exactly_60_sessions_selected_when_data_exists():
     assert selected == sorted(selected)
 
 
-def test_holiday_excluded_from_session_selection():
+def test_holiday_excluded_from_session_selection(declare_nse_holiday):
     dates = [ts.date() for ts in __import__("pandas").bdate_range(end=dt.date(2026, 9, 21), periods=100)]
     holiday = dates[70]
+    declare_nse_holiday(holiday)
     spine_dates = [d for d in dates if d != holiday]
     benchmark = _benchmark(spine_dates)
     selected, _prev, _warn = v60.select_60_sessions(benchmark, end_session=dt.date(2026, 9, 21))

@@ -131,7 +131,7 @@ def select_session_dates(benchmark_series: list, count: int = TARGET_SESSIONS) -
     first spine date is therefore never selectable, exactly like `market.get_market()`'s own
     `recap_date`/`prev_date` pairing requires a session before the one being described.
     """
-    spine = sorted({row["date"] for row in benchmark_series if row.get("date") is not None})
+    spine = session_alignment.canonical_session_list(benchmark_series)
     warnings = []
     selectable = spine[1:]  # every date except the very first has a spine prev_date
     if len(selectable) < count:

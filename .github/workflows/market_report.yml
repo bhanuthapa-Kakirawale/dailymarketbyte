@@ -1,0 +1,70 @@
+name: Market Report (canonical, no video)
+# REPORT job: builds the canonical MarketReport for the session that just closed, plus the
+# historical intelligence snapshot and the Market Radar, and persists them. No video, no upload.
+# Idempotent: the retry slot is a no-op once the report exists. See docs/PRODUCTION_SCHEDULE.md.
+on:
+  schedule:
+    - cron: "0 14 * * 1-5"    # 14:00 UTC = 19:30 IST - after NSE's end-of-day files and provisional FII/DII
+    - cron: "0 16 * * 1-5"    # 16:00 UTC = 21:30 IST - retry (no-op when the report already exists)
+  workflow_dispatch:
+    inputs:
+      session_date:
+        description: "Session to build (YYYY-MM-DD); empty = latest final session"
+        required: false
+        default: ""
+# Every job that reads or writes the persisted history runs one at a time.
+concurrency:
+  group: daily-byte-state
+  cancel-in-progress: false
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -r requirements.txt
+      - name: Restore persisted history (canonical reports, run history, OHLCV, Radar)
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            output/data
+            output/reports
+            output/radar
+            output/intelligence
+            output/report_jobs
+          key: daily-byte-state-${{ github.run_id }}
+          restore-keys: daily-byte-state-
+      - name: Build the canonical report (no video)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SESSION_DATE: ${{ github.event.inputs.session_date }}
+        run: |
+          if [ -n "$SESSION_DATE" ]; then
+            python main.py --mode report --session-date "$SESSION_DATE"
+          else
+            python main.py --mode report
+          fi
+      - name: Save persisted history
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            output/data
+            output/reports
+            output/radar
+            output/intelligence
+            output/report_jobs
+          key: daily-byte-state-${{ github.run_id }}-${{ github.run_attempt }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: market-report-${{ github.run_id }}
+          retention-days: 30
+          path: |
+            output/reports/**
+            output/report_jobs/**
+            output/radar/*.json
+            output/radar/presentation/*.json
+            output/intelligence/**

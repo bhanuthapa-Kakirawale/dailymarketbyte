@@ -30,7 +30,7 @@ from . import editorial_policy_hybrid as eph
 from . import editorial_policy_validation as epv
 from . import hybrid_editorial_policy_validation as hepv
 from . import historical_validation as hv
-from . import relative_acquisition
+from . import relative_acquisition, session_alignment
 from .novelty import classify_history
 from .novelty_validation import combined_records
 
@@ -50,7 +50,7 @@ def select_60_sessions(benchmark_series_full: list, *, end_session: dt.date = EN
     validation"). Never calendar-day subtraction, never a hard-coded holiday list - purely the
     `^NSEI` benchmark's own trading-session spine, exactly like every other validation packet.
     """
-    spine = sorted({row["date"] for row in benchmark_series_full if row["date"] <= end_session})
+    spine = session_alignment.canonical_session_list(benchmark_series_full, end=end_session)
     warnings = []
     selectable = spine[1:]
     if len(selectable) < count:

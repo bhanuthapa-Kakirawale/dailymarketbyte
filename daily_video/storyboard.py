@@ -171,6 +171,9 @@ class Storyboard:
     publication: dict | None = None
     public_audit: dict = field(default_factory=dict)
     gate: object | None = None
+    # displayed-claim trace (publication.claims): every visible number -> fact(s) / derivation
+    claims: list = field(default_factory=list)
+    claim_texts: dict = field(default_factory=dict)
 
     @property
     def total_duration(self) -> float:
@@ -326,11 +329,16 @@ def _flows(plan):
     bars = [{"name": it.title, "value": it.value, "tag": it.label, "numeric": it.numeric,
              "positive": it.positive} for it in scene.items]
     fii, dii = bars[0], bars[1]
-    verb = lambda b: "bought" if b["positive"] else "sold"
-    headline = f"FIIs {verb(fii)}, DIIs {verb(dii)}"
+    # net cash-market flows: net sellers / buyers - never gross "sold" / "bought"
+    side = lambda b: "net buyers" if b["positive"] else "net sellers"
+    headline = (f"FIIs and DIIs were both {side(fii)}" if fii["positive"] == dii["positive"]
+                else f"FIIs were {side(fii)}; DIIs were {side(dii)}")
+    sub = scene.secondary_text or "Net cash-market flows"
+    if "provisional" not in sub.lower():
+        sub = f"{sub} (provisional)"
     return SceneSpec(
         kind="FLOWS", section="FLOWS", duration=5.5, headline=headline,
-        subline=scene.secondary_text or "Net cash market flows (provisional)",
+        subline=sub,
         texts={"bars": bars},
         freeze={"t": 4.8, "what": headline,
                 "where": "opposing bars from the centre line - left is selling, right is buying",
@@ -460,6 +468,26 @@ def dynamic_hook_spec(hook_plan, sheet) -> SceneSpec:
         freeze={"t": round(tm.total - 0.3, 3), "what": hook_plan.curiosity_line,
                 "where": HOOK_WHERE.get(hook_plan.hero_visual.value, "the hero visual"),
                 "why": hook_plan.summary_line, "mode": "DYNAMIC_HOOK"})
+
+
+# --------------------------------------------------------------------------- de-duplication
+def pulse_adds_distinct_fact(pulse: dict | None) -> bool:
+    """Does the MARKET PULSE carry a fact the Nifty chart scene does not? The chart already
+    shows the close, the change and the structural level. The pulse's own extra is where the
+    close sat in the day's range - distinct only when it CONTRADICTS the day's direction (an
+    intraday reversal: a down day that closed near the high, an up day near the low)."""
+    if not pulse:
+        return False
+    loc = (pulse.get("support") or {}).get("location")
+    return (loc == "HIGH" and not pulse.get("positive")) or (loc == "LOW" and pulse.get("positive"))
+
+
+def pulse_is_redundant(order, pulse, dynamic_hook: bool) -> bool:
+    """Candidate for de-duplication: the hook (planned without the pulse) may state Nifty's move,
+    the NIFTY chart scene states it again with richer context, and the pulse adds nothing
+    distinct. Confirmed only once the hook actually cites `nifty.move`."""
+    return (dynamic_hook and "PULSE" in order and "NIFTY" in order
+            and not pulse_adds_distinct_fact(pulse))
 
 
 # --------------------------------------------------------------------------- entry point
@@ -647,6 +675,7 @@ def build_storyboard(plan, pres, radar_presentation: dict | None = None,
     # Runtime ceiling - content-driven: nothing is stretched; optional sections go first.
     def _total(ms):
         return sum(x.duration for x in ms) + 2.6 + 5.0
+    sections_audit = ps.audit.setdefault("omitted_sections", {})
     for key in POST_TRIM_ORDER:
         if _total(main) <= POST_MAX_RUNTIME:
             break
@@ -655,19 +684,28 @@ def build_storyboard(plan, pres, radar_presentation: dict | None = None,
             post.reasons[key] = f"omitted: POST runtime ceiling {POST_MAX_RUNTIME:.0f}s"
             if key in post.order:
                 post.order.remove(key)
+            pub_key = {"EXCHANGE": "EXCHANGE_WATCH", "IPO": "IPO_WATCH"}.get(key)
+            if pub_key:
+                sections_audit[pub_key] = {"rendered": False, "code": "EDITORIAL_CAP",
+                                           "detail": f"runtime ceiling {POST_MAX_RUNTIME:.0f}s"}
     while _total(main) > POST_MAX_RUNTIME and sum(1 for x in main if x.kind == "STRUCTURE") > 1:
         last = [x for x in main if x.kind == "STRUCTURE"][-1]
         main.remove(last)
         ps.omitted.append({"section": "UNDER THE SURFACE", "item": last.data["kind"],
                            "reason": f"runtime ceiling {POST_MAX_RUNTIME:.0f}s"})
     present = list(dict.fromkeys(s.section for s in main)) + (["RADAR"] if stories else [])
+    # One fact must not take three consecutive scenes (hook -> pulse -> chart): plan the hook
+    # without the pulse when it is a de-duplication candidate, so the hook's summary can never
+    # promise a scene that is then dropped.
+    dedup = pulse_is_redundant(post.order, post.pulse, dynamic_hook)
+    hook_present = [k for k in present if not (dedup and k == "PULSE")]
 
     hook_record = None
     if dynamic_hook:
         from hooks import plan_hook, post_market_sheet
         from publication.public_hooks import add_structure_facts, restrict_sheet
-        sheet = post_market_sheet(plan, pres, stories, visual_evidence, present, universe_label,
-                                  snapshot)
+        sheet = post_market_sheet(plan, pres, stories, visual_evidence, hook_present,
+                                  universe_label, snapshot)
         restrict_sheet(sheet, gate)
         shown = {x.data["kind"] for x in main if x.kind == "STRUCTURE"}
         add_structure_facts(sheet, [ins for ins, _ in ps.structure if ins.kind in shown])
@@ -675,6 +713,17 @@ def build_storyboard(plan, pres, radar_presentation: dict | None = None,
         hp = plan_hook(sheet, use_ai=hook_ai, **kwargs)
         hook_scene = dynamic_hook_spec(hp, sheet)
         hook_record = hp.to_dict()
+        if dedup and "nifty.move" in hp.fact_ids:
+            main = [x for x in main if x.section != "PULSE"]
+            post.order.remove("PULSE")
+            post.reasons["PULSE"] = (
+                "omitted: editorial de-duplication - the hook already states Nifty's move and the "
+                "Nifty chart repeats it with richer context (close, the structural level); the "
+                "pulse adds no distinct fact (" + ((post.pulse.get("support") or {}).get("text")
+                                                   or "no support fact") + " agrees with the move)")
+        elif dedup:
+            post.reasons["PULSE"] = (post.reasons.get("PULSE", "") + "; kept: the hook does not "
+                                     "state Nifty's move")
     else:
         hook_scene = _hook(plan, present, len(stories))
     scenes = [hook_scene] + main
@@ -697,8 +746,8 @@ def build_storyboard(plan, pres, radar_presentation: dict | None = None,
                  "reason": f"publication profile {gate.profile.value}: our own technical "
                            "analysis of a named security stays PRIVATE (it can only count "
                            "anonymously in UNDER THE SURFACE)"} for sym in gated_out]
-    for key in ("NIFTY", "MOVERS", "FLOWS", "GLOBAL", "EVENT"):
-        if key not in post.order:
+    for key in ("PULSE", "NIFTY", "MOVERS", "FLOWS", "GLOBAL", "EVENT"):
+        if key not in post.order and post.reasons.get(key, "").startswith("omitted"):
             omitted.append({"section": SECTION_LABELS.get(key, key) or key,
                             "reason": post.reasons.get(key, "")})
     omitted += ps.omitted
@@ -710,11 +759,17 @@ def build_storyboard(plan, pres, radar_presentation: dict | None = None,
 
     post_dict = post.to_dict()
     post_dict["public_reasons"] = ps.reasons
-    return Storyboard(session_date=session, date_label=session.strftime("%a %d %b %Y").upper(),
-                      kicker="SESSION RECAP", scenes=scenes, sources=sources or {},
-                      omitted=omitted, hook_plan=hook_record, post_plan=post_dict,
-                      radar_guard=radar_audit, publication_profile=gate.profile.value,
-                      publication=gate.to_dict(), public_audit=ps.audit, gate=gate)
+    sb = Storyboard(session_date=session, date_label=session.strftime("%a %d %b %Y").upper(),
+                    kicker="SESSION RECAP", scenes=scenes, sources=sources or {},
+                    omitted=omitted, hook_plan=hook_record, post_plan=post_dict,
+                    radar_guard=radar_audit, publication_profile=gate.profile.value,
+                    publication=gate.to_dict(), public_audit=ps.audit, gate=gate)
+    # every visible number -> the fact(s) / approved derivation it comes from
+    from publication.scene_claims import post_claims, storyboard_scene_texts
+    sb.claims = post_claims(sb, getattr(pres, "report", None),
+                            sheet if dynamic_hook else None)
+    sb.claim_texts = storyboard_scene_texts(sb)
+    return sb
 
 
 __all__ = ["SceneSpec", "Storyboard", "build_storyboard", "choose_mode", "primary_event",

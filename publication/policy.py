@@ -99,11 +99,15 @@ def _rules(f: PublishableFact, known_securities) -> _R:
     elif st is RightsStatus.UNKNOWN:
         block("RIGHTS_UNKNOWN")
     elif st is RightsStatus.REVIEW_REQUIRED:
-        if review_required_policy() == ATTRIBUTED_EOD and "LIVE" not in f.tags:
-            r.notes.append("RIGHTS_REVIEW_REQUIRED: published with visible attribution under "
-                           "the ATTRIBUTED_EOD policy")
+        if "LIVE" in f.tags:
+            block("RIGHTS_REVIEW_REQUIRED")          # live readings are never covered
         else:
-            block("RIGHTS_REVIEW_REQUIRED")
+            # kept in the storyboard (review renders stay complete); whether it may reach
+            # PRODUCTION publication is decided per displayed claim by the audit
+            # (publication_rights, policy PUBLIC_REVIEW_REQUIRED_POLICY - default BLOCK)
+            pol = review_required_policy()
+            verdict = "allowed with attribution" if pol == ATTRIBUTED_EOD else "BLOCKED"
+            r.notes.append(f"RIGHTS_REVIEW_REQUIRED: production publication {verdict} under {pol}")
     approved = {f.security} if f.security and not r.reasons else set()
     scan = scan_public_text({f.fact_id: f.text}, known_securities, approved,
                             ipo_context=True)

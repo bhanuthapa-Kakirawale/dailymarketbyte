@@ -77,7 +77,8 @@ def pre_provenance(brief, plan) -> dict:
     if plan.event is not None:
         src = plan.event.source_label.removeprefix("Source: ")
         out["EVENT"] = _prov(src, fmt_date(brief.pre_date), label="EVENT DATE")
-    watch_names = (_report_names(brief, brief.nifty.get("fact_ids")) or ["yahoo_finance"]) +         ([c.source for c in ov.cues] if ov else [])
+    watch_names = ((_report_names(brief, brief.nifty.get("fact_ids")) or ["yahoo_finance"])
+                   + ([c.source for c in ov.cues] if ov else []))
     out["WATCH"] = _prov(_labels(watch_names),
                          f"{fmt_session_close(prev)}" + (f" · {fmt_time(brief.as_of)}" if ov else ""))
     out["STOCK_WATCH"] = _prov("Daily Market Byte Radar (private)", fmt_session_close(prev))
@@ -257,6 +258,7 @@ def build_pre_storyboard(brief, plan, dynamic_hook: bool = True, hook_ai: bool =
         main.append(spec)
     hook_record = None
     scenes = []
+    sheet = None
     if dynamic_hook:
         from hooks import plan_hook, pre_market_sheet
         from hooks.sheet_pre import pre_market_inputs_from_brief
@@ -270,7 +272,7 @@ def build_pre_storyboard(brief, plan, dynamic_hook: bool = True, hook_ai: bool =
         hook_record = hp.to_dict()
     scenes += main
     scenes.append(_closing(plan.closing_line))
-    return Storyboard(session_date=brief.pre_date,
+    sb = Storyboard(session_date=brief.pre_date,
                       date_label=brief.pre_date.strftime("%a %d %b %Y").upper(), kicker=KICKER,
                       scenes=scenes, sources=dict(sources or brief.sources),
                       omitted=list(plan.omitted) + [
@@ -284,6 +286,17 @@ def build_pre_storyboard(brief, plan, dynamic_hook: bool = True, hook_ai: bool =
                                                   "PUBLIC_UNREGISTERED"),
                       publication=gate.to_dict() if gate is not None else None,
                       public_audit=dict(brief.public_audit), gate=gate)
+    from publication.scene_claims import pre_claims, storyboard_scene_texts
+    sb.claims = pre_claims(sb, brief, sheet if dynamic_hook else None)
+    sb.claim_texts = storyboard_scene_texts(sb)
+    # PRE sections the planner dropped on budget/runtime are an editorial cap, not "no data"
+    secs = sb.public_audit.setdefault("omitted_sections", {})
+    for key, pub in (("EXCHANGE", "EXCHANGE_WATCH"), ("IPO", "IPO_WATCH")):
+        if (brief.exchange_watch if key == "EXCHANGE" else brief.ipo_watch) and \
+                key not in plan.order:
+            secs[pub] = {"rendered": False, "code": "EDITORIAL_CAP",
+                         "detail": plan.reasons.get(key, "")}
+    return sb
 
 
 __all__ = ["build_pre_storyboard", "KICKER"]

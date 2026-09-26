@@ -272,7 +272,7 @@ def _post(sheet):
         if up and total and total.value >= 2 and up.value in (0, total.value) and \
                 (up.value == 0) == (nifty.value < 0):
             lines.append(f"Nifty {_verb(nifty.value)} {_abs_display(nifty.display)}. "
-                         f"All {int(total.value)} sector indices {_verb(nifty.value)} too.")
+                         f"All {int(total.value)} tracked sector indices {_verb(nifty.value)} too.")
         lines.append(f"Nifty {_verb(nifty.value)} {_abs_display(nifty.display)} in one session.")
         close = sheet.fact("nifty.close")
         ctx = sheet.fact("nifty.context")
@@ -320,7 +320,7 @@ def _post(sheet):
     flows = [f for f in sheet.facts_of_kind("FLOW") if "opposite" in f.claims]
     if len(flows) == 2:
         a, b = flows
-        verb = lambda f: "bought" if f.value >= 0 else "sold"
+        verb = lambda f: "net buyers" if f.value >= 0 else "net sellers"
         tile = lambda f: {"title": f"{f.entity}s", "name": f"{f.entity}s {verb(f)}",
                           "value": f.display, "numeric": f.value, "positive": f.value >= 0,
                           "note": "Net, cash market"}
@@ -333,8 +333,9 @@ def _post(sheet):
                                       f"RADAR_EVENT:{top_radar}" if top_radar else None,
                                       "RADAR_SWEEP")],
                              exclude=("FLOWS",)),
-                  [f"{a.entity}s {verb(a)} {_abs_display(a.display)}. "
-                   f"{b.entity}s {verb(b)} {_abs_display(b.display)}."],
+                  [f"{a.entity}s were {verb(a)}: {_abs_display(a.display)}. "
+                   f"{b.entity}s were {verb(b)}.",
+                   f"{a.entity}s were {verb(a)}; {b.entity}s were {verb(b)}."],
                   f"{a.entity}s and {b.entity}s moved money in opposite directions.")
         out.append(c)
 

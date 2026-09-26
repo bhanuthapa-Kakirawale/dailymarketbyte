@@ -25,7 +25,9 @@ def plan_provenance(report, plan) -> list:
             continue
         if kind == "CONTEXT":
             lab = ProvenanceLabel(source="Daily Market Byte history · NSE / Yahoo Finance",
-                                  data_as_of=fmt_date(session))
+                                  data_as_of=fmt_date(session),
+                                  roles=(("HISTORY", "Daily Market Byte"),
+                                         ("PRICES", "NSE / Yahoo")))
         elif kind == "EVENTS":
             lab = ProvenanceLabel(source="NSE expiry rule",
                                   data_as_of=fmt_date(report.report_date or session),

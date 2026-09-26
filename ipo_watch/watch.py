@@ -172,10 +172,12 @@ def _provenance(ipo: IPOEvent, rows: list) -> ProvenanceLabel:
         if lab not in labels:
             labels.append(lab)
     as_ofs = [r["as_of"] for r in rows if r.get("as_of")]
-    if as_ofs:
-        return ProvenanceLabel(source=" · ".join(labels) or "NSE",
-                               data_as_of=fmt_datetime(max(as_ofs)))
-    return ProvenanceLabel(source=" · ".join(labels) or "NSE", data_as_of=fmt_date(ipo.data_as_of))
+    roles = ()
+    if len(labels) > 1:
+        roles = tuple((("ISSUE DATA" if lab == "NSE" else "OFFER DOCUMENT"),
+                       ("NSE" if lab == "NSE" else "SEBI filing")) for lab in labels)
+    as_of = fmt_datetime(max(as_ofs)) if as_ofs else fmt_date(ipo.data_as_of)
+    return ProvenanceLabel(source=" · ".join(labels) or "NSE", data_as_of=as_of, roles=roles)
 
 
 def build_card(ipo: IPOEvent, kind: str, mode: str = "PRE") -> dict:
@@ -193,7 +195,9 @@ def build_model(chosen, mode: str = "PRE") -> dict | None:
         ipo, kind = chosen[0]
         card = build_card(ipo, kind, mode)
         return {"layout": "CARD", "headline": f"{ipo.company_name}: IPO {card['chip'].lower()}",
-                "card": card, "provenance_lines": card["provenance_lines"]}
+                "card": card, "provenance_lines": card["provenance_lines"],
+                "sources": sorted({r["source_name"] for r in fact_rows(ipo, kind)
+                                   if r.get("source_name")} | {ipo.source_name})}
     word = {2: "Two", 3: "Three", 4: "Four"}[len(chosen)]
     rows = [{"name": ipo.company_name, "board": ipo.board_type.value, "chip": chip_for(k, mode)}
             for ipo, k in chosen]
@@ -203,6 +207,7 @@ def build_model(chosen, mode: str = "PRE") -> dict | None:
                 else f"{word} primary-market events {when}")
     prov = ProvenanceLabel(source="NSE", data_as_of=fmt_date(chosen[0][0].data_as_of))
     return {"layout": "BOARD", "headline": headline, "rows": rows,
+            "sources": sorted({ipo.source_name for ipo, _ in chosen}),
             "provenance": prov.to_dict(), "provenance_lines": prov.lines()}
 
 

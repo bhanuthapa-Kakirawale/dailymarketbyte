@@ -667,14 +667,14 @@ def _sectors(brief, reasons):
     down = sum(1 for s in secs if s["pct"] < 0)
     lead_tag, lag_tag = "LEADER", "LAGGARD"
     if down == n:
-        headline = f"All {n} sector indices fell on {wd}; {rows[0]['name']} fell least"
+        headline = f"All {n} tracked sector indices fell on {wd}"
         lead_tag, lag_tag = "FELL LEAST", "FELL MOST"
     elif up == n:
-        headline = f"All {n} sector indices rose on {wd}; {rows[0]['name']} led"
+        headline = f"All {n} tracked sector indices rose on {wd}"
         lag_tag = "ROSE LEAST"
     else:
         headline = f"{rows[0]['name']} led, {rows[-1]['name']} lagged on {wd}"
-    model = {"headline": headline, "tone": f"{up} of {n} sector indices closed higher",
+    model = {"headline": headline, "tone": f"{up} of {n} tracked indices closed higher",
              "rows": rows, "leader_tag": lead_tag, "laggard_tag": lag_tag,
              "strip_title": "ALL SECTORS, STRONGEST FIRST"}
     spread = secs[0]["pct"] - secs[-1]["pct"]
@@ -737,9 +737,9 @@ def _watch(brief, show, setup, overnight, vix_m, flows_m, event, sectors_m, stoc
     if not show["SECTORS"] and pick_s is not None and abs(pick_s["pct"]) >= SECTOR_WATCH_MIN_PCT:
         lead, lag, pick = lead_s, lag_s, pick_s
         if pick is lag:
-            note = ("Fell most of %d sector indices" % len(secs)) if lead["pct"] < 0 else "Weakest sector index"
+            note = ("Fell most of %d tracked sector indices" % len(secs)) if lead["pct"] < 0 else "Weakest sector index"
         else:
-            note = ("Rose most of %d sector indices" % len(secs)) if lag["pct"] > 0 else "Strongest sector index"
+            note = ("Rose most of %d tracked sector indices" % len(secs)) if lag["pct"] > 0 else "Strongest sector index"
         cands.append(WatchItemModel("SECTOR", "SECTOR", f"{pick['name']} {_pct(pick['pct'])} on {wd}",
                                     note, pick["pct"] >= 0))
     if not show["STOCK_WATCH"] and brief.stock_facts:

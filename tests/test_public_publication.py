@@ -161,7 +161,9 @@ def test_every_factual_scene_shows_source_and_data_as_of():
     sb = _post(ipo_scenario="LISTING_DAY")
     for s in scene_audit(sb):
         if s["requires_provenance"]:
-            assert s["provenance"].get("source", "").startswith("SOURCE: "), s
+            src = s["provenance"].get("source", "")
+            # single-role "SOURCE: X", or one "ROLE: X" per source when roles differ
+            assert src.startswith("SOURCE: ") or (": " in src and " · " in src), s
             assert "AS OF" in s["provenance"].get("data_as_of", "") or \
                    "DATE" in s["provenance"].get("data_as_of", ""), s
 
@@ -194,7 +196,10 @@ def test_provenance_is_visible_for_the_whole_scene_no_flash():
         assert any(tb.role == "provenance" for tb in rec.texts)
 
 
-def test_public_post_audit_passes_and_is_complete():
+def test_public_post_audit_passes_and_is_complete(monkeypatch):
+    # production PASS needs an explicit owner rights decision (default BLOCK - see
+    # tests/test_public_corrections.py); the content checks pass either way
+    monkeypatch.setenv("PUBLIC_REVIEW_REQUIRED_POLICY", "ATTRIBUTED_EOD")
     sb = _post(ipo_scenario="CLOSES_TODAY")
     audit = audit_storyboard(sb, "POST_UNIFIED")
     assert audit["final"] == "PASS", audit["failed_checks"]
@@ -312,9 +317,12 @@ def test_public_pre_withholds_gift_nifty_unless_the_policy_allows_it():
 
 
 def test_public_pre_audit_passes_and_overnight_shows_fetched_time():
+    from publication.audit import content_checks_passed
     brief, plan, sb = _pre()
     audit = audit_storyboard(sb, "PRE", synthetic=True)
-    assert audit["final"] == "PASS", audit["failed_checks"]
+    # a synthetic brief is RESTRICTED (never publishable); every CONTENT check passes
+    assert content_checks_passed(audit), audit["failed_checks"]
+    assert audit["failed_checks"] == ["publication_rights"]
     ov = next(s for s in sb.scenes if s.kind == "PRE_OVERNIGHT")
     assert "FETCHED:" in ov.texts["provenance"]["as_of"]           # live Asian readings
     comp = Composer(sb)

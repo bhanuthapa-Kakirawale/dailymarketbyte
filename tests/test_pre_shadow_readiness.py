@@ -474,24 +474,25 @@ FROZEN = {
     "daily_video/annotations.py": "fa13f1470f655792786c9704343f80e6f8649df030cb87d55d1dcc57d43f2ec7",
     "daily_video/chartkit.py": "6b878b0d5152c3d0e2d5c148b758841984f1482dd974951b782023a910ec0706",
     "daily_video/chrome.py": "d702e1707531f90e1ce5db5204ac8eb9951692ef476d19818532fb246ee02ffe",
-    "daily_video/composer.py": "85291e2ef35a85fbebda2ec26e418d98bfb0e73b1a844ee4efacb74d12d0f670",
+    "daily_video/composer.py": "dd41781a54d79ddfd3463902c2617a6caa75b4dc35ee6ca007c7c66e4acd0c38",
     "daily_video/hook_kit.py": "65054d18a31ce549a9da2ea5adbdcadda7fc9e1366283fcff0d71c462e688cee",
     "daily_video/hook_scene.py": "f6af246492bc2d0d5b92f24b18ed84cccd7fdbfddd99f26930ec865d88759d2f",
     "daily_video/market_scenes.py": "e2b981425c12d98def8ed3da62d58a405f54eaab411c168bbd4b8f669820e12d",
     "daily_video/pre_scenes.py": "87ad294e425015ea8bf3e1db150dc69d3de06865010af150d0487117077d70c3",
-    "daily_video/pre_storyboard.py": "b734e59ba53cd26abeb9aa3ad4cde240fd70aafc323b0d863abc465ceccd6b89",
+    "daily_video/pre_storyboard.py": "d5e71add42e31820ee0e4c1b9696c303a05a270e4a69edac78912d65157e79f9",
     "daily_video/radar_scenes.py": "ecda846e8012b64794641568023fa3582d256b2456c6ff805171cb76738b9647",
     "daily_video/radar_story_scene.py": "e544e5b3d224e6fcd194b9c5602a26749bda5f6c7a1a0228cb9e2ba38b53c64a",
     "daily_video/scenes.py": "8ff19afcd878d6122f49a3410583d688bd327a04fc2de1b7f6725078a1fe53d1",
-    "daily_video/storyboard.py": "3698e27ec90e4578f1790874bc8851305b4d3c480e1b98bda40a7dbc212a1bc5",
+    "daily_video/storyboard.py": "e5834a885429df58f85c790b48406258ab74977d73fc681537ba9abb26da4795",
     "daily_video/theme.py": "8e1af617da9052c104ede87ddd393de5744355d657b513accfee4414f8b726db",
     "daily_video/typography.py": "d6b5620d928e4ea9eef40647713b37f639f5ce087a47bd112bf0af2c37f152ae",
-    "video.py": "83cd7583d32bc9e4e19033dfa3c137a8b1a77816548814dfacb50aa983d2db42",
+    "video.py": "7b7155df022f5795ab271a38963fa05ab9cd4ba6917391a75f5df3567280e352",
     "chart.py": "ca402c4a721039861bf86dd0ab6b25cef997024732a3de2edee5c74c26c2f2fa",
-    # Re-pinned 2026-09-26 with owner approval: public market intelligence V1 brief (feature/sebi-publication-v1) - provenance bar, public scenes, publication gate.
-    "daily_video/provenance_bar.py": "f6e353daf13021b776e3d8607644e27d5ad0e15d9101cf38d4de846456a356b8",
+    # Re-pinned 2026-09-26 with owner approval: public market intelligence V1 brief (feature/sebi-publication-v1) - provenance bar, public scenes, publication gate;
+    # and the V1 final review correction pass (source roles, de-duplication, silent V2).
+    "daily_video/provenance_bar.py": "f46e5eeab911cec195df35b58bb9bb7ff3955dd8e92eadf00381e11046266939",
     "daily_video/public_scenes.py": "e91915b296634e8c3ac36fbd1331036e308de5a41b6ed3055a81f5c25e3fa808",
-    "daily_video/public_storyboard.py": "dd14e2cc71b5040a48a5877f29613f56aac6264b7634f7d49ef652cb9b858cd3",
+    "daily_video/public_storyboard.py": "ccb1b025d1c1dbd508d7b85120c80de6dbb6e75a844dd29299b27e50148f145e",
 }
 
 

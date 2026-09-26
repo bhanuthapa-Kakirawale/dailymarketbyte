@@ -289,8 +289,25 @@ def _finish(sid, sb, product, mp4, synthetic, what, watermark=None):
         video = os.path.join(out, f"{sid}.mp4")
         if not comp.render(video)["ok"]:
             video = None
-    audit = audit_storyboard(sb, product, video_path=video, synthetic=synthetic)
+    probe = {}
+    if video:
+        from qa.video_qa import probe_media
+        probe = probe_media(video)
+    audio = {"audio_stream": bool(probe.get("audio")), "audio_phase_enabled": False}
+    audit = audit_storyboard(sb, product, video_path=video, synthetic=synthetic, audio=audio)
     write_publication_audit(audit, out)
+    from publication.audit import content_checks_passed
+    _dump(os.path.join(out, "qa_artifact.json"), {
+        "scenario": sid, "freeze_frame_qa": {"passed": qa["passed"], "issues": {
+            e["scene"]: e["qa"]["issues"] for e in qa["scenes"] if not e["qa"]["passed"]}},
+        "video": video, "storyboard_duration": sb.total_duration,
+        "probed_duration": probe.get("duration"), "probed_video": probe.get("video"),
+        "audio_stream": audio["audio_stream"],
+        "duration_matches": (probe.get("duration") is not None
+                             and abs(probe["duration"] - sb.total_duration) < 0.5),
+        "publication_audit": {"final": audit["final"], "failed_checks": audit["failed_checks"],
+                              "content_checks_passed": content_checks_passed(audit)},
+        "scenes": [s.kind for s in sb.scenes]})
     return {"scenario": sid, "synthetic": synthetic, "what": what,
             "profile": sb.publication_profile, "duration": sb.total_duration,
             "scenes": [s.kind for s in sb.scenes], "freeze_frame_qa": qa["passed"],

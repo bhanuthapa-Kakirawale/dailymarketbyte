@@ -137,7 +137,8 @@ def _flows_scene(report, snapshot, used_insights) -> ScenePlan | None:
         return None
 
     scene = ScenePlan(scene_id="flows", scene_type=SceneType.FLOWS,
-                      primary_text="FII / DII FLOWS",
+                      # NSE's provisional net cash-market figures - "provisional" stays visible
+                      primary_text="FII / DII FLOWS · PROVISIONAL",
                       show_ticker="FLOWS" in TICKER_SCENES,
                       source_fact_ids=list(flows.get("fact_ids") or []),
                       metadata={"presentation": "FLOWS_SCAN"})
@@ -474,6 +475,44 @@ def _outro_scene() -> ScenePlan:
     return apply_timing(scene)
 
 
+# Scenes whose items are canonical report facts, and how many items each needs to stand.
+_REPORT_SCENES = {"GLOBAL": 2, "FLOWS": 2, "SECTORS": 2, "NIFTY": 0}
+
+
+def _admit_report_items(scene, report, pub, plan, session) -> bool:
+    """PUBLIC: every report-backed item goes through the publication gate - an AI-only figure
+    (e.g. a Gemini-only GIFT Nifty or Brent cue) is dropped and recorded; a scene left below
+    its minimum is dropped. Returns whether the scene stays."""
+    from publication.classification import Scope
+    from publication.classify import report_fact
+    kind = scene.scene_type.value
+    if kind not in _REPORT_SCENES:
+        return True
+    scope = {"SECTORS": Scope.SECTOR, "NIFTY": Scope.INDEX}.get(kind, Scope.MARKET)
+    if kind == "NIFTY":
+        ok = pub.admit(report_fact(report, scene.source_fact_ids,
+                                   f"{scene.primary_text} {scene.primary_value}", scope, kind,
+                                   "nifty.move", session))
+        if not ok:
+            plan.omitted.append({"scene": "nifty", "reason": "publication_profile",
+                                 "profile": pub.profile.value})
+        return ok
+    kept = []
+    for item in scene.items:
+        f = report_fact(report, item.source_fact_ids, f"{item.title} {item.value}", scope, kind,
+                        f"{kind.lower()}.{item.title}", session)
+        if pub.admit(f):
+            kept.append(item)
+        else:
+            plan.omitted.append({"scene": scene.scene_id, "reason": "publication_profile",
+                                 "item": item.title, "profile": pub.profile.value,
+                                 "detail": "fact not publishable publicly (e.g. AI-only source)"})
+    scene.items = kept
+    scene.source_fact_ids = [fid for i in kept for fid in i.source_fact_ids] or \
+        scene.source_fact_ids
+    return len(kept) >= _REPORT_SCENES[kind]
+
+
 # --------------------------------------------------------------------- plan
 def plan_short(report, snapshot=None, now: dt.datetime | None = None,
                is_safe=None, profile=None) -> ShortsPlan:
@@ -554,6 +593,8 @@ def plan_short(report, snapshot=None, now: dt.datetime | None = None,
     ]
     for scene in builders:
         if scene is None:
+            continue
+        if pub.public and not _admit_report_items(scene, report, pub, plan, session):
             continue
         used_insights.update(scene.source_insight_ids)
         plan.scenes.append(scene)

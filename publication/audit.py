@@ -10,6 +10,9 @@ hash matches the file being uploaded (`require_publication_pass`, called by uplo
         every Market Structure scene shows its universe + denominator (universe_visibility)
         gmp_present is False
         no blocked named security appears anywhere in public text
+        every displayed number resolves to approved fact(s) / derivation (displayed_claims)
+        every displayed claim's source rights permit production publication
+            (publication_rights; PUBLIC_REVIEW_REQUIRED_POLICY, default BLOCK)
 """
 from __future__ import annotations
 
@@ -18,6 +21,7 @@ import hashlib
 import json
 import os
 
+from .claims import check_claims, decision_for
 from .disclaimer import strip_registered
 from .language import scan_public_text
 from .profile import PublicationProfile, uploadable
@@ -58,7 +62,9 @@ def build_publication_audit(*, gate, product: str, session_date, public_text: di
                             market_structure: dict | None = None, ipo: dict | None = None,
                             exchange_watch: dict | None = None, hook: dict | None = None,
                             sources: dict | None = None, video_path: str | None = None,
-                            synthetic: bool = False) -> dict:
+                            synthetic: bool = False, claims: list | None = None,
+                            scene_texts: dict | None = None, omitted_sections: dict | None = None,
+                            audio: dict | None = None) -> dict:
     """`public_text`: every on-screen string ({field: text}); `metadata`: title / description /
     tags / thumbnail_text; `scenes`: [{kind, requires_provenance, provenance, universe_required,
     universe}] as the storyboard declared them."""
@@ -88,6 +94,23 @@ def build_publication_audit(*, gate, product: str, session_date, public_text: di
     scans["universe_visibility"] = {"passed": not uni_issues, "issues": uni_issues}
     scans["gmp_absent"] = {"passed": not ipo["gmp_present"],
                            "issues": ["GMP content present"] if ipo["gmp_present"] else []}
+    # every displayed number resolves to approved fact(s) or an approved derivation
+    displayed = [dict(c) for c in (claims or [])]
+    for i, c in enumerate(displayed, start=1):
+        c["claim_id"] = f"C{i:03d}.{c['scene_id']}"
+        c["publication_decision"] = decision_for(c["publication_rights_status"])
+        c.pop("numbers", None)
+    claim_issues = (check_claims(scene_texts, claims or []) if scene_texts is not None
+                    else ["no displayed-claim trace supplied"])
+    scans["displayed_claims"] = {"passed": not claim_issues, "issues": claim_issues[:50]}
+    blocked_rights = [c for c in displayed if c["publication_decision"].startswith("BLOCKED")]
+    by_source = {}
+    for c in blocked_rights:
+        key = f"{c['publication_decision']} ({', '.join(c['source_name']) or 'no source'})"
+        by_source[key] = by_source.get(key, 0) + 1
+    scans["publication_rights"] = {
+        "passed": not blocked_rights,
+        "issues": [f"{n} displayed claim(s): {k}" for k, n in sorted(by_source.items())]}
     profile_ok = uploadable(gate.profile)
     scans["profile"] = {"passed": profile_ok,
                         "issues": [] if profile_ok else [f"profile {gate.profile.value} is never "
@@ -126,6 +149,10 @@ def build_publication_audit(*, gate, product: str, session_date, public_text: di
                    "final_selected_claims": {k: (hook or {}).get(k) for k in
                                              ("candidate_id", "archetype", "curiosity_line",
                                               "summary_line", "source")}},
+        "displayed_claims": displayed,
+        "optional_sections": omitted_sections or {},
+        "audio": audio or {"audio_stream": False, "audio_phase_enabled": False},
+        "rights_policy": {"PUBLIC_REVIEW_REQUIRED_POLICY": _policy_name()},
         "scans": scans, "failed_checks": failed,
         "metadata": {k: metadata.get(k) for k in ("title", "tags", "thumbnail_text")},
         "source_registry": sources or {},
@@ -133,6 +160,17 @@ def build_publication_audit(*, gate, product: str, session_date, public_text: di
         "final": final,
     }
     return audit
+
+
+def _policy_name() -> str:
+    from .rights import review_required_policy
+    return review_required_policy()
+
+
+def content_checks_passed(audit: dict) -> bool:
+    """Everything but the rights decision passed - the render itself is compliant (PRE and
+    no-upload runs proceed; production publication still needs `final == PASS`)."""
+    return not (set(audit.get("failed_checks") or []) - {"publication_rights"})
 
 
 def write_publication_audit(audit: dict, out_dir: str, name: str = "publication_audit.json") -> str:
@@ -167,4 +205,5 @@ def require_publication_pass(audit, video_path: str) -> dict:
 
 
 __all__ = ["build_publication_audit", "write_publication_audit", "require_publication_pass",
+           "content_checks_passed",
            "PublicationBlocked", "sha256_file", "AUDIT_VERSION"]

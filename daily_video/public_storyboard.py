@@ -27,6 +27,7 @@ def structure_spec(ins, prov_lines) -> SceneSpec:
         kind="STRUCTURE", section="STRUCTURE", duration=dur, headline=ins.headline,
         takeaway=ins.takeaway, texts=texts,
         data={"kind": ins.kind, "rows_n": [r["n"] for r in ins.rows],
+              "metric_keys": list(ins.metric_keys),
               "split_n": [int(s["value"]) for s in ins.split if s["value"].isdigit()],
               "universe": {"label": ins.universe_label, "denominator_text": ins.denominator_text,
                            "coverage_pct": ins.coverage_pct, "status": ins.coverage_status}},
@@ -45,7 +46,7 @@ def exchange_spec(model, mode: str = "POST") -> SceneSpec:
         kind="EXCHANGE_WATCH", section="EXCHANGE", duration=dur, headline=model["headline"],
         subline=sub, texts={"headline": model["headline"], "subline": sub, "cards": cards,
                             "provenance": _prov(model["provenance_lines"])},
-        data={"event_ids": model["event_ids"]},
+        data={"event_ids": model["event_ids"], "sources": model.get("sources", [])},
         freeze={"t": round(dur - 0.5, 2), "what": model["headline"],
                 "where": "one card per security: the exchange status chip, the security, one "
                          "fixed factual line", "why": "official exchange status - not a signal",
@@ -59,7 +60,8 @@ def ipo_spec(model) -> SceneSpec:
                  "chip": c["chip"], "rows": c["rows"], "provenance": _prov(model["provenance_lines"])}
         dur = round(4.4 + 0.5 * len(c["rows"]), 2)
         return SceneSpec(kind="IPO_WATCH", section="IPO", duration=dur, headline=model["headline"],
-                         texts=texts, data={"kind": c["kind"]},
+                         texts=texts, data={"kind": c["kind"], "sources": model.get("sources", []),
+                                            "companies": [c["name"]]},
                          freeze={"t": round(dur - 0.5, 2), "what": model["headline"],
                                  "where": "the IPO card: dated event, board, official fact rows",
                                  "why": "a dated primary-market event today", "mode": "IPO_WATCH"})
@@ -67,7 +69,8 @@ def ipo_spec(model) -> SceneSpec:
              "provenance": _prov(model["provenance_lines"])}
     dur = round(3.8 + 1.0 * len(model["rows"]), 2)
     return SceneSpec(kind="IPO_BOARD", section="IPO", duration=dur, headline=model["headline"],
-                     texts=texts, data={},
+                     texts=texts, data={"sources": model.get("sources", []),
+                                        "companies": [r["name"] for r in model["rows"]]},
                      freeze={"t": round(dur - 0.5, 2), "what": model["headline"],
                              "where": "one row per IPO with its dated event",
                              "why": "several dated primary-market events today",
@@ -89,7 +92,8 @@ def scene_audit(storyboard) -> list:
 
 
 def audit_storyboard(sb, product: str, metadata: dict | None = None,
-                     video_path: str | None = None, synthetic: bool = False) -> dict:
+                     video_path: str | None = None, synthetic: bool = False,
+                     audio: dict | None = None) -> dict:
     """publication_audit.json for a unified POST / PRE storyboard: the gate's record, every
     on-screen string (hook included), the per-scene provenance/universe view, the public
     section audits (Market Structure, Exchange Watch, IPO Watch) and the Gemini candidate set."""
@@ -106,7 +110,9 @@ def audit_storyboard(sb, product: str, metadata: dict | None = None,
         scenes=scene_audit(sb), metadata=metadata or {},
         market_structure=pa.get("market_structure"), ipo=pa.get("ipo"),
         exchange_watch=pa.get("exchange_watch"), hook=hook or None, sources=sb.sources,
-        video_path=video_path, synthetic=synthetic)
+        video_path=video_path, synthetic=synthetic, claims=sb.claims,
+        scene_texts=sb.claim_texts, omitted_sections=pa.get("omitted_sections"),
+        audio=audio)
 
 
 

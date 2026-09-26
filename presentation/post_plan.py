@@ -225,16 +225,17 @@ def plan_post_sections(pres, plan, radar_stories=(), universe="Nifty 100") -> Po
         lead_tag, lag_tag = "LEADER", "LAGGARD"
         if n > 1 and down == n:
             # "IT led" on a day every sector fell reads as "IT rose" - say what happened instead
-            headline = f"All {n} sector indices fell; {rows[0]['name']} fell least"
+            # one line (the sector board's layout); the FELL LEAST card names the leader
+            headline = f"All {n} tracked sector indices fell"
             lead_tag, lag_tag = "FELL LEAST", "FELL MOST"
         elif n > 1 and up == n:
-            headline = f"All {n} sector indices rose; {rows[0]['name']} led"
+            headline = f"All {n} tracked sector indices rose"
             lag_tag = "ROSE LEAST"
         elif n > 1:
             headline = f"{rows[0]['name']} led, {rows[-1]['name']} lagged"
         else:
             headline = f"{rows[0]['name']} {rows[0]['value']}"
-        tone = (f"{up} of {n} sector indices closed higher" if n > 1
+        tone = (f"{up} of {n} tracked indices closed higher" if n > 1
                 else "The only sector index in the report")
         sectors = {"headline": headline, "tone": tone, "rows": rows, "leader_tag": lead_tag,
                    "laggard_tag": lag_tag, "strip_title": "ALL SECTORS, STRONGEST FIRST"}

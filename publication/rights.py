@@ -12,10 +12,13 @@ Every source the public Short can cite has a `publication_rights_status`:
 
 What happens to REVIEW_REQUIRED is a CONFIGURED policy (`PUBLIC_REVIEW_REQUIRED_POLICY`):
 
-    ATTRIBUTED_EOD   (default) end-of-day / official-notice facts may be published with the
-                     source visibly attributed, and every such use is listed in the publication
-                     audit as `rights_review_required`. Live/intraday readings are NOT covered.
-    BLOCK            nothing from a REVIEW_REQUIRED source is published
+    BLOCK            (default - conservative) nothing that relies on a REVIEW_REQUIRED source
+                     reaches PRODUCTION publication: the publication audit BLOCKs and the upload
+                     is refused. Review / internal / synthetic renders still show the content -
+                     rights are enforced at the audit, not by emptying the storyboard.
+    ATTRIBUTED_EOD   an explicit owner decision: end-of-day / official-notice facts may be
+                     published with the source visibly attributed, each use listed in the
+                     audit. Live/intraday readings are never covered.
 
 This module records facts and an operating choice, not a legal conclusion.
 """
@@ -75,7 +78,7 @@ def rights_for(source_name: str) -> RightsRecord:
 
 
 def review_required_policy() -> str:
-    v = (os.getenv("PUBLIC_REVIEW_REQUIRED_POLICY") or ATTRIBUTED_EOD).upper()
+    v = (os.getenv("PUBLIC_REVIEW_REQUIRED_POLICY") or BLOCK).upper()
     return v if v in (ATTRIBUTED_EOD, BLOCK) else BLOCK   # an unknown value fails closed
 
 

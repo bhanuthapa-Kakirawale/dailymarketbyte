@@ -24,6 +24,8 @@ from .universe import UniverseDefinition
 
 SOURCE_NAMES = (S.SRC_YAHOO, S.SRC_NSE_CONSTITUENTS, S.SRC_MARKET_STRUCTURE)
 SOURCE_LABEL = "Yahoo Finance EOD data · NSE Indices sectors"
+# two different roles - never "NSE supplied the prices"
+SOURCE_ROLES = (("PRICES", "Yahoo Finance EOD"), ("UNIVERSE & SECTORS", "NSE"))
 
 
 def artifact_path(out_dir: str, session: dt.date) -> str:
@@ -63,7 +65,7 @@ def structure_facts(insight, snapshot, session: dt.date) -> list:
     """The PublishableFacts one chosen insight puts on screen - MARKET scope, our own aggregate,
     tagged MARKET_STRUCTURE and carrying its universe (the gate refuses one without)."""
     rights = strictest_rights(SOURCE_NAMES)
-    prov = session_label(SOURCE_LABEL, session)
+    prov = session_label(SOURCE_LABEL, session, SOURCE_ROLES)
     out = []
     for i, text in enumerate(insight.public_strings()):
         out.append(PublishableFact(
@@ -79,4 +81,5 @@ def structure_facts(insight, snapshot, session: dt.date) -> list:
 
 
 __all__ = ["save_snapshot", "load_snapshot", "structure_facts", "artifact_path", "SOURCE_LABEL",
+           "SOURCE_ROLES",
            "SOURCE_NAMES"]

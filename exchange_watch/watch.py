@@ -182,6 +182,7 @@ def build_model(chosen, mode: str = "POST") -> dict | None:
     label = ProvenanceLabel(source=" · ".join(srcs), data_as_of=" / ".join(fmt_date(d) for d in dates),
                             as_of_label="LIST DATE")
     return {"headline": headline, "cards": [_card(e) for e in chosen],
+            "sources": sorted({e.source_name for e in chosen}),
             "provenance": label.to_dict(), "provenance_lines": label.lines(),
             "event_ids": [e.event_id for e in chosen]}
 

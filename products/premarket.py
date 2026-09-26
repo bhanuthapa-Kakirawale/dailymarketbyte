@@ -304,7 +304,10 @@ def render_pre(brief, out_dir: str, watermark: str | None = None, frames_only: b
                                    "failed_checks": pub_audit["failed_checks"],
                                    "profile": sb.publication_profile,
                                    "path": write_publication_audit(pub_audit, out_dir)}
-    if sb.publication_profile == "PUBLIC_UNREGISTERED" and pub_audit["final"] != "PASS":
+    from publication.audit import content_checks_passed
+    # PRE never uploads: a rights-only BLOCK (REVIEW_REQUIRED sources under the default BLOCK
+    # policy) is recorded in the audit, but a CONTENT failure blocks the render
+    if sb.publication_profile == "PUBLIC_UNREGISTERED" and not content_checks_passed(pub_audit):
         result["blocked"] = "publication audit: " + ", ".join(pub_audit["failed_checks"])
         dump(f"pre_result_{tag}.json", result)
         return result

@@ -174,7 +174,10 @@ def intelligence(session: dt.date, prev: dt.date, list_date: dt.date, structure_
         structure=snap,
         exchange_events=exchange_events(list_date, exchange_scenario, uni) if exchange_scenario else [],
         ipos=ipos(ipo_day or list_date, ipo_scenario) if ipo_scenario else [],
-        known_securities=uni.companies(), universe_symbols=uni.symbols(), synthetic=True)
+        known_securities=uni.companies(), universe_symbols=uni.symbols(), synthetic=True,
+        exchange_status="SYNTHETIC" if exchange_scenario else "NOT_AVAILABLE",
+        ipo_status="SYNTHETIC" if ipo_scenario else "NOT_AVAILABLE",
+        structure_status="SYNTHETIC" if structure_scenario else "NOT_AVAILABLE")
 
 
 __all__ = ["universe", "structure", "exchange_events", "ipos", "intelligence", "fo_ban_text",

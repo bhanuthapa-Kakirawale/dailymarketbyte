@@ -406,3 +406,19 @@ event (the F&O expiry rule stays); the ticker carries no stock; title/descriptio
 
 `PRIVATE_ANALYTICS` renders exactly what this document describes above (Radar stories, movers,
 Radar hook archetypes) for research, and is never uploaded.
+
+**Index de-duplication (final review).** One fact must not take three consecutive scenes. When
+the Dynamic Hook cites Nifty's move (`nifty.move` in the hook's fact ids) AND a NIFTY chart scene
+(a new structural event) repeats it with richer context, MARKET PULSE is dropped - unless the
+pulse carries a DISTINCT fact: an intraday reversal the chart does not state (a down day that
+closed near the day's high, an up day near the low). The hook is planned without the pulse
+first, so its summary can never promise a dropped scene; with no chart scene, or a hook that does
+not state the move, the pulse stays. Real 24 Sep: HOOK -> NIFTY CHART -> SECTORS -> FII/DII ->
+UNDER THE SURFACE x2 -> CLOSE (37.2 s, was 42.6 s).
+
+**Wording (final review).** Flows are net: "FIIs were net sellers; DIIs were net buyers", with
+"(provisional)" always visible (legacy scene title "FII / DII FLOWS · PROVISIONAL"); the hook's
+flow contrast says "were net sellers / buyers". Sector counts say "tracked": "All 3 tracked
+sector indices fell" (one line - the FELL LEAST / LEADER card names the leader) and "0 of 3
+tracked indices closed higher". Breadth may add an EXACT share next to the count ("179 / 200",
+label "... CLOSED LOWER · 89.5%") - never a rounded one, never instead of the count.

@@ -204,13 +204,24 @@ def test_restricted_and_unknown_rights_block():
         fact(publication_rights_status=RightsStatus.UNKNOWN), "PUBLIC_UNREGISTERED").reasons
 
 
-def test_review_required_policy_is_configurable_and_fails_closed(monkeypatch):
-    monkeypatch.setenv("PUBLIC_REVIEW_REQUIRED_POLICY", "BLOCK")
-    assert "RIGHTS_REVIEW_REQUIRED" in evaluate(fact(), "PUBLIC_UNREGISTERED").reasons
-    monkeypatch.setenv("PUBLIC_REVIEW_REQUIRED_POLICY", "WHATEVER")
-    assert not evaluate(fact(), "PUBLIC_UNREGISTERED").allowed
-    monkeypatch.delenv("PUBLIC_REVIEW_REQUIRED_POLICY")
-    # live readings are never covered by the end-of-day attribution policy
+def test_review_required_default_is_block_and_is_enforced_at_the_audit(monkeypatch):
+    from publication.claims import decision_for
+    from publication.rights import review_required_policy
+    monkeypatch.delenv("PUBLIC_REVIEW_REQUIRED_POLICY", raising=False)
+    assert review_required_policy() == "BLOCK"                     # conservative default
+    # the gate keeps the fact (review renders stay complete) and records the verdict ...
+    d = evaluate(fact(), "PUBLIC_UNREGISTERED")
+    assert d.allowed and any("production publication BLOCKED" in n for n in d.notes)
+    # ... production publication is refused per displayed claim
+    assert decision_for("REVIEW_REQUIRED") == "BLOCKED_RIGHTS_REVIEW_REQUIRED"
+    assert decision_for("APPROVED") == "PUBLISHABLE"
+    monkeypatch.setenv("PUBLIC_REVIEW_REQUIRED_POLICY", "ATTRIBUTED_EOD")   # explicit owner call
+    assert decision_for("REVIEW_REQUIRED") == "PUBLISHABLE_WITH_ATTRIBUTION"
+    monkeypatch.setenv("PUBLIC_REVIEW_REQUIRED_POLICY", "WHATEVER")         # fails closed
+    assert decision_for("REVIEW_REQUIRED") == "BLOCKED_RIGHTS_REVIEW_REQUIRED"
+    for st in ("RESTRICTED", "UNKNOWN"):
+        assert decision_for(st).startswith("BLOCKED")
+    # live readings are never covered, whatever the policy
     assert not evaluate(fact(tags=frozenset({"LIVE"})), "PUBLIC_UNREGISTERED").allowed
 
 
@@ -264,6 +275,8 @@ def _audit(tmp_path, texts, scenes=None, gate=None, video=True, **kw):
         path = tmp_path / "v.mp4"
         path.write_bytes(b"fake video")
         path = str(path)
+    kw.setdefault("claims", [])            # a trivially complete displayed-claim trace
+    kw.setdefault("scene_texts", {})
     return build_publication_audit(gate=gate, product="POST", session_date=D, public_text=texts,
                                    scenes=scenes or [], video_path=path, **kw), path
 

@@ -145,6 +145,8 @@ def test_final_content_qa_failure_cannot_mutate_canonical_history(offline_pipeli
 
 # --------------------------------------------------------------------- Test D
 def test_upload_result_is_operational_only(offline_pipeline, monkeypatch, tmp_path):
+    # an upload happens only under an explicit owner rights decision (default: BLOCK)
+    monkeypatch.setenv("PUBLIC_REVIEW_REQUIRED_POLICY", "ATTRIBUTED_EOD")
     monkeypatch.setattr(main, "publish", lambda out, meta, d, audit=None: "vid123")
     main.run(_Args())                                     # local run, nothing published
     before = _canonical_snapshot(_db(tmp_path))

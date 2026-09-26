@@ -41,14 +41,21 @@ def draw_provenance(ctx, prov: dict, p: float = 1.0) -> None:
     hr.composite(ctx.layer)
     y = top + PAD - 3
     for s, f, lh in zip(lines, fonts, line_h):
-        head, sep, rest = s.partition(": ")
         x = X0 + PAD + 8
-        if sep:
-            ctx.ink.text(ctx.d, (x, y), head + ":", f, alpha(theme.TEXT_SECONDARY, p), "provenance")
-            x += tlen(head + ": ", f)
-            ctx.ink.text(ctx.d, (x, y), rest, f, alpha(theme.TEXT_PRIMARY, p), "provenance")
-        else:
-            ctx.ink.text(ctx.d, (x, y), s, f, alpha(theme.TEXT_PRIMARY, p), "provenance")
+        # every "ROLE:" label (SOURCE:, PRICES:, DATA AS OF:, FETCHED: ...) in the secondary
+        # colour, its value in the primary one - one run per " · " segment
+        for i, seg in enumerate(s.split(" · ")):
+            if i:
+                ctx.ink.text(ctx.d, (x, y), " · ", f, alpha(theme.TEXT_SECONDARY, p), "provenance")
+                x += tlen(" · ", f)
+            head, sep, rest = seg.partition(": ")
+            if sep:
+                ctx.ink.text(ctx.d, (x, y), head + ":", f, alpha(theme.TEXT_SECONDARY, p),
+                             "provenance")
+                x += tlen(head + ": ", f)
+                seg = rest
+            ctx.ink.text(ctx.d, (x, y), seg, f, alpha(theme.TEXT_PRIMARY, p), "provenance")
+            x += tlen(seg, f)
         y += lh
     ctx.mark("provenance", (X0, top, X1, BAND_BOTTOM))
 

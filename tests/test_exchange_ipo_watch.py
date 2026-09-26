@@ -189,7 +189,7 @@ def test_closes_today_card_has_official_facts_and_timestamped_bids():
     labels = [r["label"] for r in m["card"]["rows"]]
     assert labels == ["PRICE BAND", "BIDDING", "LOT SIZE", "ISSUE", "TOTAL BIDS"]
     assert m["provenance_lines"][1] == "DATA AS OF: 27 SEP 2026 · 5:00 PM IST"
-    assert "SEBI OFFER DOCUMENT" in m["provenance_lines"][0]
+    assert m["provenance_lines"][0] == "ISSUE DATA: NSE · OFFER DOCUMENT: SEBI FILING"
 
 
 def test_listing_prices_only_after_the_listing_session():

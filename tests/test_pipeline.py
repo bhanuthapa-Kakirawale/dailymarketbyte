@@ -380,6 +380,9 @@ def test_qa_artifact_is_written_for_every_render(offline_pipeline, tmp_path):
 
 
 def test_all_gates_passing_publishes_only_with_upload_flag(offline_pipeline, monkeypatch):
+    # publishing mechanics under an explicit owner rights decision (the default, BLOCK,
+    # refuses the upload - tests/test_public_publication.py)
+    monkeypatch.setenv("PUBLIC_REVIEW_REQUIRED_POLICY", "ATTRIBUTED_EOD")
     published = {}
     monkeypatch.setattr(main, "publish", lambda out, meta, d, audit=None: published.setdefault("id", "vid123"))
 
@@ -391,6 +394,9 @@ def test_all_gates_passing_publishes_only_with_upload_flag(offline_pipeline, mon
 
 
 def test_publish_records_the_video_id_in_history(offline_pipeline, monkeypatch, tmp_path):
+    # publishing mechanics under an explicit owner rights decision (the default, BLOCK,
+    # refuses the upload - tests/test_public_publication.py)
+    monkeypatch.setenv("PUBLIC_REVIEW_REQUIRED_POLICY", "ATTRIBUTED_EOD")
     monkeypatch.setattr(main, "publish", lambda out, meta, d, audit=None: "vid123")
     main.run(_Args(upload=True))
     with MarketHistory(str(tmp_path / "data" / "market_history.db")) as history:

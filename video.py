@@ -990,12 +990,18 @@ def provenance_layer(prov):
         if not line:
             continue
         f = fit(line, bw - 40, 26, min_size=24)
-        head, sep, rest = line.partition(": ")
-        if sep:
-            d.text((22, y), head + ":", font=f, fill=SUB)
-            d.text((22 + tlen(head + ": ", f), y), rest, font=f, fill=TEXT)
-        else:
-            d.text((22, y), line, font=f, fill=TEXT)
+        x = 22
+        for i, seg in enumerate(line.split(" · ")):
+            if i:
+                d.text((x, y), " · ", font=f, fill=SUB)
+                x += tlen(" · ", f)
+            head, sep, rest = seg.partition(": ")
+            if sep:
+                d.text((x, y), head + ":", font=f, fill=SUB)
+                x += tlen(head + ": ", f)
+                seg = rest
+            d.text((x, y), seg, font=f, fill=TEXT)
+            x += tlen(seg, f)
         y += 34
     _cap_cache[key] = img
     return img

@@ -319,9 +319,9 @@ def test_no_scene_boundary_passes_through_an_empty_frame(real):
 # --------------------------------------------------------------------------- multi-session findings
 @pytest.mark.parametrize("sectors,headline,tags", [
     ((("IT", -0.44), ("Pharma", -1.1), ("Bank", -1.96)),
-     "All 3 sector indices fell; IT fell least", ("FELL LEAST", "FELL MOST")),
+     "All 3 tracked sector indices fell", ("FELL LEAST", "FELL MOST")),
     ((("Metal", 2.1), ("Auto", 0.6), ("IT", 0.2)),
-     "All 3 sector indices rose; Metal led", ("LEADER", "ROSE LEAST")),
+     "All 3 tracked sector indices rose", ("LEADER", "ROSE LEAST")),
     ((("Metal", 1.2), ("IT", -0.4)), "Metal led, IT lagged", ("LEADER", "LAGGARD")),
 ])
 def test_sector_wording_never_calls_a_falling_sector_a_leader(sectors, headline, tags):

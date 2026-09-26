@@ -111,9 +111,9 @@ def post_market_sheet(plan, pres, stories=(), evidence=None, sections=(), univer
             facts.append(f)
             sector_facts.append((s, f))
         n_up = sum(1 for s in secs if s["pct"] > 0)
-        facts.append(count_fact("sectors.count", len(secs), "sector indices",
-                                f"The report has {len(secs)} sector indices; {n_up} rose.",
-                                units=("sector", "sectors")))
+        facts.append(count_fact("sectors.count", len(secs), "tracked sector indices",
+                                f"The report tracks {len(secs)} sector indices; {n_up} rose.",
+                                units=("tracked", "sector", "sectors")))
         facts.append(count_fact("sectors.up", n_up, "sector indices rose",
                                 f"{n_up} of {len(secs)} sector indices closed higher.",
                                 units=("sector", "sectors", "of")))

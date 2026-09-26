@@ -98,10 +98,18 @@ Technical accessibility is not publication permission.
 | `UNKNOWN` | not in the registry - blocked | - |
 
 `REVIEW_REQUIRED` follows the configured policy `PUBLIC_REVIEW_REQUIRED_POLICY`:
-`ATTRIBUTED_EOD` (default) publishes end-of-day / official-notice facts with the source visibly
-attributed and lists every such source in the audit (`rights_review_required`); readings
-tagged `LIVE` (real-time exchange feeds) are not covered. `BLOCK` publishes nothing from such a
-source. An unknown value fails closed (BLOCK). Nothing is ever silently upgraded to APPROVED.
+**`BLOCK` (default, conservative)** - nothing that relies on a REVIEW_REQUIRED source reaches
+PRODUCTION publication: the audit's `publication_rights` check BLOCKs and the upload is refused.
+Rights are enforced per displayed claim at the audit, NOT by emptying the storyboard, so review /
+internal / synthetic renders stay complete (the gate records "production publication BLOCKED"
+as a note). `ATTRIBUTED_EOD` is an explicit owner decision that publishes end-of-day /
+official-notice facts with the source visibly attributed. `LIVE` readings are never covered.
+An unknown value fails closed (BLOCK). Nothing is ever silently upgraded to APPROVED.
+
+**Consequence of the default:** until NSE / Yahoo / SEBI redistribution rights are reviewed (or
+`ATTRIBUTED_EOD` is set), the scheduled POST renders and records its audit but does NOT upload
+(`main.run`: run BLOCKED at PUBLICATION_AUDIT only when `--upload` is requested; a no-upload or
+PRE run proceeds when every content check passes - `publication.audit.content_checks_passed`).
 
 ## Language scan (`publication/language.py`)
 
@@ -139,7 +147,41 @@ Exchange Watch, IPO (content present, companies, sources, subscription as-of, of
 
 `final = PASS` only when the profile is PUBLIC_UNREGISTERED, every language scan passes, every
 factual scene shows SOURCE and DATA AS OF, every Market Structure scene shows its universe and
-denominator, and `gmp_present` is false.
+denominator, `gmp_present` is false, **every displayed number resolves** (`displayed_claims`) and
+**every displayed claim's rights permit production publication** (`publication_rights`).
+
+### Displayed claims (`publication/claims.py`, `publication/scene_claims.py`)
+
+Every number a viewer can see is a `displayed_claims` entry: `claim_id`, `scene_id`,
+`visible_text`, `fact_ids`, `metric`, `value`, `source_name`, `source_reference`, `source_role`,
+`data_as_of`, `retrieved_at`, `derivation`, `publication_rights_status`,
+`publication_decision`. Claims are declared where the storyboard is built (Nifty close /
+change / 20-day level, sector rows, FII / DII, 179 / 200, 18 / 200, per-sector counts, NIFTY 100
+vs the rest, IPO rows, exchange list dates, the hook's own facts and teaser beats, the legacy
+ticker). The check extracts every number from each scene's visible text (numbers inside index
+names - "NIFTY 200" - and fixed window definitions - "20-day", "2x" - are recorded explicitly as
+names / DEFINITION claims) and BLOCKs on a number no claim declares, or a claim that resolves to
+no fact and no approved derivation. Only displayed claims are traced - no dataset is copied in.
+
+### Optional sections (`optional_sections` in the audit)
+
+Every optional public section records whether it rendered and why not, separating "nothing
+today" from "we could not read the source": EXCHANGE_WATCH `NO_ELIGIBLE_EVENT` /
+`SOURCE_UNAVAILABLE` / `RIGHTS_BLOCKED` / `EDITORIAL_CAP`; IPO_WATCH `NO_ELIGIBLE_IPO_EVENT` /
+`SOURCE_UNAVAILABLE` / `RIGHTS_BLOCKED` / `EDITORIAL_CAP`; MARKET_STRUCTURE
+`NO_MEANINGFUL_OBSERVATION` / `INSUFFICIENT_COVERAGE` / `SOURCE_UNAVAILABLE` / `RIGHTS_BLOCKED`.
+
+### Source roles
+
+When sources play different roles the plate names each role - "PRICES: YAHOO FINANCE EOD ·
+UNIVERSE & SECTORS: NSE" (Market Structure), "ISSUE DATA: NSE · OFFER DOCUMENT: SEBI FILING"
+(IPO) - so no source is credited with data it did not supply. Single-role scenes keep
+"SOURCE: ...".
+
+### Audio
+
+V2 is silent: `daily_video.composer.AUDIO_ENABLED = False` renders with `-an` (no audio stream,
+no silence track); the audit and the QA artifact record `audio_stream: false`.
 
 `upload.upload(video, meta, audit)` requires the audit and calls
 `require_publication_pass(audit, video)` **before any YouTube client or credential is touched**:

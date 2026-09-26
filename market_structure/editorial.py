@@ -106,6 +106,14 @@ def _unusual(snap) -> StructureInsight | None:
         reason=f"{m.numerator} unusual-volume observations (>= {UNUSUAL_MIN}), {m.denominator_text}")
 
 
+def exact_share_pct(n: int, d: int) -> str:
+    """"89.5%" - ONLY when n/d is exact at one decimal (179/200); otherwise "" (a rounded
+    percentage is never shown next to the count it came from)."""
+    if d <= 0 or (n * 1000) % d:
+        return ""
+    return f"{n * 100 / d:.1f}%".replace(".0%", "%")
+
+
 def _breadth(snap, nifty_pct) -> StructureInsight | None:
     adv, dec = snap.metric("ADVANCES"), snap.metric("DECLINES")
     if not (_usable(adv) and _usable(dec)) or adv.denominator == 0:
@@ -116,6 +124,11 @@ def _breadth(snap, nifty_pct) -> StructureInsight | None:
              {"label": "LOWER", "value": str(dec.numerator)}]
     if unchanged:
         split.append({"label": "UNCHANGED", "value": str(unchanged)})
+
+    def label(n, word):
+        share = exact_share_pct(n, cov)
+        return f"{U} STOCKS CLOSED {word}" + (f" · {share}" if share else "")
+
     base = dict(kind="BREADTH", definition="Close vs the previous session's close",
                 split=split, universe_label=U, coverage_pct=adv.coverage_pct,
                 coverage_status=adv.status, metric_keys=["ADVANCES", "DECLINES"])
@@ -124,7 +137,7 @@ def _breadth(snap, nifty_pct) -> StructureInsight | None:
         if nifty_pct > 0 and dec.numerator > adv.numerator:
             return StructureInsight(
                 headline=f"Nifty 50 rose {abs(nifty_pct):.2f}%, but most {U} stocks fell",
-                hero_value=f"{dec.numerator} / {cov}", hero_label=f"{U} STOCKS CLOSED LOWER",
+                hero_value=f"{dec.numerator} / {cov}", hero_label=label(dec.numerator, "LOWER"),
                 takeaway=f"{adv.numerator} {of} closed higher.",
                 denominator_text=f"{dec.numerator} {of}",
                 reason=f"divergence: Nifty {nifty_pct:+.2f}% vs {dec.numerator} decliners",
@@ -132,16 +145,16 @@ def _breadth(snap, nifty_pct) -> StructureInsight | None:
         if nifty_pct < 0 and adv.numerator > dec.numerator:
             return StructureInsight(
                 headline=f"Nifty 50 fell {abs(nifty_pct):.2f}%, but most {U} stocks rose",
-                hero_value=f"{adv.numerator} / {cov}", hero_label=f"{U} STOCKS CLOSED HIGHER",
+                hero_value=f"{adv.numerator} / {cov}", hero_label=label(adv.numerator, "HIGHER"),
                 takeaway=f"{dec.numerator} {of} closed lower.",
                 denominator_text=f"{adv.numerator} {of}",
                 reason=f"divergence: Nifty {nifty_pct:+.2f}% vs {adv.numerator} advancers",
                 **base)
-    for m, word, label in ((dec, "fell", "LOWER"), (adv, "rose", "HIGHER")):
+    for m, word, lab in ((dec, "fell", "LOWER"), (adv, "rose", "HIGHER")):
         if m.numerator / cov >= BREADTH_EXTREME_SHARE:
             return StructureInsight(
                 headline=f"A broad move: {m.numerator} {of} {U} stocks {word}",
-                hero_value=f"{m.numerator} / {cov}", hero_label=f"{U} STOCKS CLOSED {label}",
+                hero_value=f"{m.numerator} / {cov}", hero_label=label(m.numerator, lab),
                 takeaway="", denominator_text=f"{m.numerator} {of}",
                 reason=f"breadth extreme: {m.numerator}/{cov} {word}", **base)
     return None

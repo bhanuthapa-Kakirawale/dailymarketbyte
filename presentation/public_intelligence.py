@@ -25,6 +25,11 @@ class PublicIntelligence:
     universe_symbols: set = field(default_factory=set)
     synthetic: bool = False
     notes: list = field(default_factory=list)
+    # how the official lists were obtained: FETCHED / STORED / NOT_AVAILABLE / SYNTHETIC -
+    # distinguishes "nothing happened" from "we could not read the source"
+    exchange_status: str = "NOT_AVAILABLE"
+    ipo_status: str = "NOT_AVAILABLE"
+    structure_status: str = "NOT_AVAILABLE"
 
 
 @dataclass
@@ -43,10 +48,11 @@ def plan_public_sections(gate, intel: PublicIntelligence | None, day: dt.date, m
     import market_structure as ms
     from exchange_watch import build_model, exchange_facts, select_events
     from ipo_watch import build_model as ipo_model, ipo_audit, ipo_facts, select_ipos
-    from market_structure.store import SOURCE_LABEL, structure_facts
+    from market_structure.store import SOURCE_LABEL, SOURCE_ROLES, structure_facts
 
     out = PublicSections()
     intel = intel or PublicIntelligence()
+    sections = out.audit.setdefault("omitted_sections", {})
 
     # ------------------------------------------------------------ UNDER THE SURFACE
     snap = intel.structure
@@ -56,10 +62,13 @@ def plan_public_sections(gate, intel: PublicIntelligence | None, day: dt.date, m
     for ins in insights:
         facts = structure_facts(ins, snap, session)
         if all(gate.admit(f) for f in facts):
-            out.structure.append((ins, session_label(SOURCE_LABEL, session).lines()))
+            out.structure.append((ins, session_label(SOURCE_LABEL, session,
+                                                     SOURCE_ROLES).lines()))
         else:
             out.omitted.append({"section": "UNDER THE SURFACE", "item": ins.kind,
                                 "reason": "publication gate refused a statement"})
+    sections["MARKET_STRUCTURE"] = _structure_omission(snap, insights, out, intel,
+                                                       max_structure)
     out.audit["market_structure"] = (
         {"present": bool(out.structure), "universe": snap.universe_label,
          "constituent_count": snap.constituent_count,
@@ -86,6 +95,7 @@ def plan_public_sections(gate, intel: PublicIntelligence | None, day: dt.date, m
                                      if admitted else "omitted: no validated official exchange "
                                                       "event for this date")
     out.omitted += [{"section": "EXCHANGE WATCH", **o} for o in ex_omit]
+    sections["EXCHANGE_WATCH"] = _exchange_omission(intel, chosen, admitted, ex_omit)
     out.audit["exchange_watch"] = {
         "present": bool(admitted), "events": [e.to_dict() for e in admitted],
         "sources": [s.to_dict() if hasattr(s, "to_dict") else s for s in intel.exchange_sources],
@@ -104,7 +114,67 @@ def plan_public_sections(gate, intel: PublicIntelligence | None, day: dt.date, m
                                 f"omitted: no official IPO event dated {day}")
     out.omitted += [{"section": "IPO WATCH", **o} for o in ipo_omit]
     out.audit["ipo"] = ipo_audit(ok, ipo_omit)
+    sections["IPO_WATCH"] = _ipo_omission(intel, ipos, ok, ipo_omit)
     return out
+
+
+# --------------------------------------------------------------------------- omission codes
+def _rights_refused(omitted) -> bool:
+    return any("publication gate refused" in str(o.get("reason", "")) for o in omitted)
+
+
+def _structure_omission(snap, insights, out, intel, limit) -> dict:
+    if out.structure:
+        return {"rendered": True, "code": "RENDERED", "detail": f"{len(out.structure)} scene(s)"}
+    if limit == 0:
+        return {"rendered": False, "code": "NOT_IN_PRODUCT",
+                "detail": "this Short does not carry Market Structure"}
+    if snap is None:
+        return {"rendered": False, "code": "SOURCE_UNAVAILABLE",
+                "detail": "; ".join(intel.notes) or "no Market Structure snapshot for the session"}
+    usable = [m for m in snap.metrics.values() if m.status in ("PUBLISHABLE", "PARTIAL")]
+    if not usable:
+        return {"rendered": False, "code": "INSUFFICIENT_COVERAGE",
+                "detail": ", ".join(f"{k} {m.coverage_pct}%" for k, m in snap.metrics.items())}
+    if insights:
+        return {"rendered": False, "code": "RIGHTS_BLOCKED",
+                "detail": "the publication gate refused the insight's statements"}
+    return {"rendered": False, "code": "NO_MEANINGFUL_OBSERVATION",
+            "detail": "no breadth / unusual-volume / range count met its threshold"}
+
+
+def _exchange_omission(intel, chosen, admitted, omitted) -> dict:
+    if admitted:
+        return {"rendered": True, "code": "RENDERED", "detail": f"{len(admitted)} event(s)"}
+    failed = [s for s in intel.exchange_sources if getattr(s, "status", "OK") != "OK"]
+    if intel.exchange_status == "NOT_AVAILABLE" or (intel.exchange_sources and
+                                                     len(failed) == len(intel.exchange_sources)):
+        return {"rendered": False, "code": "SOURCE_UNAVAILABLE",
+                "detail": "; ".join(f"{s.source_name}: {s.status} {s.reason}" for s in failed)
+                or "no official list fetched or stored for this date"}
+    if chosen and _rights_refused(omitted):
+        return {"rendered": False, "code": "RIGHTS_BLOCKED",
+                "detail": "the publication gate refused every selected event"}
+    if intel.exchange_events and not chosen:
+        return {"rendered": False, "code": "NO_ELIGIBLE_EVENT",
+                "detail": "official events exist but none qualifies (e.g. surveillance entries "
+                          "outside the index universe)"}
+    return {"rendered": False, "code": "NO_ELIGIBLE_EVENT",
+            "detail": "the official lists were read and carry no event for this date"
+            + (f"; partial: {len(failed)} source(s) unavailable" if failed else "")}
+
+
+def _ipo_omission(intel, chosen, ok, omitted) -> dict:
+    if ok:
+        return {"rendered": True, "code": "RENDERED", "detail": f"{len(ok)} IPO event(s)"}
+    if intel.ipo_status == "NOT_AVAILABLE" and not intel.ipos:
+        return {"rendered": False, "code": "SOURCE_UNAVAILABLE",
+                "detail": "no NSE issue list fetched for this date"}
+    if chosen and _rights_refused(omitted):
+        return {"rendered": False, "code": "RIGHTS_BLOCKED",
+                "detail": "the publication gate refused every IPO fact"}
+    return {"rendered": False, "code": "NO_ELIGIBLE_IPO_EVENT",
+            "detail": "no IPO opens / closes / lists / has allotment on this date"}
 
 
 # --------------------------------------------------------------------------- existing sections
@@ -157,6 +227,7 @@ def load_public_intelligence(structure_session: dt.date | None, list_date: dt.da
                 intel.structure = snap
                 intel.known_securities = uni.companies()
                 intel.universe_symbols = uni.symbols()
+                intel.structure_status = "STORED"
             except Exception as exc:
                 intel.notes.append(f"market structure artifact unusable: {type(exc).__name__}: {exc}")
         else:
@@ -171,6 +242,7 @@ def load_public_intelligence(structure_session: dt.date | None, list_date: dt.da
         valid = mark_changes(valid, load_previous(out_dir, list_date))
         save_events(valid, out_dir, list_date, results)
         intel.exchange_events = valid
+        intel.exchange_status = "FETCHED"
         intel.notes += [f"exchange event rejected: {r['event_id']} ({r['reason']})"
                         for r in rejected[:20]]
         # an issue list is "as of" the day it was read (IST), not the date the Short is for
@@ -184,6 +256,8 @@ def load_public_intelligence(structure_session: dt.date | None, list_date: dt.da
             if d:
                 apply_offer_document(ipo, d)
         intel.ipos = ipos
+        intel.ipo_status = "FETCHED" if not any("UNAVAILABLE" in n for n in notes) or ipos \
+            else "NOT_AVAILABLE"
     else:
         p = store_path(out_dir, list_date)
         if os.path.exists(p):
@@ -192,6 +266,7 @@ def load_public_intelligence(structure_session: dt.date | None, list_date: dt.da
             from exchange_watch import ExchangeEvent
             with open(p, encoding="utf-8") as fh:
                 intel.exchange_events = [ExchangeEvent.from_dict(e) for e in json.load(fh)["events"]]
+            intel.exchange_status = "STORED"
     return intel
 
 

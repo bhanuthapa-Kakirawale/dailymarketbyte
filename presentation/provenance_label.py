@@ -45,13 +45,22 @@ def fmt_time(t: dt.datetime) -> str:
 
 @dataclass(frozen=True)
 class ProvenanceLabel:
+    """`roles`: when several sources play DIFFERENT roles, each is named with its role -
+    (("PRICES", "Yahoo Finance EOD"), ("UNIVERSE & SECTORS", "NSE")) - so no source is credited
+    with data it did not supply. A single-role scene keeps "SOURCE: ..."."""
     source: str                         # "NSE · YAHOO FINANCE"
     data_as_of: str                     # "25 SEP 2026 · 3:30 PM IST"
     as_of_label: str = "DATA AS OF"     # or "EVENT DATE", "FILED", "TRADE DATE"
     fetched: str | None = None          # "7:39 AM IST" - live data only
+    roles: tuple = ()                   # ((role, source), ...) - multi-role scenes only
+
+    def source_line(self) -> str:
+        if self.roles:
+            return " · ".join(f"{role.upper()}: {src.upper()}" for role, src in self.roles)
+        return f"SOURCE: {self.source.upper()}"
 
     def lines(self) -> list:
-        out = [f"SOURCE: {self.source.upper()}", f"{self.as_of_label}: {self.data_as_of.upper()}"]
+        out = [self.source_line(), f"{self.as_of_label}: {self.data_as_of.upper()}"]
         if self.fetched:
             out[-1] += f" · FETCHED: {self.fetched.upper()}"
         return out
@@ -60,8 +69,8 @@ class ProvenanceLabel:
         return asdict(self)
 
 
-def session_label(source: str, session: dt.date) -> ProvenanceLabel:
-    return ProvenanceLabel(source=source, data_as_of=fmt_session_close(session))
+def session_label(source: str, session: dt.date, roles: tuple = ()) -> ProvenanceLabel:
+    return ProvenanceLabel(source=source, data_as_of=fmt_session_close(session), roles=roles)
 
 
 def live_label(source: str, market_time: dt.datetime, fetched_at: dt.datetime) -> ProvenanceLabel:

@@ -744,15 +744,17 @@ def publication_audit(plan, meta, out, provs, report, args, tag, ticker=()):
     BLOCK makes the upload impossible (upload.upload re-checks it against the file)."""
     from presentation.legacy_public import legacy_scene_audit, provenance_text
     from publication import build_publication_audit, write_publication_audit
+    from publication.scene_claims import legacy_claims
     texts = dict(plan.public_text())
     texts.update(provenance_text(provs or []))
     for i, item in enumerate(ticker or ()):          # the scrolling strip is on screen too
         texts[f"ticker.{i}"] = " ".join(str(x) for x in item[:2] if x)
+    claims, claim_texts = legacy_claims(plan, report, ticker or ())
     audit = build_publication_audit(
         gate=plan.gate, product="POST_LEGACY", session_date=report.session_date,
         public_text=texts, scenes=legacy_scene_audit(plan, provs or [None] * len(plan.scenes)),
         metadata=meta, video_path=out, synthetic=bool(args.demo),
-        sources={"market_report": report.report_id})
+        sources={"market_report": report.report_id}, claims=claims, scene_texts=claim_texts)
     path = write_publication_audit(audit, os.path.join(OUT_DIR, "publication", tag))
     print(f"      publication audit: {audit['final']}"
           + (f" (failed: {', '.join(audit['failed_checks'])})" if audit["failed_checks"] else "")
@@ -844,7 +846,10 @@ def run(args):
         scan = final_qa(plan, meta, out, args.upload)
         content_ok = scan.status is SafetyStatus.SAFE
         audit, audit_path = publication_audit(plan, meta, out, provs, report, args, tag, ticker)
-        publication_ok = audit["final"] == "PASS"
+        from publication.audit import content_checks_passed
+        publication_ok = content_checks_passed(audit)          # the render itself is compliant
+        if args.upload and not args.demo and audit["final"] != "PASS":
+            publication_ok = False                             # rights etc. block the upload
         _merge_details(history, run_id, publication={
             "profile": profile.value, "final": audit["final"],
             "failed_checks": audit["failed_checks"], "audit_path": audit_path,

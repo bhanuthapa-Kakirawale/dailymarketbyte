@@ -76,6 +76,11 @@ REQUIRED_MARKS = {
 }
 
 
+# V2 is SILENT: no music, no narration, no synthetic silence track. Audio is a separate future
+# phase; until it is explicitly enabled the MP4 carries no audio stream at all ("-an").
+AUDIO_ENABLED = False
+
+
 def build_scenes(storyboard) -> list:
     return [SCENE_CLASSES[s.kind](s) for s in storyboard.scenes]
 
@@ -143,6 +148,7 @@ class Composer:
         cmd = [_ffmpeg(), "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
                "-s", f"{theme.CANVAS_W}x{theme.CANVAS_H}", "-r", str(fps), "-i", "-",
                "-c:v", "libx264", "-preset", "medium", "-crf", "19", "-pix_fmt", "yuv420p",
+               *([] if AUDIO_ENABLED else ["-an"]),
                "-movflags", "+faststart", "-t", f"{self.total:.3f}", out_path]
         t0 = time.time()
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
@@ -252,4 +258,5 @@ def qa_check(spec, rec: Recorder) -> dict:
             "brand_in_frame": brand}
 
 
-__all__ = ["Composer", "build_scenes", "qa_check", "SCENE_CLASSES", "REQUIRED_MARKS"]
+__all__ = ["Composer", "build_scenes", "qa_check", "SCENE_CLASSES", "REQUIRED_MARKS",
+           "AUDIO_ENABLED"]

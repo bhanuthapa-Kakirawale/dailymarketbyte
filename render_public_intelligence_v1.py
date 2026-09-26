@@ -126,14 +126,18 @@ def render_synthetic_post(sid, spec, mp4):
 # --------------------------------------------------------------------------- real POST
 def render_real_post(sid, mp4, profile=None):
     import render_daily_market_byte as r
-    from daily_video import build_storyboard
     from operations.sessions import next_session
     from presentation.public_intelligence import load_public_intelligence
+    from products import post_unified as PU
+    from publication import resolve_profile
     session = "2026-09-21"
-    plan, pres, rp, rr, ev, uni, src = r.load_inputs(REAL_REPORT, REAL_RADAR_DIR, session)
+    prof = resolve_profile(profile)
+    report, plan = r.load_report_and_plan(REAL_REPORT, profile=prof)
     d = dt.date.fromisoformat(session)
     intel = load_public_intelligence(d, next_session(d) or d, OUT_DIR, fetch=False)
-    sb = build_storyboard(plan, pres, rp, rr, ev, uni, src, profile=profile, intelligence=intel)
+    sb, _ = PU.build_post_storyboard(report, plan, profile=prof, intelligence=intel,
+                                     radar_dir=REAL_RADAR_DIR,
+                                     sources={"market_report": REAL_REPORT})
     what = ("REAL 21 Sep 2026 session (stored canonical report + Radar artifacts), "
             f"profile {sb.publication_profile}; notes: {intel.notes}")
     return _finish(sid, sb, "POST_UNIFIED", mp4, synthetic=False, what=what)
@@ -143,13 +147,16 @@ def render_real_post_24(sid, mp4):
     """REAL session 24 Sep 2026 (Nifty -1.64%): the stored canonical report + the Market
     Structure snapshot built from the same Radar detectors (market_structure.build)."""
     import render_daily_market_byte as r
-    from daily_video import build_storyboard
     from presentation.public_intelligence import load_public_intelligence
-    report = os.path.join(OUT_DIR, "reports", "premarket_2026-09-25.json")
-    plan, pres, rp, rr, ev, uni, src = r.load_inputs(report, REAL_RADAR_DIR, "2026-09-24")
+    from products import post_unified as PU
+    from publication import resolve_profile
+    path = os.path.join(OUT_DIR, "reports", "premarket_2026-09-25.json")
+    prof = resolve_profile(None)
+    report, plan = r.load_report_and_plan(path, profile=prof)
     d = dt.date(2026, 9, 24)
     intel = load_public_intelligence(d, dt.date(2026, 9, 25), OUT_DIR, fetch=False)
-    sb = build_storyboard(plan, pres, rp, rr, ev, uni, src, intelligence=intel)
+    sb, _ = PU.build_post_storyboard(report, plan, profile=prof, intelligence=intel,
+                                     radar_dir=REAL_RADAR_DIR, sources={"market_report": path})
     return _finish(sid, sb, "POST_UNIFIED", mp4, synthetic=False,
                    what=f"REAL 24 Sep 2026 session; notes: {intel.notes}")
 

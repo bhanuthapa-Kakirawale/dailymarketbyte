@@ -12,7 +12,8 @@ MarketReport + IntelligenceSnapshot
       ShortsPlan        - what is said, in what order, for how long
             |
             v
-        Scenes          - video.scenes_from_plan()
+        Scenes          - daily_video.build_storyboard() via products.post_unified
+                          (production); video.scenes_from_plan() is the LEGACY Short
             |
             v
        Renderer
@@ -398,7 +399,8 @@ editorial rules above run only over admitted facts.
   (`publication.public_hooks.restrict_sheet`), and the Market Structure count is offered instead
   ("Nifty moved just +0.12%. 18 NIFTY 200 stocks saw unusual volume.").
 
-**Legacy scheduled POST (`editorial.plan_short(profile=...)`):** no GAINERS/LOSERS scenes, no
+**Legacy POST (`editorial.plan_short(profile=...)` rendered by `video.py`; no longer
+scheduled - production renders POST_UNIFIED since the cut-over):** no GAINERS/LOSERS scenes, no
 single-stock hook (`hook-mover`), no stock-level CONTEXT insight, no news/Gemini WATCH NEXT
 event (the F&O expiry rule stays); the ticker carries no stock; title/description/tags from
 `presentation/legacy_public.public_metadata` (no stock names, no "Top gainers"); FLOWS tags

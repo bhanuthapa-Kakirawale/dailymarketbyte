@@ -226,7 +226,8 @@ def test_post_video_failure_never_invalidates_the_stored_report(offline_pipeline
     def _crash(*a, **k):
         raise OSError("ffmpeg died")
 
-    monkeypatch.setattr(main.video, "render", _crash)
+    from products import post_unified
+    monkeypatch.setattr(post_unified, "render_post", _crash)
     with pytest.raises(OSError):
         main.run(_Args())
     post = _runs(tmp_path, job_type="POST_MARKET")[0]

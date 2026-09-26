@@ -119,14 +119,15 @@ def test_final_content_qa_failure_cannot_mutate_canonical_history(offline_pipeli
     before = _canonical_snapshot(_db(tmp_path))
     json_before = _sha256(_report_json(tmp_path))
 
-    real_metadata = main.build_public_metadata
+    from products import post_unified
+    real_metadata = post_unified.post_metadata
 
     def _unsafe_metadata(*a, **k):
         meta = real_metadata(*a, **k)
         meta["title"] = "Top stocks to buy tomorrow #shorts"
         return meta
 
-    monkeypatch.setattr(main, "build_public_metadata", _unsafe_metadata)
+    monkeypatch.setattr(post_unified, "post_metadata", _unsafe_metadata)
     monkeypatch.setattr(main, "publish",
                         lambda *a, **k: pytest.fail("must not publish when content QA fails"))
     main.run(_Args(upload=True))

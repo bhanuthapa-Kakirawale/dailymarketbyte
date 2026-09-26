@@ -166,8 +166,11 @@ def check_video(video_path: str, expected_duration: float, metadata_path: str | 
                 report_path: str | None = None, expected_width: int = 1080,
                 expected_height: int = 1920, duration_tolerance: float = 1.0,
                 fps_range: tuple = (24.0, 61.0), now: dt.datetime | None = None,
-                probe=probe_media, sample=sample_frame_stats) -> VideoQAResult:
-    """Validate a rendered artifact. `probe`/`sample` are injectable for offline tests."""
+                probe=probe_media, sample=sample_frame_stats,
+                expect_audio: bool = True) -> VideoQAResult:
+    """Validate a rendered artifact. `probe`/`sample` are injectable for offline tests.
+    `expect_audio=False` is the silent POST_UNIFIED V2: an audio stream is then a FAILURE (no
+    audio may be introduced until the audio phase is explicitly enabled)."""
     result = VideoQAResult(checked_at=now or dt.datetime.now(dt.timezone.utc),
                            video_path=video_path)
 
@@ -230,9 +233,15 @@ def check_video(video_path: str, expected_duration: float, metadata_path: str | 
                            message="" if ok else f"off target by {drift:.2f}s"))
 
     audio = info.get("audio") or {}
-    result.add(QACheck("audio_stream", QAStatus.PASS if audio else QAStatus.FAIL,
-                       expected="one audio stream", actual=audio.get("codec", "none"),
-                       message="" if audio else "no audio stream found"))
+    if expect_audio:
+        result.add(QACheck("audio_stream", QAStatus.PASS if audio else QAStatus.FAIL,
+                           expected="one audio stream", actual=audio.get("codec", "none"),
+                           message="" if audio else "no audio stream found"))
+    else:
+        result.add(QACheck("audio_stream", QAStatus.FAIL if audio else QAStatus.PASS,
+                           expected="no audio stream (silent V2)",
+                           actual=audio.get("codec", "none"),
+                           message="unexpected audio stream" if audio else ""))
 
     for label, path in (("metadata_json", metadata_path), ("report_json", report_path)):
         if path is None:

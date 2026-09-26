@@ -123,11 +123,33 @@ may not become canonical. Demo reports are exempt (`is_demo=1`, excluded from ev
   cooldown start. Demo never publishes.
 - POST run records carry `details.radar`: selected count/symbols, rendered/published
   count/symbols, confirmation status + timestamp, artifact path, QA verdicts.
-- **Current production state:** the scheduled POST (`main.run`) still renders the legacy
-  `video.py` Short, which has **no Radar section** - so nothing is published and PRE's stock
-  watch is omitted. The unified Radar Short (`render_daily_market_byte.py`) confirms publication
-  only with `--confirm-publication` (off by default so previews never advance history). The POST
-  cut-over to the unified renderer must call `confirm_radar_publication` after its QA gates.
+- **Current production state (POST cut-over):** the scheduled POST
+  (`daily_byte.yml` -> `python main.py [--upload]` -> `products.route` -> `main.run`) renders
+  **POST_UNIFIED** through `products/post_unified.py` - the same planner
+  (`plan_for_post`), storyboard (`build_post_storyboard` -> `daily_video.build_storyboard` ->
+  `presentation.post_plan` + `presentation.public_intelligence`), publication gate, displayed
+  claims, provenance, freeze-frame + video QA (silent, `expect_audio=False`) and
+  `publication_audit.json` that the review renderer (`render_daily_market_byte.py`,
+  `render_public_intelligence_v1.py`) uses. Every run writes
+  `output/post/<tag>/production_manifest.json` (product, entry point, report source, scenes,
+  duration, optional-section codes, audit verdict, upload status). The legacy `video.py` Short
+  is kept in the tree but is LEGACY / NON-PRODUCTION: no mode or flag reaches it.
+  Under PUBLIC_UNREGISTERED no Radar story is public, so the POST still publishes none
+  (`_record_radar(..., storyboard=sb)` records the rendered set - empty) and PRE's stock watch
+  stays omitted; `render_daily_market_byte.py --confirm-publication` (PRIVATE render) remains
+  the only confirming path.
+- **Rights:** `PUBLIC_REVIEW_REQUIRED_POLICY=BLOCK` (default) - the scheduled POST renders,
+  passes every content check and records its audit, but `--upload` is REFUSED at
+  PUBLICATION_AUDIT (`publication_rights`) until the owner reviews NSE / Yahoo rights or sets
+  `ATTRIBUTED_EOD`. Artifacts are kept.
+- **Replay / production simulation:** `python main.py --session-date YYYY-MM-DD` re-renders a
+  stored canonical report (`REUSED_CANONICAL`, never rebuilt) through the production path, reads
+  only stored official lists, writes under `output/post/replay_<date>/` (QA record included, so
+  the production run's own QA record is never overwritten), and refuses `--upload`.
+- **Market Structure on GitHub:** `daily_byte.yml` does not restore the `actions/cache` state
+  yet, so on a runner POST builds its report inline and finds no Market Structure snapshot
+  (`MARKET_STRUCTURE: SOURCE_UNAVAILABLE`, the Short is simply shorter). Adding the
+  restore/save steps below is the remaining owner decision.
 - `python -m operations.stray_cleanup` removed the two known test-contamination REPORT_BUILD
   rows (backup + audit in `output/pre_shadow_readiness/`); `MarketHistory.remove_contaminated_runs`
   is a manual tool - the pipeline never deletes run history (ast-guarded).

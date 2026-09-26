@@ -30,10 +30,9 @@ import video
 from adapters import report_builder
 from adapters.news_adapter import NO_CATALYST_TEXT
 from config import OUT_DIR, ASSETS_DIR, UNIVERSE, UNIVERSE_LABEL, TOP_N, DURATION, now_ist, fmt_in
-import editorial
 import intelligence
 from core import MarketReport
-from core.content_safety import (CONTENT_SAFETY_VERSION, SafetyStatus, classify_text,
+from core.content_safety import (CONTENT_SAFETY_VERSION, SafetyStatus,
                                  sanitize_field, scan_publication)
 from presentation import ReportPresentation
 from providers import GeminiProvider, NewsProvider, NseProvider, YahooProvider
@@ -47,6 +46,11 @@ from storage import JOB_POST_MARKET, MarketHistory, default_db_path
 RS = video.RS
 
 
+# ----------------------------------------------------------------------------- LEGACY
+# LEGACY / NON-PRODUCTION: ticker_items, build_metadata, build_public_metadata and
+# readability_qa served the legacy video.py Short. Since the production cut-over main.run
+# renders POST_UNIFIED (products.post_unified) and calls none of them; they remain only for
+# old artifacts / tests and must not be wired back into the scheduled path.
 def ticker_items(m, tiles, sec, gainers, losers):
     items = [("NIFTY 50", fmt_in(m["close"]), m["pct"])]
     if m.get("bank_pct") is not None:
@@ -175,6 +179,7 @@ def apply_content_safety(nifty_reason, gainers, losers, events):
 
 
 def collect_public_text(plan, meta) -> dict:
+    # `plan`: anything with public_text() - the POST_UNIFIED storyboard in production
     """Every string that will appear to a viewer, taken from the editorial plan itself.
 
     The plan is the script, so it is the complete and authoritative list of on-screen text -
@@ -229,10 +234,8 @@ def plan_short(report, snapshot, now=None, profile=None):
     every candidate hook and statement is content-checked here rather than after rendering.
     Reads the report and snapshot; writes to neither.
     """
-    def _is_safe(text):
-        return classify_text(text).status is not SafetyStatus.BLOCKED
-
-    return editorial.plan_short(report, snapshot, now=now, is_safe=_is_safe, profile=profile)
+    from products import post_unified
+    return post_unified.plan_for_post(report, snapshot, now=now, profile=profile)
 
 
 def collect(args, today, morning_facts=True):
@@ -541,7 +544,7 @@ def build_intelligence(report, history, demo=False):
 def video_qa(out, meta_path, report_path, expected_duration, upload_requested):
     """Deterministic artifact QA. Failure blocks publication but preserves every artifact."""
     result = check_video(out, expected_duration=expected_duration, metadata_path=meta_path,
-                         report_path=report_path)
+                         report_path=report_path, expect_audio=False)
     if result.passed:
         note = f" ({len(result.warnings)} warning(s))" if result.warnings else ""
         print(f"      video QA: {result.status.value}{note}")
@@ -706,6 +709,28 @@ def obtain_post_report(args, today, history, run_id):
     exists (production policy: never cost a day's publication, recorded as
     report_source=BUILT_INLINE). Returns a ReportOutcome; a non-ok one is already recorded."""
     session = None if args.demo else latest_final_session(now_ist())
+    replay = getattr(args, "session_date", None)
+    if replay and not args.demo:
+        # a replay renders an ALREADY-BUILT canonical report for that session - it never
+        # rebuilds one and never uploads (an old session is never published as today's)
+        if args.upload:
+            print("Refused: --session-date is a replay of a past session; it never uploads")
+            _finish(history, run_id, "NO_UPLOAD", "BLOCKED", failure_stage="COLLECT",
+                    failure_reason="replay with --upload", run_status="BLOCKED")
+            return ReportOutcome("BLOCKED", reason="replay with --upload")
+        session = dt.date.fromisoformat(str(replay))
+        lookup = find_canonical_report(session, history=history)
+        if not lookup.found:
+            _finish(history, run_id, "FAILED", "BLOCKED", failure_stage="CANONICAL_ARTIFACT",
+                    failure_reason=f"no canonical report for {session}: {lookup.reason}",
+                    run_status="BLOCKED", target_date=session, source_session_date=session)
+            return ReportOutcome("BLOCKED", reason=lookup.reason)
+        _stage(history, run_id, "PERSISTED", report_id=lookup.report_id,
+               artifact_path=lookup.path,
+               details={"report_source": "REUSED_CANONICAL", "replay": True,
+                        "lookup": lookup.to_dict()})
+        print(f"[1/7] REPLAY of canonical report for {session} ({lookup.report_id})")
+        return ReportOutcome("REUSED", lookup.report, lookup.path, source="REUSED_CANONICAL")
     if session is not None and history is not None:
         lookup = find_canonical_report(session, history=history)
         if lookup.found:
@@ -739,27 +764,39 @@ def obtain_post_report(args, today, history, run_id):
     return outcome
 
 
-def publication_audit(plan, meta, out, provs, report, args, tag, ticker=()):
-    """Gate 5 (public intelligence V1): the per-video publication audit. PASS or BLOCK; a
-    BLOCK makes the upload impossible (upload.upload re-checks it against the file)."""
-    from presentation.legacy_public import legacy_scene_audit, provenance_text
-    from publication import build_publication_audit, write_publication_audit
-    from publication.scene_claims import legacy_claims
-    texts = dict(plan.public_text())
-    texts.update(provenance_text(provs or []))
-    for i, item in enumerate(ticker or ()):          # the scrolling strip is on screen too
-        texts[f"ticker.{i}"] = " ".join(str(x) for x in item[:2] if x)
-    claims, claim_texts = legacy_claims(plan, report, ticker or ())
-    audit = build_publication_audit(
-        gate=plan.gate, product="POST_LEGACY", session_date=report.session_date,
-        public_text=texts, scenes=legacy_scene_audit(plan, provs or [None] * len(plan.scenes)),
-        metadata=meta, video_path=out, synthetic=bool(args.demo),
-        sources={"market_report": report.report_id}, claims=claims, scene_texts=claim_texts)
+def publication_audit(sb, meta, out, report, args, tag):
+    """Gate 5: the per-video publication audit of the POST_UNIFIED storyboard (claims,
+    provenance, universe, language, rights). PASS or BLOCK; a BLOCK makes the upload
+    impossible (upload.upload re-checks it against the file)."""
+    from daily_video.composer import AUDIO_ENABLED
+    from daily_video.public_storyboard import audit_storyboard
+    from publication import write_publication_audit
+    from qa.video_qa import probe_media
+    probe = probe_media(out) if os.path.exists(out) else {}
+    audit = audit_storyboard(sb, "POST_UNIFIED", metadata=meta, video_path=out,
+                             synthetic=bool(args.demo),
+                             audio={"audio_stream": bool(probe.get("audio")),
+                                    "audio_phase_enabled": AUDIO_ENABLED})
     path = write_publication_audit(audit, os.path.join(OUT_DIR, "publication", tag))
     print(f"      publication audit: {audit['final']}"
           + (f" (failed: {', '.join(audit['failed_checks'])})" if audit["failed_checks"] else "")
           + f" -> {os.path.relpath(path, OUT_DIR)}")
     return audit, path
+
+
+class _FrameQA:
+    """The freeze-frame layout QA of the unified storyboard, in the shape the run's
+    readability slot records (the legacy per-scene reading budget does not apply to it)."""
+
+    def __init__(self, frames_qa: dict):
+        self.passed = bool(frames_qa.get("passed"))
+        self.blocking_issues = [f"{k}: {v}" for k, v in (frames_qa.get("issues") or {}).items()]
+        self.warnings = []
+        self.status = "PASS" if self.passed else "FAIL"
+
+    def to_dict(self) -> dict:
+        return {"kind": "FREEZE_FRAME_QA", "status": self.status, "passed": self.passed,
+                "blocking_issues": self.blocking_issues}
 
 
 def run(args):
@@ -799,63 +836,64 @@ def run(args):
         print(f"      editorial: {len(plan.scenes)} scenes, {plan.total_duration:.1f}s "
               f"| hook: {plan.hook.primary_text} {plan.hook.primary_value}".rstrip())
 
-        pres = ReportPresentation(report)
-        # "today" on screen is the edition the report was built for (its report_date) - the
-        # run date on an ordinary morning, and still right when a reused report is rendered
-        # on another day: the report's events are that edition's events.
+        # ---- POST_UNIFIED (production cut-over): the SAME product the review renderer
+        # builds - products.post_unified. The legacy video.py Short is non-production.
+        from products import post_unified as PU
+        from presentation.public_intelligence import load_public_intelligence
         edition = report.report_date or today
+        session = report.session_date or edition
+        replay = bool(getattr(args, "session_date", None))
+        tag = (f"replay_{session}" if replay else today.strftime("%Y-%m-%d")) + \
+            ("_DEMO" if args.demo else "")
+        intel = load_public_intelligence(
+            session, next_session(session) or edition, OUT_DIR,
+            fetch=not (args.demo or replay or getattr(args, "no_fetch_public", False)),
+            now_iso=dt.datetime.now(dt.timezone.utc).isoformat())
+        sb, pres = PU.build_post_storyboard(
+            report, plan, profile=profile, intelligence=intel,
+            hook_ai=bool(getattr(args, "hook_ai", False)),
+            radar_dir=os.path.join(OUT_DIR, "radar"), sources={"market_report": report_path})
         info = {"today_str": edition.strftime("%A, %d %B %Y"),
                 "today_short": edition.strftime("%a %d %b"),
                 "recap_str": pres.session_date.strftime("%a, %d %b %Y")}
-        tag = today.strftime("%Y-%m-%d")
-        charts = chart.make_chart(pres.m, os.path.join(OUT_DIR, f"nifty_chart_{tag}"))
-        scenes = video.scenes_from_plan(plan, charts)
-
-        total = sum(s.dur for s in scenes)
-        print(f"[6/7] Rendering {total:.1f}s video ({len(scenes)} scenes)...")
-        swells = list(np.cumsum([s.dur for s in scenes])[:-1])
-        mus = music.get_music(ASSETS_DIR, OUT_DIR, DURATION, swells, date=pres.session_date)
-        out = os.path.join(OUT_DIR, f"daily_byte_{tag}{'_DEMO' if args.demo else ''}.mp4")
-        # PUBLIC_UNREGISTERED: no named stock in the ticker, no AI-only global tile, and a
-        # SOURCE / DATA AS OF plate on every factual scene
-        provs = None
-        if public:
-            from presentation.legacy_public import plan_provenance
-            provs = plan_provenance(report, plan)
-            ticker = ticker_items(pres.m, [], pres.sec, [], [])
-        else:
-            ticker = ticker_items(pres.m, pres.tiles, pres.sec, pres.gainers, pres.losers)
-        video.render(scenes, info, ticker, mus, out, demo=args.demo, provenance=provs)
-
-        if public:
-            meta = build_public_metadata(pres.m, plan, info)
-        else:
-            meta = build_metadata(pres.m, pres.gainers, pres.losers, pres.events, info,
-                                  pres.fd, pres.sec, pres.tiles)
+        total = sb.total_duration
+        print(f"[6/7] Rendering {PU.PRODUCT}: {total:.1f}s, {len(sb.scenes)} scenes "
+              f"({', '.join(s.kind for s in sb.scenes)})")
+        run_dir = os.path.join(OUT_DIR, "post", tag)
+        os.makedirs(run_dir, exist_ok=True)
+        out = os.path.join(OUT_DIR, f"daily_byte_{tag}.mp4")
+        rendered = PU.render_post(sb, out, os.path.join(run_dir, "freeze_frames"),
+                                  watermark=PU.DEMO_WATERMARK if args.demo else None)
+        meta = PU.post_metadata(sb, pres, info)
         meta_path = out.replace(".mp4", ".json")
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2, ensure_ascii=False)
+        with open(os.path.join(run_dir, "storyboard.json"), "w", encoding="utf-8") as f:
+            json.dump(sb.to_dict(), f, indent=2, ensure_ascii=False, default=str)
         _stage(history, run_id, "RENDERED", artifact_path=out)
 
         print("[7/7] Publication QA...")
-        # Gates 2 and 3 are operational: they decide whether this artifact may be published,
-        # and record that decision in the QA artifact and publication_runs. Neither reopens
-        # the canonical report, its JSON, or its rows.
+        # Gates 2-5 are operational: they decide whether this artifact may be published and
+        # record that decision in the QA artifact and publication_runs. None reopens the
+        # canonical report, its JSON, or its rows.
         qa_result = video_qa(out, meta_path, report_path, total, args.upload)
-        read_result = readability_qa(plan, args.upload)
-        scan = final_qa(plan, meta, out, args.upload)
+        read_result = _FrameQA(rendered["frames_qa"])
+        scan = final_qa(sb, meta, out, args.upload)
         content_ok = scan.status is SafetyStatus.SAFE
-        audit, audit_path = publication_audit(plan, meta, out, provs, report, args, tag, ticker)
+        audit, audit_path = publication_audit(sb, meta, out, report, args, tag)
         from publication.audit import content_checks_passed
         publication_ok = content_checks_passed(audit)          # the render itself is compliant
         if args.upload and not args.demo and audit["final"] != "PASS":
             publication_ok = False                             # rights etc. block the upload
         _merge_details(history, run_id, publication={
-            "profile": profile.value, "final": audit["final"],
+            "product": PU.PRODUCT, "profile": profile.value, "final": audit["final"],
             "failed_checks": audit["failed_checks"], "audit_path": audit_path,
-            "facts_blocked": audit["facts_blocked"], "block_reasons": audit["block_reasons"]})
+            "facts_blocked": audit["facts_blocked"], "block_reasons": audit["block_reasons"],
+            "optional_sections": audit.get("optional_sections")})
 
-        qa_path = write_qa_artifact(qa_result, OUT_DIR, report, report_path=report_path,
+        # a replay never overwrites the QA record of the production run for that report
+        qa_path = write_qa_artifact(qa_result, run_dir if replay else OUT_DIR, report,
+                                    report_path=report_path,
                                     video_path=out, demo=args.demo,
                                     content_qa=operational_content_qa(scan),
                                     readability=read_result.to_dict(),
@@ -873,27 +911,46 @@ def run(args):
                content_qa_status="PASSED" if content_ok else "FAILED")
 
         # RADAR_PUBLISHED is decided here, after the artifact and every QA gate - never by the
-        # REPORT job's selection. This renderer has no Radar section, so nothing is published.
-        _record_radar(history, run_id, report, out, demo=args.demo,
+        # REPORT job's selection: only the Radar stories this MP4 actually shows (none publicly).
+        _record_radar(history, run_id, report, out, demo=args.demo, storyboard=sb,
                       qa_passed=qa_result.passed and content_ok and read_result.passed,
-                      qa={"video_qa": qa_result.status.value, "readability": read_result.passed,
+                      qa={"video_qa": qa_result.status.value, "frames_qa": read_result.passed,
                           "content_qa": scan.status.value, "qa_artifact": qa_path})
+
+        def _manifest(upload_status):
+            doc = PU.manifest(entry_point="main.py -> products.route -> main.run",
+                              report_source=outcome.source, report_id=report.report_id,
+                              session=session, sb=sb, audit=audit, upload_status=upload_status,
+                              video_path=out,
+                              qa={"video_qa": qa_result.status.value,
+                                  "video_qa_blocking": list(qa_result.blocking_issues),
+                                  "frames_qa": rendered["frames_qa"],
+                                  "content_qa": scan.status.value})
+            with open(os.path.join(run_dir, "production_manifest.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump(doc, fh, indent=2, ensure_ascii=False, default=str)
+            return doc
 
         if not (qa_result.passed and content_ok and read_result.passed and publication_ok):
             stage = ("VIDEO_QA" if not qa_result.passed
-                     else "READABILITY_QA" if not read_result.passed
+                     else "FRAMES_QA" if not read_result.passed
                      else "CONTENT_QA" if not content_ok else "PUBLICATION_AUDIT")
             reason = (qa_result.blocking_issues or read_result.blocking_issues
                       or scan.blocked_fields or audit["failed_checks"])
+            _manifest("REFUSED: " + stage + " - " + "; ".join(reason))
             _finish(history, run_id, "FAILED", "BLOCKED", failure_stage=stage,
                     failure_reason="; ".join(reason), artifact_path=out, run_status="BLOCKED")
             return out
 
         if args.upload and not args.demo:
             vid = publish(out, meta, pres.session_date, audit_path)
+            _manifest(f"PUBLISHED: {vid}")
             _finish(history, run_id, "PUBLISHED", "PUBLISHED", artifact_path=out,
                     youtube_video_id=vid, run_status="SUCCESS")
         else:
+            _manifest("NOT_ATTEMPTED (no --upload)"
+                      + ("" if audit["final"] == "PASS" else
+                         f"; an upload would be refused: {', '.join(audit['failed_checks'])}"))
             _finish(history, run_id, "NO_UPLOAD", "NOT_ATTEMPTED", artifact_path=out,
                     run_status="SUCCESS")
         return out
@@ -907,14 +964,15 @@ def run(args):
             history.close()
 
 
-def _record_radar(history, run_id, report, artifact_path, *, qa_passed, qa, demo=False):
-    """Record RADAR_SELECTED vs RADAR_PUBLISHED for this POST run (run details `radar`).
-    The legacy renderer (video.scenes_from_plan) draws no Radar story, so `rendered` is empty
-    and nothing is marked published. Never fatal."""
+def _record_radar(history, run_id, report, artifact_path, *, qa_passed, qa, demo=False,
+                  storyboard=None):
+    """Record RADAR_SELECTED vs RADAR_PUBLISHED for this POST run (run details `radar`): only
+    the Radar stories the rendered POST_UNIFIED storyboard SHOWS count - none under
+    PUBLIC_UNREGISTERED (the gate keeps every Radar story private). Never fatal."""
     try:
         from products import radar_publication as rp
         session = report.session_date
-        rendered = []    # video.scenes_from_plan has no Radar section
+        rendered = rp.rendered_radar_stories(storyboard) if storyboard is not None else []
         confirm = rp.confirm_radar_publication(
             session, rendered, qa_passed=qa_passed, out_dir=OUT_DIR, run_id=run_id,
             artifact_path=artifact_path, qa=qa, demo=demo, confirmed_by="main.run")
@@ -928,7 +986,8 @@ def _record_radar(history, run_id, report, artifact_path, *, qa_passed, qa, demo
                   "confirmation_status": confirm["status"],
                   "confirmed_at": pub.get("confirmed_at"),
                   "artifact_path": artifact_path, "qa": qa, "qa_passed": bool(qa_passed),
-                  "note": rp.LEGACY_RENDERER_NOTE}
+                  "note": ("POST_UNIFIED: Radar stories are shown only under "
+                           "PRIVATE_ANALYTICS; the public Short publishes none")}
         _merge_details(history, run_id, radar=record)
         print(f"      radar: selected {record['selected_count']} / published "
               f"{record['published_count']} ({confirm['status']})")
@@ -1007,12 +1066,17 @@ if __name__ == "__main__":
     # lives in products/, not here.
     ap.add_argument("--mode", choices=("postmarket", "premarket", "report"), default="postmarket")
     ap.add_argument("--session-date", help="premarket: the session about to open; report: the "
-                                            "session to build (default: latest final session)")
+                                            "session to build (default: latest final session); "
+                                            "postmarket: REPLAY an already-built canonical "
+                                            "report (never rebuilds, never uploads)")
     ap.add_argument("--shadow", action="store_true",
                     help="premarket: shadow run -> output/pre_shadow/<date>/, never uploads")
     ap.add_argument("--skip-radar", action="store_true", help="report: build the report only")
     ap.add_argument("--as-of", help="premarket: IST cutoff (ISO datetime); default now")
     ap.add_argument("--frames-only", action="store_true", help="premarket: frames + QA, no MP4")
+    ap.add_argument("--no-fetch-public", action="store_true",
+                    help="postmarket: do not read today's official lists (F&O ban, ASM/GSM, "
+                         "NSE IPO lists); the Exchange / IPO Watch sections are then omitted")
     ap.add_argument("--profile", choices=("PUBLIC_UNREGISTERED", "PRIVATE_ANALYTICS"),
                     default=None, help="publication profile (default PUBLIC_UNREGISTERED); "
                                        "PRIVATE_ANALYTICS output is never uploaded")

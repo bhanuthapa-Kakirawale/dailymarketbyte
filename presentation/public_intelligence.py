@@ -256,8 +256,10 @@ def load_public_intelligence(structure_session: dt.date | None, list_date: dt.da
             if d:
                 apply_offer_document(ipo, d)
         intel.ipos = ipos
-        intel.ipo_status = "FETCHED" if not any("UNAVAILABLE" in n for n in notes) or ipos \
-            else "NOT_AVAILABLE"
+        # "NSE client unavailable: ..." / "<list>: UNAVAILABLE (...)" - an unreachable exchange
+        # is SOURCE_UNAVAILABLE, never reported as "no IPO event today"
+        intel.ipo_status = "FETCHED" if ipos or not any("unavailable" in n.lower()
+                                                        for n in notes) else "NOT_AVAILABLE"
     else:
         p = store_path(out_dir, list_date)
         if os.path.exists(p):

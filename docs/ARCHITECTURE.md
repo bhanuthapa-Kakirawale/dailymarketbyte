@@ -41,7 +41,9 @@ Publication Gate     publication/ - PublicationProfile (default PUBLIC_UNREGISTE
 Presentation Adapter presentation/ - reshapes the report into renderer structures
       |
       v
-Renderer             video.py / chart.py; scenes are built from the plan, acquires nothing
+Renderer             POST_UNIFIED: products/post_unified.py -> daily_video (storyboard +
+                     Composer); scenes are built from the plan, acquires nothing. The
+                     scheduled POST and the review renderer share it; video.py is LEGACY
       |
       v
 Publication QA       video QA (artifact) + readability QA (plan) + content safety (plan text)
@@ -89,7 +91,8 @@ not fetch anything or compute a new market fact.
 | Hook engine    | `hooks/`                           | Hook Phase 1 - teaser + hook for PRE/POST/CUSTOM; Gemini chooses among approved candidates, strict validation, deterministic fallback (`docs/HOOK_ENGINE.md`) |
 | Presentation   | `presentation/`                    | the renderer boundary               |
 | PRE-MARKET     | `products/` (router + runner), `providers/premarket.py`, `core/freshness.py`, `core/event_calendar.py`, `presentation/pre_plan.py`, `daily_video/pre_storyboard.py`, `daily_video/pre_scenes.py` | PRE V1 - "before the bell" Short from the previous session's canonical report + dated/timestamped pre-open readings + verified schedules; deterministic `PreEditorialPlanner`; reuses the POST design system and the hook engine; never writes canonical history, never uploads (`docs/PRE_MARKET.md`) |
-| Rendering      | `video.py`, `chart.py`, `music.py` | scenes built from the editorial plan |
+| Rendering      | `products/post_unified.py`, `daily_video/` | POST_UNIFIED: one planner / storyboard / renderer / audit for scheduled and review POST (production cut-over) |
+| Legacy render  | `video.py`, `chart.py`, `music.py` | LEGACY / NON-PRODUCTION `video.py` Short - kept, unit-tested, reached by no mode or flag |
 | Artifact QA    | `qa/`                              | deterministic video + readability checks |
 | Publication    | `upload.py`                        | unchanged                           |
 | Orchestration  | `main.py`                          | thin: obtain the canonical report (reuse it, else `produce_report`: collect → report → persist) → gate → plan → present → render → QA → publish; `--mode report` / `--mode premarket` route through `products.route(VideoRequest)` (POST is the default and runs `main.run`) |

@@ -13,15 +13,14 @@ import json
 import os
 import sys
 
-import editorial
 import intelligence
 from config import OUT_DIR
 from core import MarketReport
-from core.content_safety import SafetyStatus, classify_text, scan_publication
-from daily_video import Composer, build_storyboard
+from core.content_safety import SafetyStatus, scan_publication
+from daily_video import Composer
 from daily_video.typography import font_report
 from presentation import ReportPresentation
-from radar.visual_evidence import build_visual_evidence_for_presentation
+from products import post_unified as PU
 from storage import MarketHistory, default_db_path
 
 FREEZE_NAMES = {"HOOK": "hook", "DYNAMIC_HOOK": "hook", "PULSE": "market_overview", "NIFTY": "nifty", "FLOWS": "fii_dii",
@@ -29,25 +28,26 @@ FREEZE_NAMES = {"HOOK": "hook", "DYNAMIC_HOOK": "hook", "PULSE": "market_overvie
                 "AHEAD": "look_ahead", "CLOSING": "closing"}
 
 
-def load_inputs(report_path, radar_dir, session: str):
+def load_report_and_plan(report_path, profile=None):
+    """(report, plan) through the SAME planner the scheduled POST uses
+    (products.post_unified.plan_for_post)."""
     report = MarketReport.from_json(open(report_path, encoding="utf-8").read())
     history = MarketHistory(default_db_path(OUT_DIR))
     try:
         snapshot = intelligence.build_snapshot(report, history)
     finally:
         history.close()
-    plan = editorial.plan_short(report, snapshot, now=report.generated_at,
-                                is_safe=lambda s: classify_text(s).status is not SafetyStatus.BLOCKED)
+    return report, PU.plan_for_post(report, snapshot, now=report.generated_at, profile=profile)
+
+
+def load_inputs(report_path, radar_dir, session: str):
+    """Compatibility tuple for the historical phase renderers; built from the shared
+    products.post_unified functions (no planner / Radar loading of its own)."""
+    report, plan = load_report_and_plan(report_path)
     pres = ReportPresentation(report)
-    pres_path = os.path.join(radar_dir, "presentation", f"radar_presentation_{session}.json")
-    result_path = os.path.join(radar_dir, f"daily_radar_{session}.json")
-    radar_pres = json.load(open(pres_path, encoding="utf-8")) if os.path.exists(pres_path) else None
-    radar_result = json.load(open(result_path, encoding="utf-8")) if os.path.exists(result_path) else None
-    evidence = (build_visual_evidence_for_presentation(radar_pres, radar_result)
-                if radar_pres and radar_result else {})
+    radar_pres, radar_result, evidence, paths = PU.load_radar_inputs(radar_dir, session)
     universe = (report.metadata or {}).get("universe") or "Nifty 100"
-    sources = {"market_report": report_path, "radar_presentation": pres_path,
-               "radar_result": result_path, "ohlcv_store": default_db_path(OUT_DIR)}
+    sources = {"market_report": report_path, **paths, "ohlcv_store": default_db_path(OUT_DIR)}
     return plan, pres, radar_pres, radar_result, evidence, universe, sources
 
 
@@ -83,22 +83,22 @@ def main(argv=None):
                          "and validation renders must never advance publication history")
     args = ap.parse_args(argv)
 
-    report = MarketReport.from_json(open(args.report, encoding="utf-8").read())
+    from publication import resolve_profile
+    profile = resolve_profile(args.profile)
+    report, plan = load_report_and_plan(args.report, profile=profile)
     session = (report.session_date or report.report_date).isoformat()
-    plan, pres, radar_pres, radar_result, evidence, universe, sources = load_inputs(
-        args.report, args.radar_dir, session)
     # Gemini chooses among approved hook candidates when a key is configured; any failure
     # falls back to the deterministic hook inside the engine.
     from operations.sessions import next_session
     from presentation.public_intelligence import load_public_intelligence
-    from publication import resolve_profile
-    profile = resolve_profile(args.profile)
     list_date = next_session(report.session_date) or report.report_date
     intel = load_public_intelligence(report.session_date, list_date, OUT_DIR,
                                      fetch=args.fetch_public,
                                      now_iso=dt.datetime.now(dt.timezone.utc).isoformat())
-    sb = build_storyboard(plan, pres, radar_pres, radar_result, evidence, universe, sources,
-                          hook_ai=not args.no_hook_ai, profile=profile, intelligence=intel)
+    sb, pres = PU.build_post_storyboard(
+        report, plan, profile=profile, intelligence=intel, hook_ai=not args.no_hook_ai,
+        radar_dir=args.radar_dir,
+        sources={"market_report": args.report, "ohlcv_store": default_db_path(OUT_DIR)})
     if sb.hook_plan:
         hp = sb.hook_plan
         print(f"hook: {hp['archetype']} via {hp['source']}"

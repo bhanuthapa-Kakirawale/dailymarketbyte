@@ -52,7 +52,7 @@ def _offline_official_lists(monkeypatch):
         return [SourceResult("nse_surveillance", "UNAVAILABLE", reason="network disabled in tests")]
 
     def _ipo(data_as_of, now_iso, nse=None):
-        return [], ["network disabled in tests"]
+        return [], ["NSE client unavailable: network disabled in tests"]   # production's note
 
     for mod in (exchange_watch, exs):
         monkeypatch.setattr(mod, "fetch_fo_ban", _ban)

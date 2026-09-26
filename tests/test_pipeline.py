@@ -22,11 +22,30 @@ class _Args:
         self.demo, self.upload, self.force = demo, upload, force
 
 
+class _Rendered(dict):
+    """What the offline run rendered: the POST_UNIFIED storyboard (`storyboard`) and the
+    editorial plan it was built from (`plan`). `scenes` rebuilds the LEGACY video.py scenes
+    from that plan on demand, so the legacy renderer's own properties stay tested while the
+    module exists - production no longer renders them."""
+
+    def __getitem__(self, key):
+        if key == "scenes" and "plan" in self:
+            import video
+            return video.scenes_from_plan(dict.__getitem__(self, "plan"), None)
+        return dict.__getitem__(self, key)
+
+    def __contains__(self, key):
+        # "rendered" means the storyboard reached the renderer, not merely that a plan exists
+        if key == "scenes":
+            return "storyboard" in self and "plan" in self
+        return dict.__contains__(self, key)
+
+
 @pytest.fixture
 def offline_pipeline(monkeypatch, tmp_path, market_dict, movers, sectors, tiles, ai_facts, events):
     """Stub every network boundary and every expensive renderer call."""
     gainers, losers = movers
-    rendered = {}
+    rendered = _Rendered()
 
     monkeypatch.setattr(main, "OUT_DIR", str(tmp_path))
     monkeypatch.setattr(main.report_builder, "_now_ist",
@@ -63,6 +82,33 @@ def offline_pipeline(monkeypatch, tmp_path, market_dict, movers, sectors, tiles,
         open(out_path, "wb").write(b"stub")
 
     monkeypatch.setattr(main.video, "render", _render)
+
+    # the production POST renders POST_UNIFIED through products.post_unified: stub the MP4 and
+    # freeze-frame work only - planner, storyboard, gates and audit all run for real
+    from products import post_unified
+
+    def _render_post(sb, out_path, frames_dir, watermark=None):
+        rendered["storyboard"] = sb
+        rendered["watermark"] = watermark
+        open(out_path, "wb").write(b"stub")
+        return {"frames_qa": {"passed": True, "issues": {}},
+                "render": {"ok": True, "output_path": out_path}}
+
+    monkeypatch.setattr(post_unified, "render_post", _render_post)
+    real_meta = post_unified.post_metadata
+
+    def _post_metadata(sb, pres, info):
+        rendered["info"] = info
+        return real_meta(sb, pres, info)
+
+    monkeypatch.setattr(post_unified, "post_metadata", _post_metadata)
+    real_plan = main.plan_short
+
+    def _plan(*a, **k):
+        rendered["plan"] = real_plan(*a, **k)
+        return rendered["plan"]
+
+    monkeypatch.setattr(main, "plan_short", _plan)
 
     # Media probing is the mockable boundary: tests never invoke ffmpeg, but the production
     # QA implementation stays exactly as it ships.
@@ -417,7 +463,8 @@ def test_rerunning_the_same_session_does_not_duplicate_history(offline_pipeline,
 def test_unsafe_text_surviving_into_metadata_blocks_upload(offline_pipeline, monkeypatch):
     """The final gate is the backstop: if recommendation language ever reaches a finalized
     artifact despite sanitisation, publication stops rather than the text being rewritten."""
-    real_metadata = main.build_public_metadata
+    from products import post_unified
+    real_metadata = post_unified.post_metadata
 
     def _unsafe_metadata(*a, **k):
         meta = real_metadata(*a, **k)
@@ -427,6 +474,6 @@ def test_unsafe_text_surviving_into_metadata_blocks_upload(offline_pipeline, mon
     def _boom(*a, **k):
         raise AssertionError("unsafe content must not be published")
 
-    monkeypatch.setattr(main, "build_public_metadata", _unsafe_metadata)
+    monkeypatch.setattr(post_unified, "post_metadata", _unsafe_metadata)
     monkeypatch.setattr(main, "publish", _boom)
     assert main.run(_Args(upload=True)) is not None

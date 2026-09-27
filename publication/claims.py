@@ -231,6 +231,15 @@ def hook_claims(scene_id, sheet, resolve_fact, texts: dict) -> list:
                     derivs.append(d)
             out.append(claim(scene_id, text, f"beat:{b.beat_id}", ids, srcs,
                              derivation="; ".join(dict.fromkeys(derivs)) or None))
+    # a NUMBERED_LIST hero (the THINGS_TO_KNOW briefing) numbers its items 1..n: those bare
+    # ordinals are list positions, not market values - declared as such, and only when they
+    # form the exact sequence 1..n (any other bare number still needs a fact)
+    ordinals = sorted(int(v) for k, v in texts.items()
+                      if k.startswith("hero_strings.") and re.fullmatch(r"\d{1,2}", v or ""))
+    if len(ordinals) >= 2 and ordinals == list(range(1, len(ordinals) + 1)):
+        out.append(claim(scene_id, " ".join(map(str, ordinals)), "list_position",
+                         derivation="numbered briefing item positions (1..n) - not a market value",
+                         sources=(DERIVED,), role="DEFINITION"))
     return out
 
 

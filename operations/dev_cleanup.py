@@ -92,7 +92,8 @@ def referenced_artifacts(root: str) -> set:
     if not os.path.exists(db):
         return refs
     try:
-        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        from storage.readonly import connect_readonly
+        con = connect_readonly(db)                  # creates no WAL sidecar next to production
         try:
             rows = con.execute("select artifact_path from publication_runs "
                                "where artifact_path is not null and upper(coalesce(mode,'')) "

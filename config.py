@@ -22,6 +22,22 @@ IST = ZoneInfo("Asia/Kolkata")
 ASSETS_DIR = os.path.join(BASE_DIR, "assets")
 OUT_DIR = os.getenv("DAILY_BYTE_OUT", os.path.join(BASE_DIR, "output"))
 
+# Isolated test runs (docs/TESTING_GUIDE.md). DMB_RUN_CONTEXT=test marks a process as a test
+# run: its whole output root must be ONE run folder under output/test_runs/ - checked here, where
+# OUT_DIR is decided, so a misconfigured test fails before any module can write. The guards in
+# operations/run_context.py then refuse production paths, uploads and remote state.
+PRODUCTION_OUT_DIR = os.path.join(BASE_DIR, "output")
+TEST_RUNS_DIR = os.path.join(PRODUCTION_OUT_DIR, "test_runs")
+RUN_CONTEXT = os.getenv("DMB_RUN_CONTEXT", "").strip().lower()
+if RUN_CONTEXT not in ("", "production", "test"):
+    raise RuntimeError(f"DMB_RUN_CONTEXT={RUN_CONTEXT!r}: expected 'test' or unset")
+if RUN_CONTEXT == "test":
+    _run_root = os.path.realpath(OUT_DIR)
+    _tests = os.path.realpath(TEST_RUNS_DIR)
+    if os.path.dirname(_run_root) != _tests:
+        raise RuntimeError("TEST CONTEXT: DAILY_BYTE_OUT must be a run folder directly under "
+                           f"{TEST_RUNS_DIR} (got {OUT_DIR!r}) - refusing to run")
+
 # Video
 W, H, FPS = 1080, 1920, 30
 DURATION = 75.0   # target length; scenes that can't get data are dropped and others stretch

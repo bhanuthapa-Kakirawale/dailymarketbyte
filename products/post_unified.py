@@ -116,6 +116,9 @@ def render_post(sb, out_path: str, frames_dir: str, watermark: str | None = None
     """Freeze-frame QA (the layout gate: safe areas, overlaps, required marks, provenance) and
     the silent MP4. Returns {"frames_qa": {...}, "render": {...}}."""
     from daily_video import Composer
+    from operations.run_context import guard_write
+    guard_write(out_path, "POST video")
+    guard_write(frames_dir, "POST frames")
     comp = Composer(sb, watermark=watermark)
     names = [f"{i:02d}_{s.kind.lower()}" for i, s in enumerate(sb.scenes)]
     qa = comp.export_freeze_frames(frames_dir, names)

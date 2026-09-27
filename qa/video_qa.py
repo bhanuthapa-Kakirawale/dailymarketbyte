@@ -317,6 +317,8 @@ def write_qa_artifact(result: VideoQAResult, out_dir: str, report, report_path: 
     for context; `content_qa` is the final publication scan, which never enters the report.
     """
     directory = os.path.join(out_dir, "qa")
+    from operations.run_context import guard_write
+    guard_write(directory, "QA artifact")
     os.makedirs(directory, exist_ok=True)
     suffix = "_DEMO" if demo else ""
     path = os.path.join(directory, f"qa_{report.report_date:%Y-%m-%d}{suffix}.json")

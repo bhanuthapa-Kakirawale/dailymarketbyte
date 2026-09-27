@@ -171,6 +171,14 @@ def from_env(out_dir: str, env=None) -> StateStore | None:
     """
     env = os.environ if env is None else env
     backend = (env.get("DMB_STATE_BACKEND") or "local").strip().lower()
+    if (env.get("DMB_RUN_CONTEXT") or "").strip().lower() == "test":
+        # a test run never touches remote or production state: its run folder IS its state
+        if backend != "local":
+            raise StateStoreError("TEST CONTEXT: DMB_STATE_BACKEND must be local in a test run")
+        from operations.run_context import is_production_path
+        root = (env.get("DMB_STATE_DIR") or "").strip()
+        if root and is_production_path(root):
+            raise StateStoreError("TEST CONTEXT: DMB_STATE_DIR points into production state")
     if backend == "gcs":
         return GCSStateStore(env.get("DMB_GCS_BUCKET", "").strip(),
                              env.get("DMB_GCS_PREFIX", "").strip())

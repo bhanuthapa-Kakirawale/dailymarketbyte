@@ -427,6 +427,8 @@ def save_presentation(presentation: RadarPresentation, out_dir: str | None = Non
     """One deterministic path per session (packet spec sections 39/40) - a rerun overwrites the
     SAME file with logically identical content, never `_v2`/`_final`."""
     directory = os.path.join(out_dir or config.OUT_DIR, "radar", "presentation")
+    from operations.run_context import guard_write
+    guard_write(directory, "Radar presentation")
     os.makedirs(directory, exist_ok=True)
     path = os.path.join(directory, f"radar_presentation_{presentation.session_date}.json")
     with open(path, "w", encoding="utf-8") as fh:

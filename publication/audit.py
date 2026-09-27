@@ -174,6 +174,8 @@ def content_checks_passed(audit: dict) -> bool:
 
 
 def write_publication_audit(audit: dict, out_dir: str, name: str = "publication_audit.json") -> str:
+    from operations.run_context import guard_write
+    guard_write(out_dir, "publication audit")
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, name)
     with open(path, "w", encoding="utf-8") as fh:

@@ -803,6 +803,8 @@ class _FrameQA:
 
 
 def run(args):
+    from operations.run_context import guard_write
+    guard_write(OUT_DIR, "POST output root")
     os.makedirs(OUT_DIR, exist_ok=True)
     today = now_ist().date()
     mode = "DEMO" if args.demo else ("PRODUCTION" if args.upload else "LOCAL")
@@ -1091,6 +1093,12 @@ if __name__ == "__main__":
     ap.add_argument("--hook-ai", action="store_true",
                     help="premarket: let Gemini choose among the approved hook candidates")
     _args = ap.parse_args()
+    from operations.run_context import UPLOAD_DISABLED, is_test
+    if is_test() and _args.upload:
+        # an isolated test run (docs/TESTING_GUIDE.md) never uploads - refused before anything
+        # runs, so no YouTube client or credential is ever touched
+        print(f"{UPLOAD_DISABLED}: --upload is refused in a test run. Nothing was run.")
+        sys.exit(2)
     # Durable state (state.sync): a clean runner hydrates the approved state from the configured
     # StateStore before the job and persists it after. Local default = no-op (output/ IS the
     # state). A configured store that cannot be read stops the job: running on missing state

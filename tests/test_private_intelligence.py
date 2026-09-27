@@ -74,7 +74,8 @@ def test_local_private_history_is_present_and_readable():
     for db, table in (("radar_candidate_history.db", "radar_candidate_history"),
                       ("market_ohlcv.db", "daily_ohlcv"),
                       ("editorial_selections.db", "editorial_selections")):
-        con = sqlite3.connect(f"file:{os.path.join(LOCAL, db)}?mode=ro", uri=True)
+        from storage.readonly import connect_readonly
+        con = connect_readonly(os.path.join(LOCAL, db))
         counts[table] = con.execute(f"select count(*) from {table}").fetchone()[0]
         con.close()
     assert all(n > 0 for n in counts.values()), counts

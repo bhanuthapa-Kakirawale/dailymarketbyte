@@ -230,7 +230,19 @@ Anything else in the failed list (`displayed_claims`, `recommendation_language`,
 
 ---
 
-## 7. 5-day shadow trial
+## 7. Testing / dry runs
+
+For isolated test runs, see **docs/TESTING_GUIDE.md**.
+
+- `scripts\test_evening.bat`, `test_pre.bat`, `test_post.bat` and `test_full_cycle.bat`
+  (live, replay or fixture) run the same pipeline inside `output\test_runs\<run_id>\`.
+- They can never touch real history, the private Radar databases or YouTube.
+- **Never use the test scripts for the normal daily workflow.** Daily:
+  `run_evening.bat`, `run_morning_pre.bat`, `run_morning_post.bat`.
+- Clean test output with `scripts\clean_test_artifacts.bat`. It is a dry run until you add
+  `--execute`.
+
+## 8. 5-day shadow trial
 
 Use `docs/SHADOW_TRIAL_CHECKLIST.md`: one row per trading day, filled from the check output
 and your own review. Nothing is uploaded during the trial.

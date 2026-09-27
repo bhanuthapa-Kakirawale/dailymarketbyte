@@ -257,7 +257,9 @@ def render_pre(brief, out_dir: str, watermark: str | None = None, frames_only: b
     from daily_video.pre_storyboard import build_pre_storyboard
     from presentation.pre_provenance import pre_provenance_audit
     from qa.video_qa import probe_media
+    from operations.run_context import guard_write
 
+    guard_write(out_dir, "PRE output")
     os.makedirs(out_dir, exist_ok=True)
     tag = brief.pre_date.isoformat()
     # publication boundary BEFORE planning: a blocked fact never becomes a section or a hook

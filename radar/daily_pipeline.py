@@ -477,6 +477,8 @@ def _build_story(candidate: StockRadarCandidate, novelty, selection, universe: d
 def save_artifact(result: DailyRadarResult, out_dir: str = ARTIFACT_DIR) -> str:
     """One deterministic path per session (packet spec section 20/21) - a rerun overwrites the
     SAME file with logically identical content rather than versioning a new one."""
+    from operations.run_context import guard_write
+    guard_write(out_dir, "Radar artifact")
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, f"daily_radar_{result.session_date}.json")
     with open(path, "w", encoding="utf-8") as fh:

@@ -34,6 +34,8 @@ def artifact_path(out_dir: str, session: dt.date) -> str:
 
 def save_snapshot(snapshot, observations, universe_def, out_dir: str, subset_defs=()) -> str:
     path = artifact_path(out_dir, dt.date.fromisoformat(snapshot.session_date))
+    from operations.run_context import guard_write
+    guard_write(path, "Market Structure snapshot")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     payload = {"snapshot": snapshot.to_dict(), "universe": universe_def.to_dict(),
                "subset_universes": [s.to_dict() for s in subset_defs or ()],

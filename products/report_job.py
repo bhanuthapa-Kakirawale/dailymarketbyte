@@ -307,6 +307,8 @@ def run_report_job(session_date: dt.date | None = None, *, demo: bool = False,
 def _write_record(record: dict, out_dir: str) -> dict:
     session = record.get("target_session") or "unresolved"
     folder = os.path.join(out_dir, "report_jobs", session)
+    from operations.run_context import guard_write
+    guard_write(folder, "run record")
     try:
         os.makedirs(folder, exist_ok=True)
         path = os.path.join(folder, f"report_job_{record.get('run_id') or 'norun'}.json")

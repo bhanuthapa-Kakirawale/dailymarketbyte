@@ -170,6 +170,8 @@ def _movers_section(rows: list, facts: list[Fact], narrative) -> list:
 def save_report(report: MarketReport, out_dir: str, demo: bool = False) -> str:
     """Write the report JSON beside the video output. Returns the path written."""
     directory = os.path.join(out_dir, REPORT_DIR)
+    from operations.run_context import guard_write
+    guard_write(directory, "canonical report")
     os.makedirs(directory, exist_ok=True)
     suffix = "_DEMO" if demo else ""
     path = os.path.join(directory, f"premarket_{report.report_date:%Y-%m-%d}{suffix}.json")
@@ -183,6 +185,8 @@ def save_unfit_report(report: MarketReport, out_dir: str) -> str:
     reports/unfit/ with a timestamp, NEVER at the canonical path and never indexed in history,
     so a later retry can still produce the canonical report for that session."""
     directory = os.path.join(out_dir, REPORT_DIR, "unfit")
+    from operations.run_context import guard_write
+    guard_write(directory, "unfit report")
     os.makedirs(directory, exist_ok=True)
     stamp = (report.generated_at or _now_ist()).strftime("%Y%m%dT%H%M%S")
     path = os.path.join(directory, f"{report.report_id}_{stamp}.json")

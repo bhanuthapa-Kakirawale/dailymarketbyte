@@ -34,6 +34,8 @@ def get_service():
 
 
 def upload(video_path: str, meta: dict, audit) -> str:
+    from operations.run_context import guard_upload
+    guard_upload()                   # a test run never reaches a YouTube client
     """Upload ONE video. `audit` (the publication_audit.json path or dict) is REQUIRED: the
     publication hard-block runs first - before any YouTube client or credential is touched - and
     raises `publication.PublicationBlocked` unless the audit says PASS, is PUBLIC_UNREGISTERED,

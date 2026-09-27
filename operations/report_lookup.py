@@ -55,14 +55,17 @@ def resolve_report_artifact(recorded: str | None, out_dir: str | None = None) ->
     same immutable file under its own `<OUT_DIR>/reports/` - same file name, never searched
     anywhere else. The caller still checks the content (report_id + session) before using it,
     and the recorded row is never rewritten."""
-    if recorded and os.path.exists(recorded):
-        return recorded
     if not recorded:
         return None
     if out_dir is None:
-        from config import OUT_DIR as out_dir
+        import config
+        out_dir = config.OUT_DIR
     local = os.path.join(out_dir, "reports", os.path.basename(recorded.replace("\\", "/")))
-    return local if os.path.exists(local) else None
+    # this runner's own copy first (a clean runner, or an isolated test run whose history was
+    # copied from production: it must read its copy, never the production file)
+    if os.path.exists(local):
+        return local
+    return recorded if os.path.exists(recorded) else None
 
 
 def find_canonical_report(session: dt.date, history=None, db_path: str | None = None) -> ReportLookup:

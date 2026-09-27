@@ -39,6 +39,8 @@ def load_manifest(out_dir: str, session: dt.date) -> dict | None:
 
 def _write_manifest(out_dir: str, session: dt.date, manifest: dict) -> str:
     p = manifest_path(out_dir, session)
+    from operations.run_context import guard_write
+    guard_write(p, "official snapshot manifest")
     tmp = p + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(manifest, fh, indent=2, ensure_ascii=False, default=str)
@@ -56,6 +58,8 @@ def write_revision(out_dir: str, snapshot: OfficialSnapshot) -> tuple:
     Refuses (ValueError) when the kind already has a validated current revision."""
     session = dt.date.fromisoformat(snapshot.session_date)
     folder = session_dir(out_dir, session)
+    from operations.run_context import guard_write
+    guard_write(folder, "official snapshot")
     os.makedirs(folder, exist_ok=True)
     manifest = load_manifest(out_dir, session) or {
         "schema_version": MANIFEST_SCHEMA_VERSION, "session_date": snapshot.session_date,

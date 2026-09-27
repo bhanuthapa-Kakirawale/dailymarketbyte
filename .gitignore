@@ -16,3 +16,12 @@ venv/
 !.env.example
 __pycache__/
 .pytest_cache/
+# Local tooling / coverage / scratch (never source)
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+tmp/
+*.tmp
+# StateStore in-flight upload temp files (state/store.py)
+*.uploading

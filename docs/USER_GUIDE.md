@@ -4,15 +4,33 @@ This guide is for running Daily Market Byte (DMB) by hand, every trading day, on
 Windows machine. Nothing here uploads to YouTube. In this guide, "session" means an NSE
 trading day.
 
-| When (IST) | Double-click (or run in a terminal) | What it makes |
-|---|---|---|
-| ~19:30, trading days | `scripts\run_evening.bat` | Canonical report, private Radar, Market Structure, official snapshots. No video. |
-| ~07:00, next trading day | `scripts\run_morning_pre.bat` | PRE ("before the bell") shadow video |
-| ~07:00, after PRE | `scripts\run_morning_post.bat` | POST recap video (POST_UNIFIED) |
-| any time | `scripts\check_daily_run.bat` | Summary of the latest evening / PRE / POST runs |
+## DAILY NORMAL OPERATION
 
-Every script prints a **VERDICT** line at the end. Exit code 0 means review the output; 2 means
-STOP and read section 6.
+Two commands a day. Nothing else is needed on a normal day.
+
+**MORNING — around 07:00 IST** (any time before the 09:15 open)
+
+```
+scripts\run_morning_pre.bat
+```
+Purpose: generate today's PRE-MARKET ("before the bell") video.
+
+**EVENING — around 19:30 IST** (after NSE's end-of-day files)
+
+```
+scripts\run_evening_full.bat
+```
+Purpose: collect today's completed-session data and generate today's POST-MARKET recap.
+
+Each command prints one summary and a **VERDICT** line at the end:
+- `PASS FOR SHADOW REVIEW` (evening) / `REVIEW THE VIDEO` (morning), exit code 0: review the
+  video (section 5).
+- `ATTENTION REQUIRED` (evening) / `STOP` (morning), exit code 2: read section 6.
+
+During the shadow trial `PUBLICATION RIGHTS  BLOCKED  rights review only` is **expected** and is
+not a video failure. Upload is always `NOT ATTEMPTED`: no normal command uploads.
+
+Other scripts are for troubleshooting only — see section 9.
 
 ---
 
@@ -46,60 +64,87 @@ scripts\check_setup.bat
 
 ## 2. Daily manual schedule
 
-### Evening, about 19:30 IST (after NSE's end-of-day files)
+### Evening, about 19:30 IST — `scripts\run_evening_full.bat`
 
-```
-scripts\run_evening.bat
-```
-This runs `python main.py --mode report`, then `python -m operations.daily_check evening`. It
-builds, for the session that just closed:
+One command, run once. In order, and once each:
 
-1. the **canonical MarketReport**, validated (session alignment, cross-source checks,
-   publication readiness). An unfit report is **not** committed; it goes to
-   `output\reports\unfit\` for diagnosis;
-2. the historical intelligence snapshot;
-3. the **private Market Radar** (named-stock detectors, candidate history, editorial selection);
-4. **Market Structure** (NIFTY 200 breadth / unusual volume / range, with sector mapping);
-5. the **official daily snapshots**: NSE IPO issue lists, F&O ban file (for the NEXT trade
-   date), ASM and GSM. ESM is recorded as NOT_SUPPORTED;
-6. the run record in the history database plus a JSON run record.
+1. **Session context.** It prints the time (IST), whether today is an NSE session, and the
+   latest **completed** session (from NSE's trading calendar).
+2. **Evening REPORT** (`python main.py --mode report`, the same command as `run_evening.bat`).
+   For the session that just closed it builds:
+   1. the **canonical MarketReport**, validated (session alignment, cross-source checks,
+      publication readiness). An unfit report is **not** committed; it goes to
+      `output\reports\unfit\` for diagnosis;
+   2. the historical intelligence snapshot;
+   3. the **private Market Radar** (named-stock detectors, candidate history, editorial selection);
+   4. **Market Structure** (NIFTY 200 breadth / unusual volume / range, with sector mapping);
+   5. the **official daily snapshots**: NSE IPO issue lists, F&O ban file (for the NEXT trade
+      date), ASM and GSM. ESM is recorded as NOT_SUPPORTED;
+   6. the run record in the history database plus a JSON run record.
+3. **REPORT gate.** If the REPORT is BLOCKED or FAILED, crashed, wrote no record, or describes
+   another session than the latest completed one, the command **STOPS**: no POST is rendered,
+   and the verdict is `ATTENTION REQUIRED`. SUCCESS, or DEGRADED (only an optional part
+   failed), continues.
+4. **Same-day POST** (`python main.py --no-fetch-public`, the `run_post.bat` command). It renders
+   POST_UNIFIED from the canonical report the REPORT just built (`REUSED_CANONICAL`; it never
+   builds a second one) and reads only the snapshots the REPORT stored (nothing is fetched
+   twice). It then runs video QA, freeze-frame QA, the final content scan and the publication
+   audit.
+5. **Summary and VERDICT.** One table: REPORT, PRIVATE RADAR, MARKET STRUCTURE, EXCHANGE WATCH,
+   IPO WATCH, POST_UNIFIED, VIDEO QA, CONTENT AUDIT, PUBLICATION RIGHTS, the video path and
+   duration, notes (degradations, section codes such as `NO_ELIGIBLE_EVENT` or
+   `CHANGE_UNKNOWN`), upload status, and the verdict.
 
-**Outcomes:**
+**REPORT outcomes:**
 - **SUCCESS:** everything was built.
 - **DEGRADED:** the canonical report is fine, but an optional part failed (for example the NSE
-  lists were unreachable, or the Radar failed). The morning videos simply omit that section.
+  lists were unreachable, or the Radar failed). The row shows `DEGRADED`; the POST simply omits
+  that section. Not a stop.
 - **BLOCKED:** the report failed data validation, or the session is not final or is not on the
-  calendar. Nothing canonical was written. See section 6.
+  calendar. Nothing canonical was written, no POST is rendered. See section 6.
 
-**Retry:** it is safe to run the evening script again, for example around 21:30.
-- A session already built is reported as `ALREADY_BUILT`; nothing is rebuilt or rewritten.
-- A **validated** official snapshot is never replaced.
-- A **failed** snapshot is re-attempted and stored as a new revision (`...r2.json`).
-- A BLOCKED report may be rebuilt once the data gap is fixed.
+**Verdict.** `PASS FOR SHADOW REVIEW` needs the REPORT to be SUCCESS or DEGRADED for the right
+session, and the POST to describe that same session and pass video QA, freeze-frame QA, the
+content scan and an audit of PASS or RIGHTS_BLOCK_ONLY. Anything else is `ATTENTION REQUIRED`.
+`CHANGE_UNKNOWN` (the first trial day has no previous official snapshot to compare with),
+`NO_ELIGIBLE_EVENT`, `NO_ELIGIBLE_IPO_EVENT` and an optional `SOURCE_UNAVAILABLE` are notes,
+never a stop.
+
+**Weekend / holiday / before 15:40 IST.** Nothing is ever built for a day that is not a
+completed session. The command says so on its `context` line ("today (Sat 03 Oct) is NOT an
+NSE trading session - nothing is built for today; the last completed session is Fri 02 Oct")
+and works on that last completed session: the REPORT reports `ALREADY_BUILT`, and the POST is
+not rendered again if that session already has a passing one. If that session was missed, it
+is built and its POST rendered now (catch-up).
+
+**Rerun (same evening).** Safe:
+- the session is reported as `ALREADY_BUILT`; nothing is rebuilt or rewritten, and the Radar is
+  not re-run;
+- a **validated** official snapshot is never replaced; a **failed** one is re-attempted and
+  stored as a new revision (`...r2.json`);
+- a POST that already passed for the session is **not** rendered again (`ALREADY RENDERED`); the
+  summary is printed from its artifacts. When a rerun recovered a failed snapshot, render the
+  POST again with it: `scripts\run_evening_full.bat --rerender-post`;
+- a BLOCKED report may be rebuilt once the data gap is fixed.
 
 Retry once or twice with a reason, such as the NSE file being late or a connection error. Do
 **not** loop until the result changes.
 
-### Morning, about 07:00 IST (any time before the 09:15 open)
+### Morning, about 07:00 IST — `scripts\run_morning_pre.bat`
 
 ```
 scripts\run_morning_pre.bat      (runs: python main.py --mode premarket --shadow)
-scripts\run_morning_post.bat     (runs: python main.py)
 ```
 
 - **PRE** previews the session about to open, using the previous session's canonical report
-  plus live overnight readings (US closes, Asian markets, India VIX). It runs in shadow mode:
-  it renders, checks and records, and **never uploads**.
-- **POST** recaps the previous session from the canonical report and the snapshots the evening
-  run stored. It runs without `--upload`, so it **never uploads**.
-- **07:00 is fine.** Both products are driven by the session and the stored data, not the clock.
-  The 07:40 time is only the old GitHub schedule.
-- Run both **after** the evening run and **before 09:15**. After the open, the previous
-  session's official lists can no longer be captured as they were.
-- If the evening run was missed: POST builds the report itself (`BUILT_INLINE`, recorded) and
-  captures any missing official snapshot while it is still before 09:15 (`CAPTURED_THIS_RUN`).
-  PRE is BLOCKED if the previous session's canonical report does not exist. Run the evening
-  script first, then PRE.
+  (built by last evening's command) plus live overnight readings (US closes, Asian markets,
+  India VIX). It runs in shadow mode: it renders, checks and records, and **never uploads**.
+- **07:00 is fine**; run it before 09:15. The product is driven by the session and the stored
+  data, not the clock.
+- No POST in the morning: the POST for the previous session was made the evening before.
+- If last evening's command did not run or was BLOCKED, PRE is BLOCKED
+  (`PREVIOUS_SESSION_MISSING`). Run `scripts\run_evening_full.bat` first (before 09:15 the
+  previous session's official lists can still be captured), then PRE.
 
 ---
 
@@ -108,7 +153,9 @@ scripts\run_morning_post.bat     (runs: python main.py)
 Dates in the paths:
 - `<SESSION>` = the trading session described (e.g. Fri `2026-09-25`).
 - `<EDITION>` = the next trading day it is published for (e.g. Mon `2026-09-28`).
-- `<RUNDATE>` = the day you ran the morning script.
+- `<RUNDATE>` = the day the script ran. For the POST made by the evening command this is the
+  session day itself; a POST made next morning with a troubleshooting script uses that
+  morning's date.
 
 | What | Path (under `D:\Claude_WS\daily_byte\`) |
 |---|---|
@@ -129,13 +176,15 @@ Dates in the paths:
 | POST freeze frames | `output\post\<RUNDATE>\freeze_frames\` |
 | POST publication audit | `output\publication\<RUNDATE>\publication_audit.json` |
 | POST QA artifact | `output\qa\qa_<EDITION>.json` |
-| Run logs | the script's console window. To keep it: `scripts\run_evening.bat > output\evening_log.txt 2>&1` |
+| Run logs | the script's console window. To keep it: `scripts\run_evening_full.bat > output\evening_log.txt 2>&1` |
 
 ---
 
 ## 4. Evening checklist (before accepting the REPORT)
 
-`scripts\run_evening.bat` prints all of this. Open the files only when something looks wrong.
+`scripts\run_evening_full.bat` prints the essentials in its summary; every line below
+(metrics, per-list statuses, file paths) is printed by `scripts\check_daily_run.bat`.
+Open the files only when something looks wrong.
 
 **SESSION**
 - [ ] `session` is the trading day that just closed
@@ -177,8 +226,8 @@ Dates in the paths:
 
 ## 5. Video checklist (before accepting PRE or POST)
 
-The check script prints the QA and audit lines. Then **watch the video** and look at the contact
-sheet.
+The evening / morning command prints the QA and audit lines (`scripts\check_daily_run.bat`
+also writes the POST contact sheet). Then **watch the video** and look at the contact sheet.
 
 - [ ] correct market / session date in the header
 - [ ] Nifty level and % match the report
@@ -214,13 +263,14 @@ Anything else in the failed list (`displayed_claims`, `recommendation_language`,
 | `SOURCE_UNAVAILABLE` | A request really failed (timeout, blocked, HTTP error). | No: that section is omitted. | The `connectivity` value in the manifest / snapshot. | Yes, once later (network or NSE hiccup). |
 | `PARSE_ERROR` | The source answered, but not in the shape we read (e.g. an NSE page change). | No: section omitted. | The snapshot's `reason`. | No: report it; the adapter may need an update. |
 | `VALIDATION_FAILED` | Read fine but wrong, e.g. the F&O file is still for today's trade date. | No: section omitted. | Snapshot `reason` (list date vs expected). | Yes, later that evening: NSE may not have published the next day's file yet. |
-| `SNAPSHOT_NOT_CAPTURED` | Current session, but nothing was stored (the evening run was skipped or failed). | No. | `output\official_snapshots\<SESSION>\` | Run the evening script (before 09:15 the POST also captures it). |
+| `SNAPSHOT_NOT_CAPTURED` | Current session, but nothing was stored (the evening run was skipped or failed). | No. | `output\official_snapshots\<SESSION>\` | Re-run `run_evening_full.bat --rerender-post` (before 09:15). |
 | `HISTORICAL_SNAPSHOT_UNAVAILABLE` | A replay of a past day that has no stored snapshot. | No. | Expected for days before the trial. | No: a past day is never rebuilt from today's pages. |
 | `INSUFFICIENT_COVERAGE` | Market Structure coverage below 95%. | No: section omitted. | The metrics lines in the evening check. | Only if the Yahoo data was incomplete; retry once later. |
 | `NO_ELIGIBLE_EVENT` / `NO_ELIGIBLE_IPO_EVENT` / `NO_NEW_EVENT` | Lists read fine; nothing qualified or changed today. | No. | Nothing: this is a normal quiet day. | No. |
 | Evening `DEGRADED` | Report fine; an optional part failed. | No. | The `DEGRADED` lines. | Yes, once, if the cause is transient. |
-| Evening `BLOCKED` | Report failed validation, or the session is not final. | Morning videos cannot be made for that session. | `blocking issues`; `output\reports\unfit\`. | Yes, after the data issue is resolved (e.g. Yahoo backfill). Not in a loop. |
-| PRE `BLOCKED` (`PREVIOUS_SESSION_MISSING`) | No canonical report for the previous session. | Yes. | Did the evening run succeed? | Run the evening script, then PRE. |
+| Evening `BLOCKED` / `ATTENTION REQUIRED` before the POST | Report failed validation, the session is not final, or the REPORT describes another session. The POST was not rendered. | No video exists for that session. | `blocking issues`; `output\reports\unfit\`. | Yes, after the data issue is resolved (e.g. Yahoo backfill). Not in a loop. |
+| PRE `BLOCKED` (`PREVIOUS_SESSION_MISSING`) | No canonical report for the previous session. | Yes. | Did the evening run succeed? | Run `run_evening_full.bat`, then PRE. |
+| POST `ALREADY RENDERED` | A rerun: this session already has a passing POST. | No. | The summary (read from its artifacts). | Only with `--rerender-post`. |
 | QA FAIL (`video`, `freeze-frame`, `content`) | The rendered file or a frame failed a check. | **Yes.** | The QA artifact / freeze-frame QA issues. | Only after understanding why; report it. |
 | `CONTENT_FAILURE` in the audit | A content rule failed. | **Yes.** | `publication_audit.json` → `failed_checks`. | No: report it; do not publish. |
 | `RIGHTS_BLOCK_ONLY` (`publication_rights`) | Expected during the trial. | No (review the video). | Nothing. | No. |
@@ -238,7 +288,7 @@ For isolated test runs, see **docs/TESTING_GUIDE.md**.
   (live, replay or fixture) run the same pipeline inside `output\test_runs\<run_id>\`.
 - They can never touch real history, the private Radar databases or YouTube.
 - **Never use the test scripts for the normal daily workflow.** Daily:
-  `run_evening.bat`, `run_morning_pre.bat`, `run_morning_post.bat`.
+  `run_morning_pre.bat` and `run_evening_full.bat`.
 - Clean test output with `scripts\clean_test_artifacts.bat`. It is a dry run until you add
   `--execute`.
 
@@ -246,3 +296,30 @@ For isolated test runs, see **docs/TESTING_GUIDE.md**.
 
 Use `docs/SHADOW_TRIAL_CHECKLIST.md`: one row per trading day, filled from the check output
 and your own review. Nothing is uploaded during the trial.
+
+---
+
+## 9. ADVANCED / TROUBLESHOOTING
+
+Not needed on a normal day. Use these to redo or inspect one step.
+
+| Script | Role | Runs |
+|---|---|---|
+| `run_morning_pre.bat` | **Normal morning command.** Generates PRE. | `python main.py --mode premarket --shadow` + PRE check |
+| `run_evening_full.bat` | **Normal evening command.** REPORT + same-day POST + summary. | `python -m operations.evening_full` |
+| `run_evening.bat` | Advanced / debug helper. REPORT / acquisition only, no video. | `python main.py --mode report` + evening check |
+| `run_post.bat` | Advanced / debug helper. POST render only, for the latest completed session (reuses its canonical report; builds it inline only if it is missing, recorded `BUILT_INLINE`). Extra arguments pass through (e.g. `--no-fetch-public`). | `python main.py` + POST check |
+| `run_morning_post.bat` | Old name of `run_post.bat`, kept for compatibility. Same command. | `python main.py` + POST check |
+| `check_daily_run.bat` | Read-only status / diagnostic summary of the latest evening, PRE and POST runs (also writes the POST contact sheet). Runs nothing, fetches nothing. | `python -m operations.daily_check all` |
+| `check_setup.bat` | Is this machine ready? (no secret values shown) | `python -m operations.daily_check setup` |
+| `test_*.bat`, `check_test_run.bat`, `clean_test_artifacts.bat` | **Isolated testing only** (docs/TESTING_GUIDE.md). Never use them for the real daily production-history run. | `python -m operations.test_run ...` |
+
+**`check_daily_run.bat`** is not needed after a successful `run_evening_full.bat`: the evening
+summary already shows the essentials. Use it to look at a day later, to troubleshoot, to check
+an interrupted run, or to see every detail (Market Structure metrics, per-list snapshot
+statuses, file paths) without rerunning anything.
+
+Examples:
+- The REPORT was fine but the POST needs another look: `scripts\run_post.bat` (renders it
+  again for the latest completed session; never uploads).
+- Only the evening data, no video: `scripts\run_evening.bat`.

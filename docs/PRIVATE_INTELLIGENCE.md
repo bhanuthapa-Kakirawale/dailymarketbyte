@@ -55,7 +55,8 @@ when one is configured (docs/STATE_STORE.md). Back up `output/data/` and `output
 
 ## 4. How to run it locally
 
-- **Every evening, automatically:** `scripts\run_evening.bat` runs the Radar for the session and
+- **Every evening, automatically:** `scripts\run_evening_full.bat` (its REPORT step,
+  `scripts\run_evening.bat`'s command) runs the Radar for the session and
   writes everything in section 2.
 - **Private video / frames of a session** (never uploaded; own folder):
   ```

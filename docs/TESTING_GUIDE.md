@@ -4,9 +4,11 @@ Test runs let you exercise the whole pipeline without touching real state. That 
 PRE, POST_UNIFIED, Market Structure, Exchange Watch, IPO Watch, the private Radar, QA and the
 publication audit.
 
-> **Never use the test scripts for the normal daily workflow.** Daily:
-> `scripts\run_evening.bat`, `scripts\run_morning_pre.bat`, `scripts\run_morning_post.bat`
-> (docs/USER_GUIDE.md). Testing: `scripts\test_*.bat`.
+> **Never use the test scripts for the normal daily workflow.**
+> NORMAL (real daily history, docs/USER_GUIDE.md): `scripts\run_morning_pre.bat` (morning) and
+> `scripts\run_evening_full.bat` (evening: REPORT + same-day POST).
+> TEST (isolated, `output\test_runs\<run_id>\`): `scripts\test_evening.bat`, `test_pre.bat`,
+> `test_post.bat`, `test_full_cycle.bat`.
 
 ## 1. What test mode is
 

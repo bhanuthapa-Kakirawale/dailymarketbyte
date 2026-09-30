@@ -1,12 +1,14 @@
 # 5-day local shadow trial
 
-Nothing is uploaded. Fill one row per trading day from the evening, PRE and POST checks
-(`scripts\check_daily_run.bat`) and your own review of the videos (docs/USER_GUIDE.md
-sections 4–5).
+Nothing is uploaded. Two commands a day: `scripts\run_morning_pre.bat` (~07:00, PRE) and
+`scripts\run_evening_full.bat` (~19:30, REPORT + same-day POST). Fill one row per trading day
+from their summaries (or `scripts\check_daily_run.bat` for every detail) and your own review
+of the videos (docs/USER_GUIDE.md sections 4–5).
 
 How to fill each column:
 - **REPORT:** SUCCESS / DEGRADED / BLOCKED.
-- **PRE / POST:** the VERDICT line (REVIEW / STOP).
+- **PRE / POST:** the VERDICT line (PRE: REVIEW / STOP; evening: PASS FOR SHADOW REVIEW /
+  ATTENTION REQUIRED).
 - **Market Structure:** RENDERED / code.
 - **IPO / Exchange Watch:** code, plus the snapshot status.
 - **Radar Private:** BUILT / FAILED.

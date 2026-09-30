@@ -214,6 +214,18 @@ def post_contact_sheet(run_dir: str) -> str | None:
     return _contact_sheet(frames, os.path.join(run_dir, "post_contact_sheet.png"))
 
 
+def post_content_verdict(manifest: dict) -> tuple:
+    """(content_ok, audit verdict) of one POST production manifest: video QA PASS, freeze-frame
+    QA passed, final content scan SAFE and an audit that is PASS or RIGHTS_BLOCK_ONLY."""
+    qa = manifest.get("qa") or {}
+    pa = manifest.get("publication_audit") or {}
+    verdict_audit = audit_verdict(pa.get("final"), pa.get("failed_checks"))
+    content_ok = bool(qa.get("video_qa") == "PASS" and (qa.get("frames_qa") or {}).get("passed")
+                      and qa.get("content_qa") == "SAFE"
+                      and verdict_audit in ("PASS", "RIGHTS_BLOCK_ONLY"))
+    return content_ok, verdict_audit
+
+
 def check_post(out_dir: str) -> int:
     path = _latest(os.path.join(out_dir, "post", "*", "production_manifest.json"))
     print("MORNING - POST (POST_UNIFIED)")
@@ -245,8 +257,7 @@ def check_post(out_dir: str) -> int:
     _line("audit file", _rel(os.path.join(out_dir, "publication", tag, "publication_audit.json"),
                              out_dir))
     _line("manifest", _rel(path, out_dir))
-    content_ok = (qa.get("video_qa") == "PASS" and frames_ok and qa.get("content_qa") == "SAFE"
-                  and verdict_audit in ("PASS", "RIGHTS_BLOCK_ONLY"))
+    content_ok, _ = post_content_verdict(m)
     print("VERDICT: " + ("REVIEW THE VIDEO (content checks passed"
                          + ("; rights BLOCK is expected in the trial)" if
                             verdict_audit == "RIGHTS_BLOCK_ONLY" else ")")

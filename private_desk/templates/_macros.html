@@ -24,7 +24,7 @@
 
 {% macro replay(status) -%}
 {% if status == 'MATCHED' %}<span class="b ok" title="Detector replay reproduced exactly the recorded reason codes">VERIFIED</span>
-{% else %}<span class="b warn" title="Detector values not shown: replay {{ status }}">{{ status | replace('_', ' ') }}</span>{% endif %}
+{% else %}<span class="b unv" title="Evidence values not reproduced (replay {{ status | replace('_', ' ') }}); the recorded reasons are shown without numbers">VALUES UNAVAILABLE</span>{% endif %}
 {%- endmacro %}
 
 {% macro official(events) -%}
@@ -47,7 +47,7 @@
 {% for i in items %}
   <li>
     {% if i.verified %}<span class="tick">&#10003;</span>{% else %}<span class="q">?</span>{% endif %}
-    <b>{{ i.code | replace('_', ' ') }}</b>{% if i.text %} - {{ i.text }}{% endif %}
+    <b>{{ i.code | replace('_', ' ') }}</b>{% if not i.verified %} <span class="b unv">VALUES UNAVAILABLE</span>{% endif %}{% if i.text %} - {{ i.text }}{% endif %}
     {% if i['values'] %}<span class="vals">{% for k, v in i['values'].items() %}{{ k | replace('_', ' ') }}: {{ fmtval(k, v) }}{% if not loop.last %} · {% endif %}{% endfor %}</span>{% endif %}
     {% if i.rule %}<span class="rule">Rule: {{ i.rule }} · data as of {{ session }}</span>{% endif %}
   </li>

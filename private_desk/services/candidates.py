@@ -124,8 +124,8 @@ def why_items(cand, replay_status: str, sym_replay: dict | None, replay_cand: di
         item = {"code": code, "family": family, "rule": rules.reason_rule(code),
                 "values": {}, "text": "", "verified": matched}
         if not matched:
-            item["text"] = (f"Recorded by the evening Radar run. Detector values unavailable "
-                            f"(replay {replay_status}).")
+            item["text"] = (f"Recorded by the evening Radar run; evidence values unavailable - "
+                            f"not reproduced by the detector replay ({replay_status}).")
         elif family == "VOLUME":
             item["values"] = {"relative_volume": sym_replay.get("relative_volume"),
                               "session_volume": sym_replay.get("current_volume"),

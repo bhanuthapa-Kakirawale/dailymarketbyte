@@ -414,7 +414,7 @@ def test_missing_data_shows_unavailable_not_zero(client, desk_out):
     os.remove(os.path.join(desk_out, "reports", f"premarket_{EDITION}.json"))
     dash = client.get("/").text
     assert "canonical report ARTIFACT_MISSING" in dash
-    m = re.search(r"NIFTY 50 close</div><div class=\"v\">(.*?)</div>", dash)
+    m = re.search(r"NIFTY 50</div><div class=\"v\">(.*?)</div>", dash)
     assert m and "UNAVAILABLE" in m.group(1)
 
 
@@ -574,3 +574,140 @@ def test_real_local_stores_untouched_by_the_desk(tmp_path):
     for url in ("/", "/radar", "/sectors", "/history", "/quality"):
         assert c.get(url).status_code == 200
     assert snap() == before
+
+
+# ------------------------------------------------------------------ Phase 1 final UX: attention set
+def _view(sym, *, novelty="CONTINUATION", families=("STRUCTURE", "RELATIVE_PERFORMANCE"),
+          selected=False, appearance="CONSECUTIVE", since=1, attention="NOTABLE"):
+    return {"symbol": sym, "novelty_type": novelty, "families": list(families),
+            "signal_count": len(families), "selected": selected, "appearance": appearance,
+            "sessions_since_prior": since, "attention_level": attention}
+
+
+def _synthetic_views():
+    """25 candidates in existing Radar order (HIGH_INTEREST first, then symbol)."""
+    vs = [_view("HI1", novelty="CONTINUATION", families=("VOLUME", "STRUCTURE", "RELATIVE_PERFORMANCE"),
+                attention="HIGH_INTEREST")]
+    vs += [_view(f"C{i:02d}") for i in range(10)]                             # unchanged
+    vs += [_view(f"N{i:02d}", novelty="NEW_CANDIDATE", appearance="REAPPEARED", since=i + 6)
+           for i in range(8)]
+    vs += [_view("NF1", novelty="NEW_CANDIDATE", appearance="FIRST_RECORDED", since=None)]
+    vs += [_view(f"S{i}", novelty="MULTIPLE_CHANGES") for i in range(3)]       # state changes
+    vs += [_view("SEL", novelty="CONTINUATION", selected=True)]
+    vs += [_view("VS1", novelty="NEW_EVIDENCE_FAMILY", families=("VOLUME", "STRUCTURE"))]
+    return vs
+
+
+def test_attention_set_is_capped_deterministic_and_follows_the_documented_tiers():
+    from private_desk.services import attention as at
+    views = _synthetic_views()
+    a1 = at.attention_set(views, story_order=["SEL"])
+    a2 = at.attention_set(list(views), story_order=["SEL"])
+    syms = [a["view"]["symbol"] for a in a1]
+    assert syms == [a["view"]["symbol"] for a in a2]                       # deterministic
+    assert len(syms) == at.ATTENTION_MAX < len(views)                     # not the whole Radar
+    # tier order: story -> 3 families -> volume+structure -> NEW (first recorded, then longest gap)
+    assert syms[:4] == ["SEL", "HI1", "VS1", "NF1"]
+    assert syms[4:] == ["N07", "N06", "N05", "N04", "N03", "N02"]         # longest absence first
+    assert not any(s.startswith("C") for s in syms)                      # unchanged never fill it
+    labels = {a["view"]["symbol"]: a["labels"] for a in a1}
+    assert labels["SEL"][0] == "STORY SELECTED" and "3 EVIDENCE FAMILIES" in labels["HI1"]
+    assert "VOLUME + STRUCTURE" in labels["VS1"] and labels["NF1"] == ["NEW · FIRST RECORDED"]
+
+
+def test_quiet_day_fills_with_state_changes_and_ties_keep_radar_order():
+    from private_desk.services import attention as at
+    views = [_view("B1", novelty="MULTIPLE_CHANGES"), _view("A1", novelty="DIRECTION_TRANSITION"),
+             _view("C1")] + [_view(f"Z{i}", novelty="PERSISTENCE_TRANSITION") for i in range(9)]
+    syms = [a["view"]["symbol"] for a in at.attention_set(views, [])]
+    assert len(syms) == at.ATTENTION_MIN                                   # filled to the minimum
+    assert syms[:2] == ["B1", "A1"]                                        # existing order kept
+    assert "C1" not in syms
+
+
+def test_radar_default_order_puts_new_then_changed_then_unchanged():
+    from private_desk.services import attention as at
+    views = [_view("A", novelty="CONTINUATION"), _view("B", novelty="NEW_CANDIDATE"),
+             _view("C", novelty="MULTIPLE_CHANGES"), _view("D", novelty="NEW_CANDIDATE")]
+    assert [v["symbol"] for v in at.radar_default_order(views)] == ["B", "D", "C", "A"]
+
+
+def test_no_new_score_is_introduced():
+    """The attention workflow orders by named tiers and existing facts - no computed score."""
+    for path in list(_desk_sources()):
+        tree = ast.parse(open(path, encoding="utf-8").read())
+        for node in ast.walk(tree):
+            names = []
+            if isinstance(node, ast.Name):
+                names = [node.id]
+            elif isinstance(node, ast.Attribute):
+                names = [node.attr]
+            elif isinstance(node, (ast.FunctionDef, ast.arg)):
+                names = [getattr(node, "name", None) or getattr(node, "arg", "")]
+            elif isinstance(node, ast.Dict):
+                names = [k.value for k in node.keys if isinstance(k, ast.Constant)
+                         and isinstance(k.value, str)]
+            elif isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
+                names = [str(node.slice.value)]
+            for n in names:
+                assert "score" not in str(n).lower(), f"{path}: {n}"
+    for dirpath, _, files in os.walk(os.path.join(DESK, "templates")):
+        for f in files:
+            src = open(os.path.join(dirpath, f), encoding="utf-8").read()
+            assert not re.search(r"\w+_score|score\s*[|}]", src), f
+
+
+def test_dashboard_shows_attention_subset_counts_and_view_all(client, monkeypatch, svc):
+    from private_desk.services import attention as at
+    monkeypatch.setattr(at, "ATTENTION_MAX", 1)
+    monkeypatch.setattr(at, "ATTENTION_MIN", 1)
+    total = len(svc.repo.candidates(SESSION))
+    assert total >= 2
+    html = client.get("/").text
+    assert f"1 attention candidates from {total} Radar candidates" in html
+    assert f'href="/radar?session={SESSION}" class="viewall">View all {total} in Radar' in html
+    table = html.split('id="attention"')[1].split("</table>")[0]
+    assert table.count("<tr class=") == 1                                 # only the subset
+    radar = client.get(f"/radar?session={SESSION}").text
+    for c in svc.repo.candidates(SESSION):                                # nothing disappears
+        assert f"/stock/{c.instrument}?session={SESSION}" in radar
+
+
+def test_what_changed_summary_reconciles_and_items_link_to_stock_pages(svc, client):
+    d = svc.dashboard(SESSION)
+    summary = d["change_summary"]
+    views = d["views"]
+    assert summary["new"] + summary["changed"] + summary["unchanged"] == summary["total"] == len(views)
+    counts = {r["key"]: r["count"] for r in summary["rows"]}
+    assert counts["NEW"] == sum(v["novelty_type"] == "NEW_CANDIDATE" for v in views)
+    assert counts["REAPPEARED"] == sum(v["appearance"] == "REAPPEARED" for v in views)
+    assert counts["LOST"] == len(d["changes"]["NO_LONGER_CANDIDATE"])
+    html = client.get("/").text
+    for item in d["change_items"]:
+        assert item["view"]["novelty_type"] != "CONTINUATION"
+        assert f'class="citem" href="/stock/{item["symbol"]}?session={SESSION}"' in html
+    assert len(d["change_items"]) <= 8
+    assert "#filter=NEW" in html                                          # summary -> Radar filter
+
+
+def test_partial_evidence_is_marked_not_verified(client, monkeypatch):
+    from private_desk import replay as rp
+    from private_desk.services import candidates as cands
+    real = rp.reconcile
+    monkeypatch.setattr(cands.rp, "reconcile",
+                        lambda replay, stored: {k: rp.NOT_REPLAYED for k in real(replay, stored)})
+    html = client.get("/stock/SYMA").text
+    assert "VALUES UNAVAILABLE" in html and "EVIDENCE VERIFIED" not in html
+    assert "not reproduced by the detector replay" in html
+    radar = client.get("/radar").text
+    assert "values unavailable" in radar and ">VERIFIED<" not in radar
+
+
+def test_radar_filters_and_sorting_markup_intact(client):
+    html = client.get("/radar").text
+    assert 'class="sortable" id="radar-full"' in html and 'class="sort' in html
+    for tok in ("NEW", "CHANGED", "REAPPEARED", "VOLUME", "RANGE_UP", "NEW_STRUCTURE", "SELECTED"):
+        assert f'data-tok="{tok}"' in html
+    assert 'data-tokens="' in html
+    js = client.get("/static/desk.js").text
+    assert "filter=" in js and "sortable" in js

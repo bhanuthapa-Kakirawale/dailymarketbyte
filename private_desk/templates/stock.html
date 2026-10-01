@@ -24,7 +24,10 @@
       <div><div class="k">First / last Radar appearance</div><div class="v" style="font-size:12px">{{ st.first_appearance | d }} / {{ st.last_appearance | d }}</div><div class="s">{{ st.appearance_count }} recorded appearance(s)</div></div>
       <div><div class="k">Relative volume</div><div class="v">{{ st.volume.relative_volume | x(2) }}</div><div class="s">{{ (st.volume.anomaly or {}).level or 'below detector levels' if st.volume.relative_volume is not none else '' }}</div></div>
     </div>
-    {% if c %}<h2 style="margin-top:10px">Why this stock?</h2>{{ m.why(c.why, session) }}<div class="note">{{ c.novelty_reason }}{% if c.selection_reason %} · Story selection: {{ c.selection_reason }}{% endif %}</div>{% endif %}
+    {% if c %}<div class="whybox">
+      <h2>Why this stock? <span class="whystatus">{% if c.replay_status == 'MATCHED' %}<span class="b ok" title="the detector replay reproduced exactly the recorded reason codes">EVIDENCE VERIFIED</span>{% else %}<span class="b unv">VALUES UNAVAILABLE</span>{% endif %}</span></h2>
+      {{ m.why(c.why, session) }}
+      <div class="note">{{ c.novelty_reason }}{% if c.selection_reason %} · Story selection: {{ c.selection_reason }}{% endif %}</div></div>{% endif %}
   </section>
 
   <section class="panel">

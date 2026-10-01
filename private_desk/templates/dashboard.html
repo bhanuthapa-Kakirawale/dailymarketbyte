@@ -10,55 +10,72 @@
   {% if not c.official %}no official-event snapshot; {% endif %}
   those panels show UNAVAILABLE rather than another session's data.</div>
 {% endif %}
-{% if d.replay.status != 'OK' %}<div class="banner warn">Detector replay unavailable for {{ session }}: {{ d.replay.reason }} - candidate reasons are shown, detector values are not.</div>{% endif %}
+{% if d.replay.status != 'OK' %}<div class="banner warn">Detector replay unavailable for {{ session }}: {{ d.replay.reason }} - candidate reasons are shown, evidence values are not.</div>{% endif %}
 {% endblock %}
 {% block content %}
-<h1>What changed and what deserves attention? <span class="sub">Session {{ session }} · {{ d.views | length }} Radar candidates</span></h1>
+{% set total = d.views | length %}{% set shown = d.attention | length %}{% set cs = d.change_summary %}
+<h1>What deserves attention first? <span class="sub">Session {{ session }} · {{ shown }} attention candidates from {{ total }} Radar candidates ·
+  <a href="/radar?session={{ session }}" class="viewall">View all {{ total }} in Radar →</a></span></h1>
 
-<div class="grid g-main">
-<div class="stack">
-  <section class="panel">
-    <h2>A · Market regime diagnostics <span class="dim" style="text-transform:none;letter-spacing:0">(facts only - DMB has no regime classifier, so no BULLISH/BEARISH label is shown)</span></h2>
-    {% set n = d.report.nifty or {} %}{% set r = d.regime %}
-    <div class="kv">
-      <div><div class="k">NIFTY 50 close</div><div class="v">{{ n.close | num }}</div><div class="s">{{ n.change_pct | pct }} · {{ n.close_status or d.report.status }}</div></div>
-      <div><div class="k">NIFTY range</div><div class="v" style="font-size:12px">{{ n.low | num }} – {{ n.high | num }}</div><div class="s">open {{ n.open | num }}</div></div>
-      <div><div class="k">Bank NIFTY</div><div class="v">{{ d.report.bank_nifty_change_pct | pct }}</div></div>
-      <div><div class="k">India VIX</div><div class="v">{{ d.report.india_vix | num }}</div><div class="s">{{ d.report.vix_status | na }}</div></div>
-      <div><div class="k">Advances / Declines</div><div class="v">{{ r.advances | na }} / {{ r.declines | na }}</div><div class="s">unchanged {{ r.unchanged | na }} · of {{ r.breadth_denominator | na }} (NIFTY 200)</div>{{ m.breadthbar(r.advances, r.declines, r.breadth_denominator) }}</div>
-      <div><div class="k">Unusual volume</div><div class="v">{{ r.unusual_volume | na }} / {{ r.unusual_volume_den | na }}</div><div class="s" title="{{ rules.MS_UNUSUAL_VOLUME_RULE }}">RVOL ≥ 2x · NIFTY 200</div></div>
-      <div><div class="k">Range events</div><div class="v"><span class="pos">{{ r.range_up | na }}↑</span> <span class="neg">{{ r.range_down | na }}↓</span></div><div class="s">close beyond prior 20/50 high/low · of {{ r.range_den | na }}</div></div>
-      <div><div class="k">Sector participation</div><div class="v">{{ r.sectors_more_adv | na }} / {{ r.sectors_more_dec | na }}</div><div class="s">sectors with more adv / more dec · of {{ r.sector_count | na }}</div></div>
-      <div><div class="k">FII / DII net (₹ Cr)</div><div class="v" style="font-size:12px">{{ d.report.fii_net_cr | num(0) }} / {{ d.report.dii_net_cr | num(0) }}</div><div class="s">{{ d.report.fii_status | na }}</div></div>
-    </div>
-    {% if d.insights %}<div class="note" style="margin-top:6px">{% for i in d.insights[:4] %}· {{ i.statement }} <span class="dim">(n={{ i.sample_size }}, {{ i.lookback_sessions }}s)</span><br>{% endfor %}</div>{% endif %}
-  </section>
+<section class="panel">
+  <h2>Market context <span class="dim lc">facts only - DMB has no regime classifier, so no BULLISH/BEARISH label is shown</span></h2>
+  {% set n = d.report.nifty or {} %}{% set r = d.regime %}
+  <div class="kv kv-tight">
+    <div><div class="k">NIFTY 50</div><div class="v">{{ n.close | num }}</div><div class="s">{{ n.change_pct | pct }} · {{ n.close_status or d.report.status }}</div></div>
+    <div><div class="k">NIFTY range</div><div class="v sm">{{ n.low | num }} – {{ n.high | num }}</div><div class="s">open {{ n.open | num }}</div></div>
+    <div><div class="k">Bank NIFTY</div><div class="v">{{ d.report.bank_nifty_change_pct | pct }}</div></div>
+    <div><div class="k">India VIX</div><div class="v">{{ d.report.india_vix | num }}</div><div class="s">{{ d.report.vix_status | na }}</div></div>
+    <div><div class="k">Adv / Dec · NIFTY 200</div><div class="v">{{ r.advances | na }} / {{ r.declines | na }}</div><div class="s">unch {{ r.unchanged | na }} of {{ r.breadth_denominator | na }}</div>{{ m.breadthbar(r.advances, r.declines, r.breadth_denominator) }}</div>
+    <div><div class="k">Unusual volume</div><div class="v">{{ r.unusual_volume | na }} / {{ r.unusual_volume_den | na }}</div><div class="s" title="{{ rules.MS_UNUSUAL_VOLUME_RULE }}">RVOL ≥ 2x</div></div>
+    <div><div class="k">Range events</div><div class="v"><span class="pos">{{ r.range_up | na }}↑</span> <span class="neg">{{ r.range_down | na }}↓</span></div><div class="s">beyond prior 20/50 high/low</div></div>
+    <div><div class="k">Sectors adv / dec</div><div class="v">{{ r.sectors_more_adv | na }} / {{ r.sectors_more_dec | na }}</div><div class="s">of {{ r.sector_count | na }} sectors</div></div>
+    <div><div class="k">FII / DII ₹ Cr</div><div class="v sm">{{ d.report.fii_net_cr | num(0) }} / {{ d.report.dii_net_cr | num(0) }}</div><div class="s">{{ d.report.fii_status | na }}</div></div>
+  </div>
+  {% if d.insights %}<div class="note" style="margin-top:5px">{% for i in d.insights[:3] %}· {{ i.statement }} <span class="dim">(n={{ i.sample_size }})</span> {% endfor %}</div>{% endif %}
+</section>
 
-  <section class="panel">
-    <h2>B · Today's Radar <span class="dim" style="text-transform:none;letter-spacing:0">- recorded order (attention, then symbol); not a ranking of merit · full columns on <a href="/radar?session={{ session }}">Radar</a> · <a href="/radar.csv?session={{ session }}">CSV</a></span></h2>
-    {% with views=d.views, table_id='radar-dash', compact=true %}{% include "_radar_table.html" %}{% endwith %}
-  </section>
-</div>
-
-<div class="stack">
-  <section class="panel">
-    <h2>C · What changed today</h2>
-    <div class="changes" style="grid-template-columns:1fr">
-    {% for key, (label, rule) in change_labels.items() %}
-      {% set items = d.changes.get(key, []) %}
-      {% if items %}
-      <div class="panel" style="padding:5px 8px">
-        <h2 title="{{ rule }}"><span>{{ label }}</span><span class="mono">{{ items | length }}</span></h2>
-        <div class="syms">{% for v in items %}<a href="/stock/{{ v.symbol }}?session={{ session }}" title="{{ v.novelty_reason if v.novelty_reason is defined else ('was: ' ~ (v.previous_codes | join(', '))) }}">{{ v.symbol }}</a>{% endfor %}</div>
-        <div class="note">{{ rule }}</div>
-      </div>
-      {% endif %}
+<section class="panel changed">
+  <h2>What changed today <span class="dim lc">{{ total }} candidates = {{ cs.new }} new + {{ cs.changed }} state change + {{ cs.unchanged }} unchanged · from the Radar's own novelty and recorded history</span></h2>
+  <div class="csum">
+    {% for row in cs.rows %}
+    {% if row.chip %}<a class="cs-tile{{ ' zero' if not row.count }}" href="/radar?session={{ session }}#filter={{ row.chip }}" title="{{ row.rule }} - open the matching Radar candidates">
+    {% else %}<a class="cs-tile{{ ' zero' if not row.count }}" href="#all-changes" title="{{ row.rule }}">{% endif %}
+      <span class="cs-n">{{ row.count }}</span><span class="cs-l">{{ row.label }}</span></a>
     {% endfor %}
+  </div>
+  {% if d.change_items %}
+  <div class="citems">
+    {% for c in d.change_items %}
+    <a class="citem" href="/stock/{{ c.symbol }}?session={{ session }}">
+      <div class="ci-h"><b class="mono">{{ c.symbol }}</b> <span class="ci-d">{{ c.day_pct | pct }}</span></div>
+      <div class="ci-k">{% for k in c.kinds %}<span class="b {{ 'new' if k == 'NEW' else ('re' if k == 'REAPPEARED' else 'chg') }}">{{ k }}</span>{% endfor %}</div>
+      {% for line in c.lines %}<div class="ci-l">{{ line }}</div>{% endfor %}
+    </a>
+    {% endfor %}
+  </div>
+  {% endif %}
+  <details id="all-changes" class="allchg"><summary>All changes by type ({{ total }} candidates, {{ (d.changes.NO_LONGER_CANDIDATE or []) | length }} no longer candidates)</summary>
+    <div class="changes">
+    {% for key, (label, rule) in change_labels.items() %}{% set items = d.changes.get(key, []) %}{% if items %}
+      <div class="panel" style="padding:5px 8px"><h2 title="{{ rule }}"><span>{{ label }}</span><span class="mono">{{ items | length }}</span></h2>
+        <div class="syms">{% for v in items %}<a href="/stock/{{ v.symbol }}?session={{ session }}">{{ v.symbol }}</a>{% endfor %}</div>
+        <div class="note">{{ rule }}</div></div>
+    {% endif %}{% endfor %}
     </div>
+  </details>
+</section>
+
+<div class="grid g-dash">
+  <section class="panel">
+    <h2>Today's attention set <span class="dim lc">· showing {{ shown }} attention candidates from {{ total }} Radar candidates · requires owner review, not a recommendation</span>
+      <a href="/radar?session={{ session }}" class="viewall" style="float:right;text-transform:none;letter-spacing:0">View all {{ total }} in Radar →</a></h2>
+    {% set att_labels = {} %}{% for a in d.attention %}{% set _ = att_labels.update({a.view.symbol: a.labels}) %}{% endfor %}
+    {% with views=d.attention | map(attribute='view') | list, table_id='attention', compact=true, att_labels=att_labels %}{% include "_radar_table.html" %}{% endwith %}
+    <div class="note" style="margin-top:6px">Selection rule (deterministic, existing Radar facts only): 1 story selected by the Radar's editorial selector → 2 all three evidence families → 3 volume + structure → 4 new to the Radar (first recorded, then longest absence); tie-break = existing Radar order. Up to {{ attention_max }}; a quiet day is filled to {{ attention_min }} with other state changes. No score is computed.</div>
   </section>
 
   <section class="panel">
-    <h2>D · Sector pulse <span class="dim" style="text-transform:none;letter-spacing:0">NIFTY 200 · NSE Industry sectors</span></h2>
+    <h2>Sector pulse <span class="dim lc">NIFTY 200 · NSE Industry sectors</span></h2>
     {% if d.sectors %}
     <table class="sortable">
       <thead><tr><th class="sort">Sector</th><th>Breadth</th><th class="sort n">Adv</th><th class="sort n">Dec</th><th class="sort n" title="median 1D % of covered constituents (desk-derived)">Med %</th><th class="sort n">UV</th><th class="sort n">Radar</th></tr></thead>
@@ -72,6 +89,5 @@
     </table>
     {% else %}<p class="na">DATA UNAVAILABLE - {{ d.ms.reason }}</p>{% endif %}
   </section>
-</div>
 </div>
 {% endblock %}

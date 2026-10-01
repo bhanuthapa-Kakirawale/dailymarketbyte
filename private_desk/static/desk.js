@@ -59,6 +59,12 @@
     bar.querySelectorAll(".chip").forEach(function (c) {
       c.addEventListener("click", function () { c.classList.toggle("on"); apply(); });
     });
+    // a link like /radar#filter=NEW,REAPPEARED pre-selects those chips (Dashboard -> Radar)
+    var m = /filter=([A-Z_,]+)/.exec(window.location.hash || "");
+    if (m) m[1].split(",").forEach(function (tok) {
+      var chip = bar.querySelector('.chip[data-tok="' + tok + '"]');
+      if (chip) chip.classList.add("on");
+    });
     if (search) search.addEventListener("input", apply);
     if (sector) sector.addEventListener("change", apply);
     apply();

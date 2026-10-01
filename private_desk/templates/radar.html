@@ -4,13 +4,14 @@
 {% if d.replay.status != 'OK' %}<div class="banner warn">Detector replay unavailable for {{ session }}: {{ d.replay.reason }} - reasons shown without values.</div>{% endif %}
 {% endblock %}
 {% block content %}
-<h1>Radar candidates <span class="sub">Session {{ session }} · {{ d.views | length }} recorded · <a href="/radar.csv?session={{ session }}">download CSV</a></span></h1>
+<h1>Radar candidates <span class="sub">Session {{ session }} · complete list: all {{ d.views | length }} recorded candidates · <a href="/radar.csv?session={{ session }}">download CSV</a></span></h1>
 <div class="grid g3" style="margin-bottom:10px">
   <div class="panel"><h2>What a candidate is</h2><div class="note">{{ rules.CANDIDATE_RULE }} An attention item for human review - never a trade recommendation.</div></div>
   <div class="panel"><h2>Evidence families</h2><div class="note">{% for k, v in rules.FAMILY_RULES.items() %}<b>{{ k | replace('_', ' ') }}</b>: {{ v }}<br>{% endfor %}</div></div>
   <div class="panel"><h2>State labels</h2><div class="note"><b>Radar novelty</b>: {{ rules.NOVELTY_RULE }}<br><b>Appearance</b>: {{ rules.APPEARANCE_RULE }}<br><b>Evidence VERIFIED</b>: the desk replayed the Radar's own detectors on stored data and reproduced exactly the recorded reason codes; only then are values shown.</div></div>
 </div>
 <section class="panel">
-{% with views=d.views, table_id='radar-full' %}{% include "_radar_table.html" %}{% endwith %}
+<div class="note" style="margin-bottom:6px">Default order: new candidates → other state changes → unchanged continuations; inside each group HIGH INTEREST first, then symbol (UI order only - no score). Click any column header to re-sort. The Dashboard shows an attention subset; this page is the complete list.</div>
+{% with views=d.radar_order, table_id='radar-full' %}{% include "_radar_table.html" %}{% endwith %}
 </section>
 {% endblock %}

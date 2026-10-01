@@ -9,6 +9,7 @@ from ..db import SourceUnavailable
 from ..replay import get_replay
 from ..repository import DeskRepository
 from ..settings import DeskSettings
+from . import attention as at
 from . import candidates as cs
 from . import history as hs
 from . import market as mk
@@ -63,7 +64,13 @@ class DeskService:
         views = cs.build_candidate_views(self.repo, session, replay=replay, spine=spine,
                                          official=official)
         return {"views": views, "replay": replay, "spine": spine, "official": official,
-                "context": session_context(self.repo, session)}
+                "context": session_context(self.repo, session),
+                "radar_order": at.radar_default_order(views)}
+
+    def story_order(self, session) -> list:
+        """The editorial selector's own story order (daily Radar artifact), else none."""
+        art, _ = self.repo.radar_artifact(session)
+        return [s.get("instrument") for s in (art or {}).get("stories") or []]
 
     def dashboard(self, session: dt.date) -> dict:
         r = self.radar(session)
@@ -73,9 +80,16 @@ class DeskService:
         left = cs.left_radar(self.repo, session, r["spine"])
         intel, _ = self.repo.intelligence(session)
         insights = [i for i in (intel or {}).get("insights") or [] if i.get("statement")]
+        changes = cs.what_changed(r["views"], left)
+        attention = at.attention_set(r["views"], self.story_order(session))
+        firsts = [a["first"] for a in self.repo.appearance_counts().values() if a["first"]]
+        history_start = min(firsts) if firsts else None       # earliest recorded candidate row
         return {**r, "report": report, "ms": ms, "sectors": sectors,
                 "regime": mk.regime_diagnostics(report, ms, sectors),
-                "changes": cs.what_changed(r["views"], left), "insights": insights}
+                "changes": changes, "insights": insights, "attention": attention,
+                "change_summary": at.change_summary(r["views"], changes),
+                "change_items": at.change_items(attention, r["views"], history_start),
+                "history_start": history_start}
 
     def sectors(self, session: dt.date) -> dict:
         d = self.dashboard(session)

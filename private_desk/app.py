@@ -23,6 +23,7 @@ from markupsafe import Markup, escape
 
 from . import DESK_VERSION
 from .services import DeskService
+from .services import attention as at
 from .services import candidates as cs
 from .services import rules
 from .services.history import HistoryFilter
@@ -107,7 +108,7 @@ def build_templates() -> Jinja2Templates:
     t.env.filters.update(num=f_num, pct=f_pct, pp=f_pp, x=f_x, vol=f_vol, d=f_date, na=f_or_na,
                          label=f_label, structure=f_structure)
     t.env.globals.update(rules=rules, change_labels=cs.CHANGE_LABELS, desk_version=DESK_VERSION,
-                         NA=NA)
+                         NA=NA, attention_max=at.ATTENTION_MAX, attention_min=at.ATTENTION_MIN)
     return t
 
 

@@ -1,5 +1,9 @@
 # Private Trading Intelligence Desk: user guide (Phase 1)
 
+> **Status: PRIVATE DESK PHASE 1 (read-only intelligence dashboard) is feature-complete,
+> pending the owner's final visual approval.** Phase 2 (historical outcome analytics), the Kite
+> hand-off and any trade workflow have not been started.
+
 A **local, read-only** web dashboard for the owner. It answers one question: *what deserves my
 attention today, and why?* It turns the private Radar's output into an explainable list of
 stocks for **human review**.
@@ -54,14 +58,69 @@ evening job is still writing, a page may say DATA UNAVAILABLE. Reload it a minut
 
 | Page | What it shows |
 |---|---|
-| **Dashboard** | A. market regime diagnostics. B. today's Radar (compact). C. what changed today. D. sector pulse. |
-| **Radar** | The full candidate table, with every column, the filters and a CSV download. |
+| **Dashboard** | *What deserves attention first?* Market context → what changed today → today's **attention set** (about 8-12 candidates) → sector pulse. It is a SUBSET. |
+| **Radar** | *Show me everything.* The **complete** candidate list, with every column, the filters and a CSV download. It is the authoritative list. |
 | **Stock Explorer** | Every NIFTY 200 constituent, searchable. Any stock opens its intelligence page, whether or not it is a candidate. |
 | **Sectors** | NIFTY 200 breadth, the metric table with coverage and definitions, NSE sectoral indices (a separate universe), and the per-sector table with a reconciliation row. |
 | **History** | Every recorded Radar appearance. Filter by date range, symbol, sector, attention, family, detector, novelty and appearance. Shows how often each stock appeared. |
 | **Data Quality** | Source freshness, database health, Radar run markers and issues, detector-replay reconciliation, OHLCV coverage (missing or stale symbols), Market Structure coverage, official snapshot status, and recent DMB runs. |
 
-### Market regime (dashboard A)
+### Dashboard = attention subset, Radar = complete set
+
+The Dashboard shows "**N attention candidates from M Radar candidates**" and a **View all M in
+Radar →** link. The candidates it doesn't show are not removed. They are all on the Radar page,
+unchanged. **Attention ≠ recommendation.** The attention set is a reading order for owner
+review, built from facts the Radar already recorded.
+
+#### The attention-set rule (deterministic, no score)
+
+Candidates go into named tiers. The list is read tier by tier and cut at 10.
+
+| Tier | Label | Condition (existing Radar fact) | Order inside the tier |
+|---|---|---|---|
+| 1 | STORY SELECTED | chosen by the Radar's own editorial selector (≤ 5 per session) | the selector's own story order |
+| 2 | 3 EVIDENCE FAMILIES | HIGH_INTEREST: volume + structure + relative performance all active | existing Radar order |
+| 3 | VOLUME + STRUCTURE | unusual volume (VOLUME family) and a structure event on the same session | existing Radar order |
+| 4 | NEW · FIRST RECORDED / NEW · BACK AFTER N SESSIONS | Radar novelty NEW_CANDIDATE | first-ever appearances first, then the longest absence first |
+| 5 | STATE CHANGE · <novelty> | any other Radar novelty except CONTINUATION | existing Radar order. **Only fills a quiet day up to 8.** |
+
+- Tiers 1-4 fill the set up to **10** (`ATTENTION_MAX`). If they give fewer than **8**
+  (`ATTENTION_MIN`), tier 5 fills up to 8.
+- An unchanged continuation appears only through tiers 1-3.
+- The final tie-breaker is always the existing Radar order: HIGH INTEREST before NOTABLE, then
+  symbol.
+- The "In attention set because" column shows every tier condition a candidate meets. There is
+  no hidden number.
+- The rule lives in `private_desk/services/attention.py`. A test forbids any computed "score".
+
+Real 30 Sep result: 31 Radar candidates, 10 in the attention set.
+- the 5 story selections: FORTIS, TIINDIA, APLAPOLLO, APOLLOHOSP, BOSCHLTD;
+- MAXHEALTH (volume + structure, back after 7 sessions);
+- the 4 first-recorded candidates: IDEA, KOTAKBANK, NATIONALUM, NESTLEIND.
+
+#### What changed today
+
+The panel opens with one count per state, read straight from the candidate states. Each count
+links to the Radar page with that filter applied. The headline line always adds up:
+**candidates = new + state change + unchanged**.
+
+| State | Meaning |
+|---|---|
+| NEW | Radar novelty NEW_CANDIDATE: no candidate appearance in the last 5 sessions. |
+| REAPPEARED | Recorded before, then absent for at least one session. This can overlap NEW (a long gap) or a state change. |
+| STATE CHANGE | A candidate before, and something changed: a new evidence family, a new structure event, a persistence or direction transition, or attention escalation (NOTABLE → HIGH INTEREST). |
+| NEW STRUCTURE EVENT | A new range break or SMA cross versus its prior appearance, or on a new candidate. |
+| NEW UNUSUAL VOLUME | The VOLUME family is newly active. |
+| CONTINUING, UNCHANGED | Radar novelty CONTINUATION: the same recorded state as its prior appearance. |
+| NO LONGER A CANDIDATE | A candidate on the previous session but not now. Nothing more is claimed about why. |
+
+Below the counts are up to **8 change items**: attention-set members first, then other changed
+candidates in the Radar default order. Each item gives the symbol, the change type and one to
+three factual lines from existing Radar facts, for example "Back on Radar after 7 sessions",
+"Relative volume 6.9× vs prior-20-session average" or "Close 4.5% below prior 20-session low".
+Click an item to open the stock page. "All changes by type" expands the full lists.
+
+### Market context (dashboard)
 
 DMB has **no regime classifier**, so the desk shows no BULLISH or BEARISH label. It shows the
 facts instead:
@@ -71,7 +130,7 @@ facts instead:
   had more advances than declines. These come from the reconciled Market Structure artifact.
 - the deterministic historical-context lines from `output/intelligence/`.
 
-### Today's Radar: the columns
+### Radar table columns (Radar page and the dashboard attention set)
 
 | Column | Meaning |
 |---|---|
@@ -85,11 +144,17 @@ facts instead:
 | vs NIFTY 5D / 20D | Stock return minus NIFTY 50 return, in percentage points. |
 | Story | SELECTED = the editorial selector chose it for a Radar story (on the dashboard this shows as an **S** badge). |
 | Official | The stock is on an exchange list for the session (F&O ban, ASM, GSM, IPO). |
-| Evidence | **VERIFIED** = the desk reproduced the detector values (see §4). Otherwise it shows the mismatch status. |
+| Evidence | **VERIFIED** = the desk reproduced the detector values (see §4). **VALUES UNAVAILABLE** = the recorded reasons are shown without numbers because the replay did not reproduce them. |
 
-The table order is the recorded order (attention, then symbol). It is **not a ranking of
-merit**. Click a column header to sort; unavailable values always sort last. Filter chips
-combine with AND.
+**Radar default order** (a UI order only; the stored Radar output is unchanged):
+1. NEW candidates;
+2. other state changes;
+3. unchanged continuations.
+
+Inside each group: HIGH INTEREST first, then symbol. It is **not a ranking of merit**, and no
+score is computed. The table header and the Symbol column stay visible while you scroll. Click a
+column header to re-sort; unavailable values always sort last. Filter chips combine with AND,
+and a link such as `/radar#filter=NEW` opens the page with that chip already selected.
 
 ### WHY THIS STOCK?
 
@@ -102,8 +167,10 @@ Open "N reasons" in a row, or go to the stock page. Each recorded reason code is
 ```
 
 - ✓ means the values were reproduced and reconciled (§4).
-- **?** means the reason was recorded by the evening run but its values could not be
-  reproduced, so no number is shown.
+- **?** with **VALUES UNAVAILABLE** means the reason was recorded by the evening run but its
+  values could not be reproduced, so no number is shown. The stock page's WHY THIS STOCK box
+  then shows VALUES UNAVAILABLE instead of EVIDENCE VERIFIED. Example: HINDCOPPER and VAML on
+  29 Sep.
 - No criterion appears unless the Radar recorded it, and the rule text is read from the Radar's
   own thresholds (`radar/thresholds.py`).
 

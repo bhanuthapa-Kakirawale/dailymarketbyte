@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Stock Explorer{% endblock %}
+{% block content %}
+<h1>Stock Explorer <span class="sub">NIFTY 200 constituents · session {{ session }}</span></h1>
+{% if q %}<div class="banner warn">{{ q | upper }} is not in the recorded NIFTY 200 constituent list.</div>{% endif %}
+<section class="panel">
+<div class="filters" data-table="stocks">
+  <input type="text" data-search placeholder="symbol / company" size="20" autofocus>
+  <select data-sector><option value="">all sectors</option>{% for s in rows | map(attribute='sector') | select | unique | sort %}<option>{{ s }}</option>{% endfor %}</select>
+  <span class="chip" data-tok="CANDIDATE">RADAR CANDIDATE TODAY</span>
+  <span class="note" data-count></span>
+</div>
+<div class="tablewrap"><table class="sortable" id="stocks">
+  <thead><tr><th class="sort">Symbol</th><th class="sort">Company</th><th class="sort">Sector</th><th class="sort">Radar today</th></tr></thead>
+  <tbody>{% for r in rows %}
+  <tr data-tokens="{{ 'CANDIDATE' if r.candidate }}" data-symbol="{{ r.symbol }}" data-company="{{ r.company or '' }}" data-sector="{{ r.sector or '' }}">
+    <td><a href="/stock/{{ r.symbol }}?session={{ session }}"><b>{{ r.symbol }}</b></a></td><td>{{ r.company | na }}</td><td>{{ r.sector | na }}</td>
+    <td>{{ '<span class="b no">CANDIDATE</span>' | safe if r.candidate else '—' }}</td></tr>
+  {% endfor %}</tbody>
+</table></div>
+{% if not rows %}<p class="na">DATA UNAVAILABLE - no constituent list recorded.</p>{% endif %}
+</section>
+{% endblock %}

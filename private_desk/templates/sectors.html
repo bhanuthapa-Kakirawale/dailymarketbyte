@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Market & Sectors {{ session }}{% endblock %}
+{% block content %}
+{% set ms = d.ms %}{% set r = d.regime %}
+<h1>Market Intelligence <span class="sub">session {{ session }} · {{ ms.universe_label or 'NIFTY 200' }}</span></h1>
+{% if ms.status == 'UNAVAILABLE' %}<div class="banner warn">DATA UNAVAILABLE - {{ ms.reason }}</div>
+{% elif ms.status != 'OK' %}<div class="banner bad">Market Structure artifact failed reconciliation: {{ ms.reason }}</div>{% endif %}
+
+<div class="grid g2">
+<section class="panel">
+  <h2>NIFTY 200 breadth</h2>
+  <div class="kv">
+    <div><div class="k">Advancers</div><div class="v pos">{{ r.advances | na }}</div></div>
+    <div><div class="k">Decliners</div><div class="v neg">{{ r.declines | na }}</div></div>
+    <div><div class="k">Unchanged</div><div class="v">{{ r.unchanged | na }}</div><div class="s">of {{ r.breadth_denominator | na }} covered</div></div>
+    <div><div class="k">Unusual volume</div><div class="v">{{ r.unusual_volume | na }} / {{ r.unusual_volume_den | na }}</div></div>
+    <div><div class="k">Range up</div><div class="v pos">{{ r.range_up | na }}</div></div>
+    <div><div class="k">Range down</div><div class="v neg">{{ r.range_down | na }}</div><div class="s">of {{ r.range_den | na }}</div></div>
+  </div>
+  {% if ms.metrics %}
+  <table style="margin-top:8px"><thead><tr><th>Metric</th><th class="n">Count</th><th class="n">Covered</th><th class="n">Universe</th><th class="n">Coverage</th><th>Status</th><th>Definition</th></tr></thead><tbody>
+  {% for k, mm in ms.metrics.items() %}{% if mm %}
+  <tr><td>{{ k | replace('_', ' ') }}</td><td class="n">{{ mm.numerator }}</td><td class="n">{{ mm.denominator }}</td><td class="n">{{ mm.universe_size }}</td><td class="n">{{ mm.coverage_pct }}%</td>
+    <td><span class="b {{ 'ok' if mm.status == 'PUBLISHABLE' else 'warn' }}">{{ mm.status }}</span></td><td class="wrap note">{{ ms.definitions.get(k, '') }}</td></tr>
+  {% endif %}{% endfor %}</tbody></table>
+  <div class="note">Reconciled: stored counts re-aggregated from the per-constituent observations on load. Sector = {{ ms.sector_source }}.</div>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <h2>NSE sectoral indices <span class="dim" style="text-transform:none;letter-spacing:0">canonical report {{ d.report.report_id | na }} - a different universe from the NIFTY 200 industry sectors</span></h2>
+  {% if d.report.sector_indices %}
+  <table class="sortable"><thead><tr><th class="sort">Index</th><th class="sort n">1D %</th><th>Validation</th></tr></thead><tbody>
+  {% for s in d.report.sector_indices %}<tr><td>{{ s.name }}</td><td class="n" data-v="{{ s.change_pct if s.change_pct is not none else '' }}">{{ s.change_pct | pct }}</td><td>{{ s.status | na }}</td></tr>{% endfor %}
+  </tbody></table>
+  {% else %}<p class="na">DATA UNAVAILABLE - canonical report {{ d.report.status }}</p>{% endif %}
+</section>
+</div>
+
+<section class="panel" style="margin-top:10px">
+  <h2>Sector table <span class="dim" style="text-transform:none;letter-spacing:0">counts from the reconciled Market Structure artifact; Radar = recorded candidates mapped by the same sector column</span></h2>
+  {% if d.sectors %}
+  {% set tot = namespace(c=0, a=0, dcl=0, uv=0, ru=0, rd=0, rc=0) %}
+  <table class="sortable"><thead><tr><th class="sort">Sector</th><th class="sort n">Constituents</th><th>Breadth</th><th class="sort n">Adv</th><th class="sort n">Dec</th><th class="sort n">Unch</th>
+    <th class="sort n" title="median 1D % of covered constituents (desk-derived)">Median 1D %</th><th class="sort n">Unusual vol</th><th class="sort n">Range up</th><th class="sort n">Range down</th><th class="sort n">Radar</th><th>Radar candidates</th></tr></thead>
+  <tbody>{% for s in d.sectors %}
+  {% set tot.c = tot.c + s.constituents %}{% set tot.a = tot.a + (s.advances or 0) %}{% set tot.dcl = tot.dcl + (s.declines or 0) %}{% set tot.uv = tot.uv + (s.unusual_volume or 0) %}{% set tot.ru = tot.ru + (s.range_up or 0) %}{% set tot.rd = tot.rd + (s.range_down or 0) %}{% set tot.rc = tot.rc + s.radar_candidates %}
+  <tr id="{{ s.sector }}"><td>{{ s.sector }}</td><td class="n" data-v="{{ s.constituents }}">{{ s.constituents }}</td><td>{{ m.breadthbar(s.advances, s.declines, s.breadth_covered) }}</td>
+    <td class="n" data-v="{{ s.advances }}">{{ s.advances | na }}</td><td class="n" data-v="{{ s.declines }}">{{ s.declines | na }}</td><td class="n" data-v="{{ s.unchanged }}">{{ s.unchanged | na }}</td>
+    <td class="n" data-v="{{ s.median_change_pct if s.median_change_pct is not none else '' }}">{{ s.median_change_pct | pct }}</td>
+    <td class="n" data-v="{{ s.unusual_volume }}">{{ s.unusual_volume | na }}</td><td class="n" data-v="{{ s.range_up }}">{{ s.range_up | na }}</td><td class="n" data-v="{{ s.range_down }}">{{ s.range_down | na }}</td>
+    <td class="n" data-v="{{ s.radar_candidates }}">{{ s.radar_candidates }}</td>
+    <td class="wrap">{% for sym in s.radar_symbols %}<a href="/stock/{{ sym }}?session={{ session }}" class="mono">{{ sym }}</a> {% endfor %}</td></tr>
+  {% endfor %}</tbody>
+  <tfoot><tr><th>TOTAL</th><th class="n">{{ tot.c }}</th><th></th><th class="n">{{ tot.a }}</th><th class="n">{{ tot.dcl }}</th><th></th><th></th><th class="n">{{ tot.uv }}</th><th class="n">{{ tot.ru }}</th><th class="n">{{ tot.rd }}</th><th class="n">{{ tot.rc }}</th><th></th></tr>
+  <tr><th>RECONCILES WITH</th><th class="n">{{ ms.constituent_count }}</th><th></th><th class="n">{{ r.advances }}</th><th class="n">{{ r.declines }}</th><th></th><th></th><th class="n">{{ r.unusual_volume }}</th><th class="n">{{ r.range_up }}</th><th class="n">{{ r.range_down }}</th><th class="n">{{ d.views | length }}</th><th class="note">{{ 'OK' if (tot.c, tot.a, tot.dcl, tot.uv, tot.ru, tot.rd) == (ms.constituent_count, r.advances, r.declines, r.unusual_volume, r.range_up, r.range_down) else 'MISMATCH' }}</th></tr></tfoot>
+  </table>
+  {% else %}<p class="na">DATA UNAVAILABLE</p>{% endif %}
+</section>
+{% endblock %}

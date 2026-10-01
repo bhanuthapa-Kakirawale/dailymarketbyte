@@ -1,0 +1,60 @@
+{% macro attention(v) -%}
+{% if v == 'HIGH_INTEREST' %}<span class="b hi" title="3 independent evidence families">HIGH INTEREST</span>
+{% elif v == 'NOTABLE' %}<span class="b no" title="2 independent evidence families">NOTABLE</span>
+{% else %}{{ v | label }}{% endif %}
+{%- endmacro %}
+
+{% macro novelty(v) -%}
+{% if v == 'NEW_CANDIDATE' %}<span class="b new">NEW</span>
+{% elif v == 'CONTINUATION' %}<span class="b cont">CONTINUATION</span>
+{% elif v %}<span class="b chg">{{ v | replace('_', ' ') }}</span>
+{% else %}{{ NA }}{% endif %}
+{%- endmacro %}
+
+{% macro appearance(v, since=None) -%}
+{% if v == 'FIRST_RECORDED' %}<span class="b new" title="{{ rules.APPEARANCE_RULE }}">FIRST RECORDED</span>
+{% elif v == 'REAPPEARED' %}<span class="b re" title="{{ rules.APPEARANCE_RULE }}">REAPPEARED{% if since %} +{{ since }}s{% endif %}</span>
+{% elif v == 'CONSECUTIVE' %}<span class="b cont" title="{{ rules.APPEARANCE_RULE }}">CONSECUTIVE</span>
+{% else %}{{ NA }}{% endif %}
+{%- endmacro %}
+
+{% macro families(fams) -%}
+{% for f in fams %}<span class="b fam" title="{{ rules.FAMILY_RULES.get(f, '') }}">{{ {'VOLUME': 'VOL', 'STRUCTURE': 'STRUCT', 'RELATIVE_PERFORMANCE': 'REL'}.get(f, f) }}</span>{% endfor %}
+{%- endmacro %}
+
+{% macro replay(status) -%}
+{% if status == 'MATCHED' %}<span class="b ok" title="Detector replay reproduced exactly the recorded reason codes">VERIFIED</span>
+{% else %}<span class="b warn" title="Detector values not shown: replay {{ status }}">{{ status | replace('_', ' ') }}</span>{% endif %}
+{%- endmacro %}
+
+{% macro official(events) -%}
+{% for e in events %}<span class="b off" title="{{ e.detail }} · {{ e.source_name }} · list date {{ e.source_date }}">{{ e.kind | replace('_', ' ') }}{% if e.kind != 'FNO_BAN' %}: {{ e.status }}{% endif %}</span>{% endfor %}
+{%- endmacro %}
+
+{% macro fmtval(k, v) -%}
+{% if v is none %}{{ NA }}
+{% elif k in ('relative_volume',) %}{{ v | x(2) }}
+{% elif k in ('session_volume', 'prior20_avg_volume') %}{{ v | vol }}
+{% elif k.endswith('_pp') %}{{ v | pp }}
+{% elif k.endswith('_pct') %}{{ v | pct }}
+{% elif k == 'window_sessions' %}{{ v }}
+{% elif v is number %}{{ v | num }}
+{% else %}{{ v }}{% endif %}
+{%- endmacro %}
+
+{% macro why(items, session) -%}
+<ul class="why">
+{% for i in items %}
+  <li>
+    {% if i.verified %}<span class="tick">&#10003;</span>{% else %}<span class="q">?</span>{% endif %}
+    <b>{{ i.code | replace('_', ' ') }}</b>{% if i.text %} - {{ i.text }}{% endif %}
+    {% if i['values'] %}<span class="vals">{% for k, v in i['values'].items() %}{{ k | replace('_', ' ') }}: {{ fmtval(k, v) }}{% if not loop.last %} · {% endif %}{% endfor %}</span>{% endif %}
+    {% if i.rule %}<span class="rule">Rule: {{ i.rule }} · data as of {{ session }}</span>{% endif %}
+  </li>
+{% endfor %}
+</ul>
+{%- endmacro %}
+
+{% macro breadthbar(a, d, total) -%}
+{% if total %}<div class="bar" title="{{ a }} advances / {{ d }} declines of {{ total }}"><i class="a" style="width:{{ (a or 0) / total * 100 }}%"></i><i class="u" style="width:{{ (total - (a or 0) - (d or 0)) / total * 100 }}%"></i><i class="d" style="width:{{ (d or 0) / total * 100 }}%"></i></div>{% endif %}
+{%- endmacro %}

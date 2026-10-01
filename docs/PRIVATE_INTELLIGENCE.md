@@ -12,6 +12,11 @@ Verified 2026-09-27:
 - A private frames-only render of the stored 21 Sep session drew named-stock technical stories
   (MANKIND, ETERNAL, OFSS: range breaks with volume evidence, a 20-day high, 4.1x volume).
 
+**Browse it:** the Private Trading Intelligence Desk (`scripts\run_private_desk.bat`,
+http://127.0.0.1:8765) is a local, read-only web dashboard over everything below - Radar
+candidates with WHY THIS STOCK, stock pages, sectors, history and data quality. See
+docs/PRIVATE_DESK_USER_GUIDE.md.
+
 ## 1. What exists
 
 | Intelligence | Content |
@@ -70,6 +75,8 @@ when one is configured (docs/STATE_STORE.md). Back up `output/data/` and `output
 - **Standalone Radar validation run** (live data, intelligence-only): `python -m radar.run`
   writes `output\radar\radar_<SESSION>.json`.
 - **Rebuild one session's Market Structure:** `python -m market_structure.build --session YYYY-MM-DD`.
+- **Browse it (read-only):** `scripts\run_private_desk.bat` -> http://127.0.0.1:8765
+  (docs/PRIVATE_DESK_USER_GUIDE.md); `scripts\check_private_desk.bat` for a freshness check.
 
 ## 5. Deliberately excluded from public YouTube output
 

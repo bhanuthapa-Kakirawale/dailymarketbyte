@@ -1,0 +1,182 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}{{ st.symbol }} {{ session }}{% endblock %}
+{% block banners %}
+{% if not st.universe_session %}<div class="banner warn">No NIFTY 200 constituent list is stored for {{ session }} or earlier - company, sector and detector replay are unavailable for this session.</div>
+{% elif not st.in_universe %}<div class="banner warn">{{ st.symbol }} is not in the NIFTY 200 constituent list recorded for {{ st.universe_session | d }}.</div>{% endif %}
+{% if st.series_latest and not st.series_ends_at_session %}<div class="banner bad">Stored price series for {{ st.symbol }} ends at {{ st.series_latest.date }}, not {{ session }} - session data missing.</div>{% endif %}
+{% if st.replay_status != 'OK' %}<div class="banner warn">Detector replay unavailable: {{ st.replay_reason }}</div>
+{% elif not st.symbol_replay %}<div class="banner warn">No detector reading for {{ st.symbol }} on {{ session }}{% if st.replay_skip_reason %}: {{ st.replay_skip_reason }}{% endif %}.</div>{% endif %}
+{% endblock %}
+{% block content %}
+{% set c = st.candidate %}
+<h1>{{ st.symbol }} <span class="sub">{{ st.company | na }} · {{ st.sector | na }} · {{ st.industry | na }} · session {{ session }}</span></h1>
+
+<div class="grid g-main">
+<div class="stack">
+  <section class="panel">
+    <h2>A · Summary</h2>
+    <div class="kv">
+      <div><div class="k">Close ({{ session }})</div><div class="v">{{ (st.symbol_replay or {}).close | num }}</div><div class="s">prev {{ (st.symbol_replay or {}).prev_close | num }} ({{ (st.symbol_replay or {}).prev_date | na }})</div></div>
+      <div><div class="k">Day change</div><div class="v">{{ (c.price_change_pct if c else ((st.relative or {}).stock_return_1d)) | pct }}</div></div>
+      <div><div class="k">Radar state</div><div class="v" style="font-size:12px">{% if c %}{{ m.attention(c.attention_level) }} {{ m.novelty(c.novelty_type) }}{% else %}<span class="b cont">NOT A CANDIDATE</span>{% endif %}</div>
+        <div class="s">{% if c %}{{ m.appearance(c.appearance, c.sessions_since_prior) }}{% if c.selected %} <span class="b sel">STORY SELECTED</span>{% endif %}{% endif %}</div></div>
+      <div><div class="k">First / last Radar appearance</div><div class="v" style="font-size:12px">{{ st.first_appearance | d }} / {{ st.last_appearance | d }}</div><div class="s">{{ st.appearance_count }} recorded appearance(s)</div></div>
+      <div><div class="k">Relative volume</div><div class="v">{{ st.volume.relative_volume | x(2) }}</div><div class="s">{{ (st.volume.anomaly or {}).level or 'below detector levels' if st.volume.relative_volume is not none else '' }}</div></div>
+    </div>
+    {% if c %}<h2 style="margin-top:10px">Why this stock?</h2>{{ m.why(c.why, session) }}<div class="note">{{ c.novelty_reason }}{% if c.selection_reason %} · Story selection: {{ c.selection_reason }}{% endif %}</div>{% endif %}
+  </section>
+
+  <section class="panel">
+    <h2>B · Price + volume <span class="dim" style="text-transform:none;letter-spacing:0">stored OHLCV, canonical sessions only · {{ st.series_sessions }} sessions</span></h2>
+    <div class="toggles">
+      <label><input type="checkbox" data-trace="SMA20"> SMA20</label>
+      <label><input type="checkbox" data-trace="SMA50"> SMA50</label>
+      <label><input type="checkbox" data-trace="LEVELS"> Prior 20/50-session high/low</label>
+      <span class="note">Only averages the Radar computes are offered (no EMA / 200-day line).</span>
+    </div>
+    <div id="chart"><p class="note">Loading chart…</p></div>
+  </section>
+
+  <section class="panel">
+    <h2>G · Radar history</h2>
+    {% if st.timeline %}
+    <div class="tablewrap" style="max-height:340px"><table>
+      <thead><tr><th>Date</th><th>Attention</th><th>Families</th><th>Novelty</th><th>Appearance</th><th>Reasons</th><th class="n">Day %</th><th>Rel. persistence</th><th>Story</th></tr></thead>
+      <tbody>{% for t in st.timeline %}
+      <tr><td class="mono"><a href="/stock/{{ st.symbol }}?session={{ t.session }}">{{ t.session }}</a></td><td>{{ m.attention(t.attention_level) }}</td><td>{{ m.families(t.families) }}</td>
+        <td>{{ m.novelty(t.novelty_type) }}</td><td>{{ m.appearance(t.appearance, t.sessions_since_prior) }}</td>
+        <td class="wrap" style="font-size:11px">{{ t.reason_codes | join(', ') | replace('_', ' ') }}</td>
+        <td class="n">{{ t.price_change_pct | pct }}</td><td>{{ t.persistence | label }}</td><td>{{ '<span class="b sel">SELECTED</span>' | safe if t.selected else '—' }}</td></tr>
+      {% endfor %}</tbody></table></div>
+    {% else %}<p class="note">No recorded Radar appearance for {{ st.symbol }} up to {{ session }}.</p>{% endif %}
+    <div class="note">Forward outcomes are not calculated in Phase 1.</div>
+  </section>
+</div>
+
+<div class="stack">
+  <section class="panel">
+    <h2>C · Structure <span class="dim" style="text-transform:none;letter-spacing:0">radar.technical, prior windows exclude the session</span></h2>
+    {% set s = st.structure %}
+    {% if s %}
+    <dl class="facts">
+      <dt>Close</dt><dd>{{ s.close | num }}</dd>
+      <dt>Prior 20-session high / low</dt><dd>{{ s.prior_20_high | num }} / {{ s.prior_20_low | num }}</dd>
+      <dt>Prior 50-session high / low</dt><dd>{{ s.prior_50_high | num }} / {{ s.prior_50_low | num }}</dd>
+      <dt title="(close - low) / (high - low); &lt;0 or &gt;100 = outside the range (desk-derived)">Position in prior-20 range</dt><dd>{{ s.range_position_20_pct | pct(1, False) }}</dd>
+      <dt>Position in prior-50 range</dt><dd>{{ s.range_position_50_pct | pct(1, False) }}</dd>
+      <dt>SMA20 / distance</dt><dd>{{ s.sma20 | num }} / {{ s.distance_from_sma20_pct | pct }}</dd>
+      <dt>SMA50 / distance</dt><dd>{{ s.sma50 | num }} / {{ s.distance_from_sma50_pct | pct }}</dd>
+      <dt>5-session range / median</dt><dd>{{ s.recent_5d_range_pct | pct(2, False) }} / {{ s.median_5d_range_pct | pct(2, False) }}</dd>
+      <dt>Sessions available</dt><dd>{{ s.sessions_available }}</dd>
+    </dl>
+    <h2 style="margin-top:8px">Structure events today</h2>
+    {% if s.events %}<ul class="why">{% for e in s.events %}<li><b>{{ e.event_type | replace('_', ' ') }}</b> - {{ e.why }}</li>{% endfor %}</ul>
+    {% else %}<p class="note">No structure event on {{ session }}.</p>{% endif %}
+    {% for q in s.data_quality %}<div class="note">⚠ {{ q }}</div>{% endfor %}
+    {% else %}<p class="na">DATA UNAVAILABLE</p>{% endif %}
+  </section>
+
+  <section class="panel">
+    <h2>D · Volume intelligence</h2>
+    {% set v = st.volume %}
+    <dl class="facts">
+      <dt>Session volume</dt><dd>{{ v.session_volume | vol }}</dd>
+      <dt>Prior-20-session average</dt><dd>{{ v.prior20_avg_volume | vol }}</dd>
+      <dt>Relative volume</dt><dd>{{ v.relative_volume | x(2) }}</dd>
+      <dt>Radar volume level</dt><dd>{{ (v.anomaly or {}).level or ('none (below ' ~ rules.V.elevated_rvol ~ 'x)' if v.relative_volume is not none else NA) }}</dd>
+      <dt>VOLUME family fired</dt><dd>{{ 'YES' if c and 'VOLUME' in c.families else ('NO' if v.relative_volume is not none else NA) }}</dd>
+    </dl>
+    <div class="note">{{ rules.FAMILY_RULES.VOLUME }} {{ rules.MS_UNUSUAL_VOLUME_RULE }}</div>
+    <div id="rvolchart"></div>
+  </section>
+
+  <section class="panel">
+    <h2>E · Relative performance <span class="dim" style="text-transform:none;letter-spacing:0">vs NIFTY 50 (^NSEI)</span></h2>
+    {% set r = st.relative %}
+    {% if r %}
+    <table><thead><tr><th>Window</th><th class="n">Stock</th><th class="n">NIFTY 50</th><th class="n">Difference</th></tr></thead><tbody>
+      {% for w in ['1d', '5d', '20d'] %}<tr><td>{{ w | upper }}</td><td class="n">{{ r['stock_return_' ~ w] | pct }}</td><td class="n">{{ r['market_return_' ~ w] | pct }}</td><td class="n">{{ r['market_relative_' ~ w ~ '_pp'] | pp(2) }}</td></tr>{% endfor %}
+      <tr><td>50D</td><td class="n">{{ NA }}</td><td class="n">{{ NA }}</td><td class="n">{{ NA }}</td></tr>
+    </tbody></table>
+    <div class="note">Persistence: <b>{{ r.persistence_state | label }}</b> · {{ rules.FAMILY_RULES.RELATIVE_PERFORMANCE }} 50-session window not computed by the Radar.
+      Stock vs sector: UNAVAILABLE (the Radar pipeline supplies no sector benchmark series).</div>
+    {% else %}<p class="na">DATA UNAVAILABLE</p>{% endif %}
+  </section>
+
+  <section class="panel">
+    <h2>F · Sector context</h2>
+    {% set sr = st.sector_row %}
+    {% if sr %}
+    <dl class="facts">
+      <dt>Sector</dt><dd>{{ sr.sector }} ({{ sr.constituents }} in NIFTY 200)</dd>
+      <dt>Advances / declines</dt><dd>{{ sr.advances }} / {{ sr.declines }} of {{ sr.breadth_covered }}</dd>
+      <dt>Median 1D change</dt><dd>{{ sr.median_change_pct | pct }} <span class="dim">(desk-derived)</span></dd>
+      <dt>Unusual volume (≥2x)</dt><dd>{{ sr.unusual_volume }}</dd>
+      <dt>Range up / down</dt><dd>{{ sr.range_up }} / {{ sr.range_down }}</dd>
+      <dt>Radar candidates in sector</dt><dd>{{ sr.radar_candidates }}{% if sr.radar_symbols %} <span class="dim">({{ sr.radar_symbols | join(', ') }})</span>{% endif %}</dd>
+    </dl>
+    {% else %}<p class="na">DATA UNAVAILABLE - no Market Structure sector row for this session.</p>{% endif %}
+  </section>
+
+  <section class="panel">
+    <h2>H · Official events <span class="dim" style="text-transform:none;letter-spacing:0">persisted NSE snapshots for {{ session }}</span></h2>
+    {% if st.official %}
+    <ul class="why">{% for e in st.official %}<li><span class="b off">{{ e.kind | replace('_', ' ') }}</span> {{ e.status }} - {{ e.detail }}<span class="rule">Source {{ e.source_name }} · list date {{ e.source_date }} · {{ e.source_reference }}</span></li>{% endfor %}</ul>
+    {% elif st.official_status.values() | selectattr('status', 'equalto', 'UNAVAILABLE') | list | length == st.official_status | length %}<p class="na">DATA UNAVAILABLE - no official snapshot is stored for {{ session }}.</p>
+    {% else %}<p class="note">{{ st.symbol }} is on none of the captured lists.</p>{% endif %}
+    <div class="note">{% for k, v in st.official_status.items() %}{{ k }}: {{ v.status }}{% if v.source_date %} ({{ v.source_date }}){% endif %}{% if not loop.last %} · {% endif %}{% endfor %}</div>
+  </section>
+</div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/vendor/plotly.min.js"></script>
+<script>
+(function () {
+  var url = "/api/chart/{{ st.symbol }}?session={{ session }}";
+  var dark = {paper_bgcolor: "#151a21", plot_bgcolor: "#151a21", font: {color: "#d7dde5", size: 11},
+              margin: {l: 50, r: 50, t: 10, b: 30}, showlegend: true,
+              legend: {orientation: "h", y: 1.04, x: 0, font: {size: 10}}};
+  fetch(url).then(function (r) { return r.json(); }).then(function (c) {
+    if (!window.Plotly) { document.getElementById("chart").innerHTML = "<p class='na'>CHART LIBRARY UNAVAILABLE</p>"; return; }
+    if (!c.dates || !c.dates.length) { document.getElementById("chart").innerHTML = "<p class='na'>DATA UNAVAILABLE</p>"; return; }
+    var n = c.dates.length, levels = c.levels || {};
+    function hline(v, name, color) { return {x: [c.dates[Math.max(0, n - 21)], c.dates[n - 1]], y: [v, v], mode: "lines", name: name,
+      line: {color: color, width: 1, dash: "dot"}, visible: false, meta: "LEVELS", hoverinfo: "name+y"}; }
+    var traces = [
+      {type: "candlestick", x: c.dates, open: c.open, high: c.high, low: c.low, close: c.close, name: "{{ st.symbol }}",
+       increasing: {line: {color: "#3fbf7f"}}, decreasing: {line: {color: "#ef5f5f"}}, yaxis: "y"},
+      {type: "bar", x: c.dates, y: c.volume, name: "Volume", marker: {color: "#3b4656"}, yaxis: "y2"},
+      {type: "scatter", x: c.dates, y: c.sma20, mode: "lines", name: "SMA20", line: {color: "#4ea1ff", width: 1.2}, visible: false, meta: "SMA20"},
+      {type: "scatter", x: c.dates, y: c.sma50, mode: "lines", name: "SMA50", line: {color: "#e3a72f", width: 1.2}, visible: false, meta: "SMA50"}
+    ];
+    [["prior_20_high", "Prior 20 high", "#8ff0b7"], ["prior_20_low", "Prior 20 low", "#ffb3b3"],
+     ["prior_50_high", "Prior 50 high", "#3fbf7f"], ["prior_50_low", "Prior 50 low", "#ef5f5f"]].forEach(function (l) {
+      if (levels[l[0]] != null) traces.push(hline(levels[l[0]], l[1], l[2]));
+    });
+    document.getElementById("chart").innerHTML = "";
+    var layout = Object.assign({}, dark, {
+      xaxis: {type: "category", rangeslider: {visible: false}, nticks: 12, gridcolor: "#222a34"},
+      yaxis: {domain: [0.26, 1], gridcolor: "#222a34"},
+      yaxis2: {domain: [0, 0.2], gridcolor: "#222a34"}});
+    Plotly.newPlot("chart", traces, layout, {displaylogo: false, responsive: true});
+    document.querySelectorAll("[data-trace]").forEach(function (cb) {
+      cb.addEventListener("change", function () {
+        var key = cb.getAttribute("data-trace"), idx = [];
+        traces.forEach(function (t, i) { if (t.meta === key) idx.push(i); });
+        Plotly.restyle("chart", {visible: cb.checked}, idx);
+      });
+    });
+    var k = Math.max(0, n - 60);
+    Plotly.newPlot("rvolchart", [
+      {type: "bar", x: c.dates.slice(k), y: c.rvol.slice(k), name: "RVOL", marker: {color: c.rvol.slice(k).map(function (v) {
+        return v == null ? "#39414b" : v >= {{ rules.V.unusual_rvol }} ? "#c38bff" : v >= {{ rules.V.elevated_rvol }} ? "#4ea1ff" : "#3b4656"; })}},
+      {type: "scatter", x: [c.dates[k], c.dates[n - 1]], y: [{{ rules.V.unusual_rvol }}, {{ rules.V.unusual_rvol }}], mode: "lines", name: "{{ rules.V.unusual_rvol }}x UNUSUAL", line: {color: "#c38bff", dash: "dot", width: 1}},
+      {type: "scatter", x: [c.dates[k], c.dates[n - 1]], y: [{{ rules.V.elevated_rvol }}, {{ rules.V.elevated_rvol }}], mode: "lines", name: "{{ rules.V.elevated_rvol }}x ELEVATED", line: {color: "#4ea1ff", dash: "dot", width: 1}}
+    ], Object.assign({}, dark, {margin: {l: 35, r: 10, t: 6, b: 25}, xaxis: {type: "category", nticks: 6}, yaxis: {title: {text: "RVOL"}, gridcolor: "#222a34"}}),
+    {displaylogo: false, responsive: true, displayModeBar: false});
+  }).catch(function () { document.getElementById("chart").innerHTML = "<p class='na'>DATA UNAVAILABLE</p>"; });
+})();
+</script>
+{% endblock %}

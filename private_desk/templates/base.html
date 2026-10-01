@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{% block title %}Private Desk{% endblock %} · PRIVATE / LOCAL ONLY</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<link rel="stylesheet" href="/static/desk.css">
+</head>
+<body>
+{% set sq = "?session=" ~ session.isoformat() if session else "" %}
+<div class="topbar">
+  <div class="brand">PRIVATE TRADING INTELLIGENCE <small>desk v{{ desk_version }}</small></div>
+  <span class="private" title="Never published. Not part of the YouTube pipeline.">PRIVATE / LOCAL ONLY</span>
+  <nav class="nav">
+    <a href="/{{ sq }}" class="{{ 'on' if page == 'dashboard' }}">Dashboard</a>
+    <a href="/radar{{ sq }}" class="{{ 'on' if page == 'radar' }}">Radar</a>
+    <a href="/stock{{ sq }}" class="{{ 'on' if page in ('stock', 'stock_index') }}">Stock Explorer</a>
+    <a href="/sectors{{ sq }}" class="{{ 'on' if page == 'sectors' }}">Sectors</a>
+    <a href="/history" class="{{ 'on' if page == 'history' }}">History</a>
+    <a href="/quality{{ sq }}" class="{{ 'on' if page == 'quality' }}">Data Quality</a>
+  </nav>
+  <div class="topstat">
+    {% set radar_src = fresh.by_key.get('radar') %}
+    <span>Latest session <b>{{ fresh.latest_completed | d }}</b></span>
+    <span>Radar <b>{{ radar_src.session | d if radar_src else NA }}</b>
+      {% if radar_src %}<span class="b {{ 'ok' if radar_src.status == 'FRESH' else 'warn' }}">{{ radar_src.status }}</span>{% endif %}</span>
+    <span>Data <span class="b {{ 'ok' if fresh.ok else 'warn' }}">{{ 'ALL FRESH' if fresh.ok else (fresh.warnings | length) ~ ' ATTENTION' }}</span></span>
+    {% if sessions and page not in ('history',) %}
+    <form method="get">
+      {% if st is defined and st %}{% endif %}
+      <select name="session" onchange="this.form.submit()" title="Radar session shown">
+        {% for s in sessions | reverse %}<option value="{{ s }}" {{ 'selected' if session and s == session }}>{{ s }}</option>{% endfor %}
+      </select>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+<div class="fresh">
+  <div><span class="lbl">Latest completed market session</span> <b>{{ fresh.latest_completed | d }}</b></div>
+  <div><span class="lbl">Showing session</span> <b>{{ session | d if session else NA }}</b></div>
+  {% for s in fresh.sources %}
+  <div title="{{ s.detail }}"><span class="lbl">{{ s.label }} as of</span> <b>{{ s.session | d if s.session else NA }}</b>
+    {% if s.as_of %}<span class="dim">({{ s.as_of[:16] | replace('T', ' ') }})</span>{% endif %}
+    <span class="b {{ 'ok' if s.status == 'FRESH' else ('bad' if s.status == 'MISSING' else 'warn') }}">{{ s.status }}</span></div>
+  {% endfor %}
+</div>
+
+{% for s in fresh.warnings %}
+<div class="banner warn">{{ s.label }}: {{ s.status }}{% if s.session %} - latest {{ s.session }}{% endif %}{% if fresh.latest_completed %} vs latest completed session {{ fresh.latest_completed }}{% endif %}. {{ s.detail }}</div>
+{% endfor %}
+{% if session and fresh.latest_completed and session < fresh.latest_completed %}
+<div class="banner info">Viewing an earlier session ({{ session }}). Every panel shows {{ session }} data only.</div>
+{% endif %}
+{% if notice %}<div class="banner bad">{{ notice }}</div>{% endif %}
+{% block banners %}{% endblock %}
+
+<main>{% block content %}{% endblock %}</main>
+
+<footer>
+  <span>Observations and detector results only. A Radar candidate is an attention item, not a trade recommendation. The owner makes every decision.</span>
+  <span>Read-only · no orders · no uploads · localhost</span>
+</footer>
+<script src="/static/desk.js"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,4 +1,9 @@
-# Private Trading Intelligence Desk — roadmap note (NOT built)
+# Private Trading Intelligence Desk — roadmap
+
+**Phase 1 is built** (read-only local dashboard): docs/PRIVATE_DESK_USER_GUIDE.md, package
+`private_desk/`, future broker contract docs/PRIVATE_DESK_KITE_INTEGRATION.md. Screens 1-4 below
+exist (market regime as diagnostics only - no classifier yet); watchlist, outcome research
+(Phase 2), the Kite hand-off and the feedback loop (Phases 3/4) and the position/risk desk do not.
 
 This is a future, local-only web application for the owner. It would turn PRIVATE_ANALYTICS
 into a personal decision-support dashboard. It is **decision support and informational edge

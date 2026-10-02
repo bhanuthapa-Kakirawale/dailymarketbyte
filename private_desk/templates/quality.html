@@ -93,15 +93,25 @@
   {% if rq and rq.status != 'NO_SESSION' %}
   <dl class="facts">
     <dt>Status</dt><dd><span class="b {{ 'ok' if rq.status == 'OK' else 'warn' }}">{{ rq.status }}</span>{% if rq.stale %} regime session {{ rq.regime_session }} is older than the latest completed session {{ rq.latest_completed }}{% endif %}</dd>
-    <dt>Classifier version</dt><dd>{{ rq.calculation_version }} ({{ rq.schema_version }})</dd>
+    <dt>Classifier version</dt><dd>{{ rq.calculation_version }} ({{ rq.schema_version }}) · {{ rq.model_status }}</dd>
     <dt>Latest regime</dt><dd>{{ rq.regime }} · session {{ rq.regime_session }}</dd>
+    <dt>Latest universe quality</dt><dd>{{ rq.universe_quality }}{% if rq.universe_quality != 'POINT_IN_TIME' %} <span class="note">{{ rq.universe_note }}</span>{% endif %}</dd>
+    <dt>Point-in-time validation from</dt><dd><b>{{ rq.point_in_time_from | d }}</b> <span class="note">first session with its own stored NIFTY 200 list; earlier sessions are APPROXIMATE (back-dated universe, exploratory only)</span></dd>
+    <dt>Phase-2 research eligible</dt><dd>{{ 'yes' if rq.research_eligible else 'no' }}{% if rq.research_ineligible_reasons %} <span class="note">({{ rq.research_ineligible_reasons | join(', ') }})</span>{% endif %}</dd>
     <dt>Required inputs</dt><dd style="white-space:normal;font-family:var(--sans)">{{ rq.required }}</dd>
     <dt>Available dimensions</dt><dd>{{ rq.available | join(', ') or 'none' }}</dd>
     <dt>Unavailable dimensions</dt><dd>{{ rq.unavailable | join(', ') or 'none' }}</dd>
     <dt>Membership</dt><dd>{{ rq.membership.label | na }} · {{ rq.membership.members | na }} members · list of {{ rq.membership.membership_from | na }}{% if rq.membership.membership_backdated %} <span class="b warn">BACK-DATED</span>{% endif %}</dd>
     <dt>Recent window</dt><dd>{{ rq.window }} sessions · {% for k, v in rq.window_counts.items() %}{{ k }} {{ v }}{% if not loop.last %} · {% endif %}{% endfor %}</dd>
+    <dt>Universe coverage (window)</dt><dd>{% for k, v in rq.window_universe_coverage.items() %}{{ k | replace('_', ' ') }} {{ v }}{% if not loop.last %} · {% endif %}{% endfor %}</dd>
+    <dt>Volume thresholds</dt><dd>65% / 45% · {{ rq.volume_threshold_status }}</dd>
     {% set v = rq.validation %}
-    <dt>Historical validation</dt><dd>{% if v.status == 'NOT_BUILT' %}<span class="b warn">NOT BUILT</span> run <span class="mono">{{ v.hint }}</span>{% else %}<span class="b {{ 'ok' if v.status == 'CURRENT' else 'warn' }}">{{ v.status }}</span> {{ v.calculation_version }} · to {{ v.end_session }} · {{ v.sessions }} sessions, {{ v.eligible }} classifiable, {{ v.insufficient }} insufficient · {{ v.switches }} switches · built {{ (v.generated_at or '')[:16] }}{% endif %}</dd>
+    <dt>Historical validation</dt><dd>{% if v.status == 'NOT_BUILT' %}<span class="b warn">NOT BUILT</span> run <span class="mono">{{ v.hint }}</span>{% else %}<span class="b {{ 'ok' if v.status == 'CURRENT' else 'warn' }}">{{ v.status }}</span> {{ v.calculation_version }} · to {{ v.end_session }} · built {{ (v.generated_at or '')[:16] }}{% endif %}</dd>
+    {% if v.status != 'NOT_BUILT' %}
+    <dt>Universe coverage (history)</dt><dd>{{ v.sessions }} reconstructed · {% for k, n in v.universe_quality_counts.items() %}{{ k | replace('_', ' ') }} {{ n }}{% if not loop.last %} · {% endif %}{% endfor %} · {{ v.insufficient }} insufficient</dd>
+    <dt>Primary validation</dt><dd>POINT-IN-TIME only: {{ v.pit_classifiable }} classifiable sessions · {% for k, n in (v.pit_counts or {}).items() if n %}{{ k }} {{ n }} {% endfor %}{% if not v.pit_meaningful %}<span class="b warn">TOO FEW (&lt; {{ v.min_sessions }}) - NOT STATISTICALLY MEANINGFUL</span>{% endif %}</dd>
+    <dt>Research-eligible sessions</dt><dd>{{ v.research_eligible }}</dd>
+    {% endif %}
     <dt>Stored snapshot files</dt><dd>{{ rq.stored_files | join(', ') or 'none yet' }}</dd>
   </dl>
   <div class="note">The classifier reads the OHLCV store, the Market Structure constituent lists and the canonical reports read-only; its snapshots live under private_desk/regime/ and are rebuilt whenever the inputs or the calculation version change.</div>

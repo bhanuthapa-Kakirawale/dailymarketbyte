@@ -3,8 +3,7 @@
 {% block title %}Market regime {{ session }}{% endblock %}
 {% block banners %}
 {% set g = rg.snapshot %}
-{% if rg.stale %}<div class="banner warn">Regime is for {{ g.session_date }}, older than the latest completed session {{ rg.latest_completed }}.</div>{% endif %}
-{% if g.universe and g.universe.membership_backdated %}<div class="banner info">NIFTY 200 membership for {{ g.session_date }} is taken from the earliest stored constituent list ({{ g.universe.membership_from }}) - historical membership is not recorded (known limitation).</div>{% endif %}
+{% if rg.stale and not (fresh.latest_completed and session < fresh.latest_completed and session != (sessions | last)) %}<div class="banner warn">Regime is for {{ g.session_date }}, older than the latest completed session {{ rg.latest_completed }}.</div>{% endif %}
 {% endblock %}
 {% block content %}
 {% set g = rg.snapshot %}
@@ -18,7 +17,8 @@
       <dt>This session's evidence alone</dt><dd>{{ g.candidate_regime }}</dd>
       <dt>Previous session's evidence</dt><dd>{{ g.previous_candidate | na }}</dd>
       <dt>Rule applied</dt><dd style="white-space:normal;font-family:var(--sans)">{{ g.rule_applied }}</dd>
-      <dt>Universe</dt><dd>{{ (g.universe or {}).label | na }} · {{ (g.universe or {}).members | na }} members · constituent list of {{ (g.universe or {}).membership_from | na }}</dd>
+      <dt>Universe</dt><dd>{{ (g.universe or {}).label | na }} · {{ (g.universe or {}).members | na }} members · constituent list of {{ (g.universe or {}).universe_source_date or (g.universe or {}).membership_from | na }} {{ m.uq(g, true) }}</dd>
+      {% if g.universe_quality != 'POINT_IN_TIME' %}<dt>Universe note</dt><dd class="note" style="white-space:normal;font-family:var(--sans)">{{ (g.universe or {}).universe_note }} This is metadata about the historical reconstruction; it is not part of the regime evidence.</dd>{% endif %}
     </dl>
     <div class="whybox"><h2>Why this regime</h2><div>{{ g.explanation }}</div></div>
     <div class="grid g2" style="margin-top:8px">
@@ -49,21 +49,24 @@
 <div class="stack">
   <section class="panel">
     <h2>Recent regime history <span class="dim lc">{{ rg.history | length }} sessions, newest first</span></h2>
-    <div class="tablewrap" style="max-height:none"><table class="rg-hist"><thead><tr><th>Session</th><th>Regime</th><th title="this session's own reading when the confirmation rule kept the regime TRANSITIONAL">Evidence</th><th>Trend</th><th>Brdth</th><th>Sect</th><th>Volm</th><th title="Volatility">Vlty</th></tr></thead><tbody>
+    <div class="rg-filter"><label><input type="checkbox" id="pitonly" onchange="document.getElementById('rghist').classList.toggle('pit-only', this.checked)"> point-in-time universe only</label>
+      · <span class="dim">* = this session's own evidence read differently (confirmation rule; hover) · Univ = universe quality: PIT = point-in-time membership, APPROX = back-dated constituent list (prices still session-bounded)</span></div>
+    <div class="tablewrap" style="max-height:none"><table class="rg-hist" id="rghist"><thead><tr><th>Session</th><th title="universe quality">Univ</th><th>Regime</th><th>Trend</th><th>Brdth</th><th>Sect</th><th>Volm</th><th title="Volatility">Vlty</th></tr></thead><tbody>
     {% for h in rg.history %}{% set st = {} %}{% for x in h.dimensions %}{% set _ = st.update({x.key: x.state}) %}{% endfor %}
-      <tr><td class="mono"><a href="/regime?session={{ h.session_date }}">{{ h.session_date }}</a></td><td>{{ m.rlabel(h.regime) }}</td>
-        <td class="dim">{{ h.candidate_regime if h.candidate_regime != h.regime else '' }}</td>
+      <tr class="{{ '' if h.universe_quality == 'POINT_IN_TIME' else 'uq-row-approx' }}"><td class="mono"><a href="/regime?session={{ h.session_date }}">{{ h.session_date }}</a></td>
+        <td>{% if h.universe_quality == 'POINT_IN_TIME' %}<span class="uq uq-pit" title="{{ (h.universe or {}).universe_note }}">PIT</span>{% elif h.universe_quality == 'BACKDATED_UNIVERSE' %}<span class="uq uq-bd" title="Historical constituent membership for this session was unavailable; the earliest stored universe was used. Prices remain session-bounded.">APPROX</span>{% else %}<span class="uq uq-unk" title="{{ (h.universe or {}).universe_note }}">UNKN</span>{% endif %}</td>
+        <td>{{ m.rlabel(h.regime) }}{% if h.candidate_regime != h.regime %}<span class="rg-ev-mark" title="This session's own evidence read {{ h.candidate_regime }}; the confirmation rule kept the regime {{ h.regime }} until a second session agrees.">*</span>{% endif %}</td>
         {% for k in ('TREND', 'BREADTH', 'SECTORS', 'VOLUME', 'VOLATILITY') %}<td>{{ m.rstate(st.get(k) or 'UNAVAILABLE', true) }}</td>{% endfor %}</tr>
     {% endfor %}</tbody></table></div>
   </section>
 
   <section class="panel">
-    <h2>Regime rules (V1, provisional)</h2>
+    <h2>Regime rules (V1) <span class="dim lc">{{ model_status }}</span></h2>
     <dl class="facts rg-rules">
       {% for k, v in regime_rules.items() %}<dt>{{ m.rlabel(k) }}</dt><dd>{{ v }}</dd>{% endfor %}
       <dt>Confirmation</dt><dd>{{ confirmation_rule }}</dd>
     </dl>
-    <div class="note" style="margin-top:6px">Thresholds are conventional round numbers checked against the stored history (~6 months) - provisional while history accumulates. Volatility can only block BULLISH; relative strength and institutional flow are context and never decide. The regime never changes Radar candidates, their order or the attention set.</div>
+    <div class="note" style="margin-top:6px">Thresholds are conventional round numbers checked against the stored history (~6 months) - provisional while history accumulates (volume 65% / 45%: V1_PROVISIONAL). Historical validation uses point-in-time universe sessions only; APPROX sessions are exploratory. Volatility can only block BULLISH; relative strength and institutional flow are context and never decide. The regime never changes Radar candidates, their order or the attention set.</div>
   </section>
 </div>
 </div>

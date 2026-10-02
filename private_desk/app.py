@@ -216,9 +216,11 @@ def create_app(settings: DeskSettings) -> FastAPI:
         if s is None:
             return unavailable(request, notice, "regime")
         from .regime import rules as regime_rules
+        from .regime.model import MODEL_STATUS
         return page(request, "regime.html", s, notice, rg=svc.regime(s),
                     regime_rules=regime_rules.REGIME_RULES,
-                    confirmation_rule=regime_rules.CONFIRMATION_RULE)
+                    confirmation_rule=regime_rules.CONFIRMATION_RULE,
+                    model_status=MODEL_STATUS)
 
     @app.get("/history", response_class=HTMLResponse)
     def history(request: Request, start: str = "", end: str = "", symbol: str = "",

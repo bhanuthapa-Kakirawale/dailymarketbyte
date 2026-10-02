@@ -44,7 +44,8 @@ def _snapshot(d: dt.date, cand, reason, dims, m, prev_cand, generated_at) -> Mar
         supporting_evidence=sup, conflicting_evidence=con,
         missing_dimensions=tuple(k for k in rules.DIMENSION_ORDER if dims[k].state == UNAVAILABLE),
         explanation=rules.explain(regime, final_reason, cand, prev_cand, dims),
-        universe=m["universe"], generated_at=generated_at, notes=NOTES)
+        universe=m["universe"], generated_at=generated_at, notes=NOTES,
+        universe_quality=m["universe"]["universe_quality"])
 
 
 def classify_session(data: RegimeData, d: dt.date, *, generated_at: str = "") -> MarketRegimeSnapshot:

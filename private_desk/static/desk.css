@@ -195,3 +195,12 @@ table.rg-dims tr:hover td { background: none; }
 dl.facts.rg-rules dt { padding-top: 2px; } dl.facts.rg-rules dd { white-space: normal; font-family: var(--sans); }
 table.rg-hist th, table.rg-hist td { padding: 2px 4px; }
 .rg-stock { margin-top: 6px; }
+/* universe quality: audit metadata, understated on purpose */
+.uq { font-size: 10px; font-weight: 600; letter-spacing: .04em; padding: 0 5px; border-radius: 2px;
+  border: 1px solid #39414b; white-space: nowrap; cursor: help; }
+.uq-pit { color: var(--muted); } .uq-bd { color: #cdb27a; border-color: #4a412a; }
+.uq-unk { color: var(--muted); border-style: dashed; }
+.rg-filter { font-size: 11px; color: var(--muted); margin: 2px 0 6px; }
+.rg-filter label { cursor: pointer; }
+table.rg-hist.pit-only tr.uq-row-approx { display: none; }
+.rg-ev-mark { color: #cdb27a; margin-left: 3px; cursor: help; font-weight: 700; }

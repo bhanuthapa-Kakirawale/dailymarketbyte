@@ -133,7 +133,19 @@ INSUFFICIENT_DATA. It comes from the deterministic classifier in docs/PRIVATE_MA
 - **Why**: the rule that fired and the numbers each state rests on;
 - any unavailable dimension.
 
-`detail →` opens the **Regime** page. The label describes the current environment. It is not a
+`detail →` opens the **Regime** page.
+
+**Universe badges (history only).** The regime history uses NIFTY 200 membership, and exact
+historical membership is stored only from 2026-09-24 (the Data Quality page shows the date).
+- **PIT** (point-in-time): that session's own constituent list was used.
+- **APPROX** / "APPROXIMATE UNIVERSE": an earlier session reused the earliest stored list. Prices
+  still stop at that session (no future prices). The label is a rough historical
+  reconstruction, useful for context and stability inspection, but not validation.
+- **UNKN**: membership could not be established. Example: 29 Sep 2026 had no list, and the
+  index was rebalanced between the 28 Sep and 30 Sep lists.
+
+The badge is metadata. It never changes the regime or its WHY, and the current session normally
+shows no badge. Tick "point-in-time universe only" on the Regime page to hide approximate rows. The label describes the current environment. It is not a
 forecast or a recommendation, and it never changes the Radar candidates, their order or the
 attention set.
 

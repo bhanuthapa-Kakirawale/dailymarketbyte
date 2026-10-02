@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import dataclasses
 import datetime as dt
 import io
 import json
@@ -30,7 +31,10 @@ from ..repository import DeskRepository
 from ..settings import DESK_DIRNAME
 from . import metrics as mt
 from . import rules as rr
-from .data import load_regime_data
+from .data import (BACKDATED_UNIVERSE, POINT_IN_TIME, UNIVERSE_QUALITIES,
+                   earliest_point_in_time_session, load_regime_data)
+from .data import UNKNOWN as UNKNOWN_Q
+from .eligibility import research_eligibility
 from .engine import classify_history, classify_session
 from . import model
 from .model import INSUFFICIENT_DATA, REGIMES
@@ -173,6 +177,68 @@ def _strip(d: dict) -> dict:
     return {k: v for k, v in d.items() if k != "generated_at"}
 
 
+ALL, PIT, BACKDATED = "ALL_RECONSTRUCTED", "POINT_IN_TIME_VALIDATED", "BACKDATED_UNIVERSE"
+GROUP_LABELS = {
+    ALL: "EXPLORATORY - every reconstructed session, including back-dated / unknown universe "
+         "membership; classifier behaviour only, never a validation claim",
+    PIT: "PRIMARY - sessions whose own NIFTY 200 membership is point-in-time; the only group "
+         "any validation claim may use",
+    BACKDATED: "EXPLORATORY / APPROXIMATE - price-point-in-time but universe back-dated",
+}
+# Reporting convention: below this many classifiable point-in-time sessions, persistence /
+# switching / duration statistics are listed but called NOT statistically meaningful.
+MIN_SESSIONS_FOR_STATS = 60
+
+
+def _segment_stats(snaps: list, spine_pos: dict) -> dict:
+    """Run statistics over CONSECUTIVE sessions only: a gap in a group (an excluded session)
+    ends a segment, so two runs are never merged across it. Runs touching a segment edge are
+    censored (they may have started before / continued after what is visible)."""
+    segments, cur = [], []
+    for s in snaps:
+        if cur and spine_pos[s.session_date] != spine_pos[cur[-1].session_date] + 1:
+            segments.append(cur)
+            cur = []
+        cur.append(s)
+    if cur:
+        segments.append(cur)
+    out = {"segments": len(segments), "switches": 0, "one_session_reversals": 0,
+           "censored_runs": 0, "runs_by_regime": {}}
+    lengths = defaultdict(list)
+    for seg in segments:
+        st = _run_stats([s.regime for s in seg])
+        out["switches"] += st["switches"]
+        out["one_session_reversals"] += st["one_session_reversals"]
+        runs = _runs([s.regime for s in seg])
+        out["censored_runs"] += 1 if len(runs) == 1 else 2
+        for x, n in runs:
+            lengths[x].append(n)
+    out["runs_by_regime"] = {k: {"runs": len(v), "average_length": round(sum(v) / len(v), 2),
+                                 "longest": max(v)} for k, v in sorted(lengths.items())}
+    return out
+
+
+def _group_stats(name: str, snaps: list, spine_pos: dict) -> dict:
+    classifiable = [s for s in snaps if s.candidate_regime != INSUFFICIENT_DATA]
+    states = {k: Counter() for k in rr.DIMENSION_ORDER}
+    for s in snaps:
+        for x in s.dimensions:
+            states[x.key][x.state] += 1
+    return {
+        "label": GROUP_LABELS[name], "sessions": len(snaps),
+        "first_session": snaps[0].session_date if snaps else None,
+        "last_session": snaps[-1].session_date if snaps else None,
+        "classifiable": len(classifiable), "insufficient": len(snaps) - len(classifiable),
+        "statistically_meaningful": len(classifiable) >= MIN_SESSIONS_FOR_STATS,
+        "counts_by_regime": {k: sum(1 for s in snaps if s.regime == k) for k in REGIMES},
+        "candidate_counts": {k: sum(1 for s in snaps if s.candidate_regime == k) for k in REGIMES},
+        "final": _segment_stats(classifiable, spine_pos),
+        "without_confirmation": _segment_stats(
+            [dataclasses.replace(s, regime=s.candidate_regime) for s in classifiable], spine_pos),
+        "dimension_states": {k: dict(v) for k, v in states.items()},
+    }
+
+
 def build(out_dir: str, end: dt.date | None = None, *, lookahead_check: bool = True,
           now: dt.datetime | None = None) -> dict:
     from config import now_ist
@@ -187,9 +253,14 @@ def build(out_dir: str, end: dt.date | None = None, *, lookahead_check: bool = T
     sessions = [d for d in data.sessions if d >= stock_start]
     snaps = classify_history(data, sessions, generated_at=now.isoformat())
     metric_rows = {d.isoformat(): mt.session_metrics(data.until(d)) for d in sessions}
+    spine_pos = {d.isoformat(): i for i, d in enumerate(data.sessions)}
 
-    # no-lookahead proof: reload the inputs CUT at each session and reclassify
-    proof = {"checked": 0, "identical": 0, "differences": []}
+    # PRICE point-in-time proof: reload the inputs with the PRICE store cut at each session and
+    # reclassify. Universe membership lists are NOT cut by this check - that is what the
+    # universe-quality label reports.
+    proof = {"scope": "PRICE_DATA (OHLCV, benchmark, report context) cut at each session; "
+                      "constituent lists not cut - see universe_quality",
+             "checked": 0, "identical": 0, "differences": []}
     if lookahead_check:
         for s in snaps:
             d = dt.date.fromisoformat(s.session_date)
@@ -200,31 +271,42 @@ def build(out_dir: str, end: dt.date | None = None, *, lookahead_check: bool = T
             else:
                 proof["differences"].append(s.session_date)
 
-    eligible = [s for s in snaps if s.candidate_regime != INSUFFICIENT_DATA]
-    avail = {k: Counter() for k in rr.DIMENSION_ORDER}
-    for s in snaps:
-        for x in s.dimensions:
-            avail[x.key][x.state] += 1
+    pit = [s for s in snaps if s.universe_quality == POINT_IN_TIME]
+    backdated = [s for s in snaps if s.universe_quality == BACKDATED_UNIVERSE]
+    eligibility = [(s, *research_eligibility(s)) for s in snaps]
+    groups = {ALL: _group_stats(ALL, snaps, spine_pos), PIT: _group_stats(PIT, pit, spine_pos),
+              BACKDATED: _group_stats(BACKDATED, backdated, spine_pos)}
     summary = {
-        "calculation_version": model.CALCULATION_VERSION, "generated_at": now.isoformat(),
+        "calculation_version": model.CALCULATION_VERSION, "schema_version": model.SCHEMA_VERSION,
+        "model_status": model.MODEL_STATUS, "generated_at": now.isoformat(),
         "end_session": end.isoformat(), "first_session": sessions[0].isoformat(),
         "benchmark_sessions_loaded": len(data.sessions),
         "benchmark_first_session": data.sessions[0].isoformat(),
-        "sessions_total": len(snaps), "eligible_sessions": len(eligible),
-        "insufficient_sessions": len(snaps) - len(eligible),
-        "first_eligible_session": eligible[0].session_date if eligible else None,
-        "counts_by_regime": {k: sum(1 for s in snaps if s.regime == k) for k in REGIMES},
-        "candidate_counts": {k: sum(1 for s in snaps if s.candidate_regime == k) for k in REGIMES},
-        "final": _run_stats([s.regime for s in eligible]),
-        "without_confirmation": _run_stats([s.candidate_regime for s in eligible]),
-        "regime_switches": _run_stats([s.regime for s in eligible])["switches"],
+        "sessions_total": len(snaps),
+        "insufficient_sessions": groups[ALL]["insufficient"],
+        "first_classifiable_session": next((s.session_date for s in snaps
+                                            if s.candidate_regime != INSUFFICIENT_DATA), None),
+        "earliest_point_in_time_session": (str(earliest_point_in_time_session(repo))
+                                           if earliest_point_in_time_session(repo) else None),
+        "universe_quality_counts": {q: sum(1 for s in snaps if s.universe_quality == q)
+                                    for q in UNIVERSE_QUALITIES},
+        "unknown_universe_sessions": [{"session": s.session_date,
+                                       "note": s.universe.get("universe_note")}
+                                      for s in snaps if s.universe_quality == UNKNOWN_Q],
+        "primary_group": PIT,
+        "primary_statistics_meaningful": groups[PIT]["statistically_meaningful"],
+        "min_sessions_for_statistics": MIN_SESSIONS_FOR_STATS,
+        "groups": groups,
+        "research_eligible_sessions": sum(1 for _, ok, _ in eligibility if ok),
+        "research_ineligible_reasons": dict(Counter(r for _, ok, rs in eligibility if not ok
+                                                    for r in rs)),
         "reason_codes": dict(Counter(s.reason_code for s in snaps)),
-        "dimension_states": {k: dict(v) for k, v in avail.items()},
-        "membership_backdated_sessions": sum(1 for s in snaps if s.universe.get("membership_backdated")),
         "market_structure_reconciliation": _reconcile_market_structure(repo, metric_rows),
-        "no_lookahead_proof": proof,
+        "price_point_in_time_proof": proof,
+        "universe_membership_point_in_time": "only for POINT_IN_TIME sessions",
         "vix_sessions": sum(1 for m in metric_rows.values() if m["volatility"]["india_vix"] is not None),
         "flow_sessions": sum(1 for m in metric_rows.values() if m["flows"]["fii_net_cr"] is not None),
+        "volume_threshold_status": rr.VOLUME_THRESHOLD_STATUS,
         "forward_returns_used": False,
     }
     dist = distributions([metric_rows[s.session_date] for s in snaps])
@@ -233,9 +315,11 @@ def build(out_dir: str, end: dt.date | None = None, *, lookahead_check: bool = T
         _write(root, out_dir, "distributions.json", json.dumps(
             {"calculation_version": model.CALCULATION_VERSION, "sample": {
                 "first_session": sessions[0].isoformat(), "end_session": end.isoformat(),
-                "sessions": len(sessions)}, "metrics": dist}, indent=2)),
+                "sessions": len(sessions), "note": "EXPLORATORY: all reconstructed sessions, "
+                "including back-dated universe membership"}, "metrics": dist}, indent=2)),
         _write(root, out_dir, "regime_threshold_review.md", _threshold_md(dist, summary)),
-        _write(root, out_dir, "regime_history.csv", _history_csv(snaps, metric_rows)),
+        _write(root, out_dir, "regime_history.csv",
+               _history_csv(snaps, metric_rows, {s.session_date: (ok, rs) for s, ok, rs in eligibility})),
         _write(root, out_dir, "validation_summary.json", json.dumps(summary, indent=2, default=str)),
         _write(root, out_dir, "validation_report.md", _validation_md(summary, snaps)),
     ]
@@ -244,15 +328,23 @@ def build(out_dir: str, end: dt.date | None = None, *, lookahead_check: bool = T
 
 # ------------------------------------------------------------------ renderers
 def _threshold_md(dist: dict, summary: dict) -> str:
+    g = summary["groups"][ALL]
     L = ["# Regime threshold review (V1, provisional)", "",
-         f"Calculation version `{model.CALCULATION_VERSION}`. Sample: {summary['first_session']} .. "
-         f"{summary['end_session']} ({summary['sessions_total']} canonical sessions with "
-         f"constituent data; {summary['eligible_sessions']} classifiable). Generated "
-         f"{summary['generated_at']}.", "",
+         f"Calculation version `{model.CALCULATION_VERSION}` · status {summary['model_status']}. "
+         f"Sample: {summary['first_session']} .. {summary['end_session']} "
+         f"({summary['sessions_total']} canonical sessions with constituent data; "
+         f"{g['classifiable']} classifiable). Generated {summary['generated_at']}.", "",
+         "**EXPLORATORY sample.** These distributions include every reconstructed session, most of "
+         "which use a BACK-DATED NIFTY 200 membership list (point-in-time membership starts "
+         f"{summary['earliest_point_in_time_session']}). They describe the classifier's inputs; "
+         "they are not point-in-time validation.", "",
          "Thresholds are conventional, round and mostly symmetric. They were CHECKED against the "
          "distributions below, not fitted to them: one ~6-month sample (a stress episode in "
          "March-April, a June-August range, a September decline) is far too short to optimise "
-         "anything. Sample position = the first listed percentile at or above the threshold.", "",
+         "anything. Do not optimise thresholds against this same sample. Sample position = the "
+         "first listed percentile at or above the threshold.", "",
+         f"Volume thresholds (65% / 45%): **{rr.VOLUME_THRESHOLD_STATUS}**. Volume participation is "
+         "subordinate to trend, breadth and sectors (it cannot overturn them agreeing).", "",
          "## Distributions", "",
          "| Metric | n | p5 | p10 | p25 | p50 | p75 | p90 | p95 |", "|---|---|---|---|---|---|---|---|---|"]
     for key, d in dist.items():
@@ -277,20 +369,27 @@ def _threshold_md(dist: dict, summary: dict) -> str:
     return "\n".join(L)
 
 
-def _history_csv(snaps: list, metric_rows: dict) -> str:
+def _history_csv(snaps: list, metric_rows: dict, eligibility: dict) -> str:
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["session", "regime", "candidate", "previous_candidate", "reason_code",
-                *rr.DIMENSION_ORDER, "nifty_close", "dist_sma20_pct", "dist_sma50_pct",
+                *rr.DIMENSION_ORDER, "universe_quality", "validation_group",
+                "universe_source_date", "window_universe_quality", "research_eligible",
+                "research_ineligible_reasons", "nifty_close", "dist_sma20_pct", "dist_sma50_pct",
                 "sma20_vs_sma50_pct", "advances", "declines", "pct_above_sma50",
                 "advance_share_10d_pct", "sectors_positive", "sectors_counted",
                 "uv_up_events", "uv_down_events", "realised_vol_20d_pct", "india_vix",
-                "outperform_share_pct", "fii_net_cr", "membership_from"])
+                "outperform_share_pct", "fii_net_cr"])
     for s in snaps:
         m = metric_rows[s.session_date]
         st = {x.key: x.state for x in s.dimensions}
+        ok, reasons = eligibility[s.session_date]
+        group = {POINT_IN_TIME: PIT, BACKDATED_UNIVERSE: BACKDATED}.get(s.universe_quality,
+                                                                        "UNKNOWN_UNIVERSE")
         w.writerow([s.session_date, s.regime, s.candidate_regime, s.previous_candidate,
                     s.reason_code, *[st.get(k) for k in rr.DIMENSION_ORDER],
+                    s.universe_quality, group, s.universe.get("universe_source_date"),
+                    s.universe.get("window_universe_quality"), ok, "|".join(reasons),
                     m["trend"]["close"], m["trend"]["dist_sma20_pct"], m["trend"]["dist_sma50_pct"],
                     m["trend"]["sma20_vs_sma50_pct"], m["breadth"]["advances"],
                     m["breadth"]["declines"], m["breadth"]["pct_above_sma50"],
@@ -298,61 +397,94 @@ def _history_csv(snaps: list, metric_rows: dict) -> str:
                     m["sectors"]["sectors_counted"], m["volume"]["up_events"],
                     m["volume"]["down_events"], m["volatility"]["realised_20d_pct"],
                     m["volatility"]["india_vix"], m["relative"]["outperform_share_pct"],
-                    m["flows"]["fii_net_cr"], s.universe.get("membership_from")])
+                    m["flows"]["fii_net_cr"]])
     return buf.getvalue()
+
+
+def _group_md(name: str, g: dict) -> list:
+    L = [f"### {name}", "", f"*{g['label']}*", "",
+         f"- Sessions: {g['sessions']} ({g['first_session']} .. {g['last_session']}); classifiable "
+         f"{g['classifiable']}; insufficient {g['insufficient']}.",
+         f"- Statistically meaningful (>= {MIN_SESSIONS_FOR_STATS} classifiable): "
+         f"**{'yes' if g['statistically_meaningful'] else 'NO - do not interpret'}**.", "",
+         "| Regime | Final | Candidate (no confirmation) |", "|---|---|---|"]
+    for k in REGIMES:
+        L.append(f"| {k} | {g['counts_by_regime'][k]} | {g['candidate_counts'][k]} |")
+    f, c = g["final"], g["without_confirmation"]
+    L += ["", f"Consecutive segments: {f['segments']}; censored runs (touching a segment edge): "
+              f"{f['censored_runs']}.", "",
+          "| | Switches | One-session reversals (A-B-A) |", "|---|---|---|",
+          f"| Final (with confirmation rule) | {f['switches']} | {f['one_session_reversals']} |",
+          f"| Candidate only | {c['switches']} | {c['one_session_reversals']} |", "",
+          "| Regime | Runs | Average length (sessions) | Longest |", "|---|---|---|---|"]
+    for k, v in f["runs_by_regime"].items():
+        L.append(f"| {k} | {v['runs']} | {v['average_length']} | {v['longest']} |")
+    return L + [""]
 
 
 def _validation_md(sm: dict, snaps: list) -> str:
     ab = {"POSITIVE": "POS", "NEGATIVE": "NEG", "MIXED": "MIX", "NEUTRAL": "NEU",
           "UNAVAILABLE": "-", "ELEVATED": "ELEV", "RISING": "RISE", "FALLING": "FALL",
           "STABLE": "STAB"}
-    p = sm["no_lookahead_proof"]
-    L = ["# Regime historical validation (V1, provisional)", "",
-         f"Calculation version `{sm['calculation_version']}` · generated {sm['generated_at']}", "",
-         "## Sample", "",
-         f"- Constituent OHLCV sessions: {sm['sessions_total']} ({sm['first_session']} .. "
-         f"{sm['end_session']}); benchmark sessions loaded: {sm['benchmark_sessions_loaded']} "
-         f"(from {sm['benchmark_first_session']}).",
-         f"- Classifiable (minimum data met): {sm['eligible_sessions']}; INSUFFICIENT_DATA: "
-         f"{sm['insufficient_sessions']} (first classifiable {sm['first_eligible_session']} - "
-         "BREADTH needs 50 sessions of constituent history for the SMA50 share).",
-         f"- NIFTY 200 membership back-dated (earliest Market Structure list used for earlier "
-         f"sessions): {sm['membership_backdated_sessions']} sessions.",
-         f"- India VIX readings: {sm['vix_sessions']}; FII/DII readings: {sm['flow_sessions']}.",
-         "- This is ~6 months of one market. It is NOT enough for long-cycle validation; every "
-         "threshold is provisional.", "",
-         "## Regime counts", "", "| Regime | Final | Candidate (no confirmation) |", "|---|---|---|"]
-    for k in REGIMES:
-        L.append(f"| {k} | {sm['counts_by_regime'][k]} | {sm['candidate_counts'][k]} |")
-    L += ["", "## Persistence / switching (classifiable sessions)", "",
-          "| | Switches | One-session reversals (A-B-A) |", "|---|---|---|",
-          f"| Final (with confirmation rule) | {sm['final']['switches']} | "
-          f"{sm['final']['one_session_reversals']} |",
-          f"| Candidate only | {sm['without_confirmation']['switches']} | "
-          f"{sm['without_confirmation']['one_session_reversals']} |", "",
-          "| Regime | Runs | Average length (sessions) | Longest |", "|---|---|---|---|"]
-    for k, v in sm["final"]["runs_by_regime"].items():
-        L.append(f"| {k} | {v['runs']} | {v['average_length']} | {v['longest']} |")
-    L += ["", "## Dimension availability (all sessions)", "",
-          "| Dimension | States |", "|---|---|"]
-    for k, v in sm["dimension_states"].items():
+    uq = {POINT_IN_TIME: "POINT-IN-TIME", BACKDATED_UNIVERSE: "APPROXIMATE (back-dated)",
+          UNKNOWN_Q: "UNKNOWN"}
+    p = sm["price_point_in_time_proof"]
+    q = sm["universe_quality_counts"]
+    gp = sm["groups"][PIT]
+    L = ["# Regime historical validation (V1)", "",
+         f"Calculation version `{sm['calculation_version']}` · schema `{sm['schema_version']}` · "
+         f"**{sm['model_status']}** · generated {sm['generated_at']}", "",
+         "## Summary", "",
+         f"- Historical sessions reconstructed: **{sm['sessions_total']}** ({sm['first_session']} .. "
+         f"{sm['end_session']}).",
+         f"- Point-in-time universe sessions: **{q[POINT_IN_TIME]}** (point-in-time membership "
+         f"available from {sm['earliest_point_in_time_session']}).",
+         f"- Back-dated-universe sessions: **{q[BACKDATED_UNIVERSE]}**; unknown-universe sessions: "
+         f"**{q[UNKNOWN_Q]}**.",
+         f"- Insufficient-data sessions: **{sm['insufficient_sessions']}** (first classifiable "
+         f"{sm['first_classifiable_session']}; BREADTH needs 50 sessions of constituent history).",
+         f"- Phase-2 research-eligible sessions (`is_regime_research_eligible`): "
+         f"**{sm['research_eligible_sessions']}**.",
+         f"- PRIMARY validation statistics come ONLY from {PIT} "
+         f"({gp['classifiable']} classifiable sessions): "
+         + ("statistically meaningful." if sm["primary_statistics_meaningful"] else
+            f"**too few to be statistically meaningful** (< {MIN_SESSIONS_FOR_STATS}). Do not "
+            "draw persistence, switching or duration conclusions from them yet."),
+         f"- India VIX readings: {sm['vix_sessions']}; FII/DII readings: {sm['flow_sessions']}. "
+         f"Volume thresholds: {sm['volume_threshold_status']}.", ""]
+    for u in sm["unknown_universe_sessions"]:
+        L.append(f"- UNKNOWN universe {u['session']}: {u['note']}")
+    L += ["", "## What \"point-in-time\" means here", "",
+          "- PRICE DATA: no future price data is used for any session (proof below).",
+          "- UNIVERSE MEMBERSHIP: point-in-time only where historical membership is actually "
+          "stored. Earlier sessions are PRICE-POINT-IN-TIME + BACKDATED-UNIVERSE: exploratory "
+          "only, never validation.", "",
+          "## Validation groups", ""]
+    L += _group_md("PRIMARY - " + PIT, gp)
+    L += _group_md("EXPLORATORY - " + ALL, sm["groups"][ALL])
+    L += _group_md("EXPLORATORY - " + BACKDATED, sm["groups"][BACKDATED])
+    L += ["## Dimension states (EXPLORATORY: all sessions)", "", "| Dimension | States |", "|---|---|"]
+    for k, v in sm["groups"][ALL]["dimension_states"].items():
         L.append(f"| {k} | " + ", ".join(f"{s} {n}" for s, n in sorted(v.items())) + " |")
     L += ["", "## Reconciliation with stored Market Structure artifacts", ""]
     for r in sm["market_structure_reconciliation"]:
         L.append(f"- {r['session']}: " + "; ".join(
             f"{k} {v['classifier']} vs {v['market_structure']} {'OK' if v['match'] else 'DIFF'}"
             for k, v in r.items() if k != "session"))
-    L += ["", "## No-lookahead proof", "",
-          f"Every session was reclassified from inputs reloaded with the store CUT at that "
+    L += ["", "## Price point-in-time proof", "",
+          f"Every session was reclassified from inputs reloaded with the PRICE store cut at that "
           f"session: {p['identical']} / {p['checked']} identical"
-          + (f"; differences: {', '.join(p['differences'])}" if p["differences"] else "") + ".",
+          + (f"; differences: {', '.join(p['differences'])}" if p["differences"] else "") + ". "
+          "This proves no future PRICE data is used. It does not make back-dated universe "
+          "membership point-in-time.",
           "Forward returns are not computed or used anywhere in V1.", "",
           "## Regime history", "",
-          "| Session | Regime | Candidate | Reason | Trend | Breadth | Sectors | Volume | Vol |",
-          "|---|---|---|---|---|---|---|---|---|"]
+          "| Session | Universe | Regime | Candidate | Reason | Trend | Breadth | Sectors | Volume | Vol |",
+          "|---|---|---|---|---|---|---|---|---|---|"]
     for s in snaps:
         st = {x.key: ab.get(x.state, x.state) for x in s.dimensions}
-        L.append(f"| {s.session_date} | {s.regime} | {s.candidate_regime} | {s.reason_code} | "
+        L.append(f"| {s.session_date} | {uq.get(s.universe_quality, s.universe_quality)} | "
+                 f"{s.regime} | {s.candidate_regime} | {s.reason_code} | "
                  + " | ".join(st.get(k, "-") for k in ("TREND", "BREADTH", "SECTORS", "VOLUME",
                                                         "VOLATILITY")) + " |")
     return "\n".join(L) + "\n"
@@ -369,10 +501,16 @@ def main(argv=None) -> int:
     res = build(out_dir, dt.date.fromisoformat(args.end) if args.end else None,
                 lookahead_check=not args.skip_lookahead_check)
     sm = res["summary"]
-    print(f"regime research {sm['calculation_version']}: {sm['sessions_total']} sessions, "
-          f"{sm['eligible_sessions']} classifiable, counts {sm['counts_by_regime']}")
-    print(f"no-lookahead: {sm['no_lookahead_proof']['identical']}/"
-          f"{sm['no_lookahead_proof']['checked']} identical")
+    print(f"regime research {sm['calculation_version']} ({sm['model_status']}): "
+          f"{sm['sessions_total']} reconstructed, universe {sm['universe_quality_counts']}, "
+          f"{sm['insufficient_sessions']} insufficient, point-in-time from "
+          f"{sm['earliest_point_in_time_session']}")
+    for name, g in sm["groups"].items():
+        print(f"  {name}: {g['sessions']} sessions, {g['classifiable']} classifiable, "
+              f"counts {g['counts_by_regime']}")
+    print(f"  research-eligible sessions: {sm['research_eligible_sessions']}")
+    pr = sm["price_point_in_time_proof"]
+    print(f"  price point-in-time proof: {pr['identical']}/{pr['checked']} identical")
     for p in res["paths"]:
         print("  wrote", p)
     return 0

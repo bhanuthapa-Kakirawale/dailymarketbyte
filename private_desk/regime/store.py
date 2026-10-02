@@ -41,7 +41,9 @@ def input_paths(repo: DeskRepository) -> list:
 
 
 def input_key(repo: DeskRepository, version: str | None = None) -> str:
-    return f"{version or model.CALCULATION_VERSION}:{fingerprint(input_paths(repo))}"
+    """Calculation version + snapshot schema + input fingerprint: any of them changing rebuilds."""
+    return (f"{version or model.CALCULATION_VERSION}:{model.SCHEMA_VERSION}:"
+            f"{fingerprint(input_paths(repo))}")
 
 
 class RegimeStore:

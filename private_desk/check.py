@@ -62,6 +62,8 @@ def run(settings: DeskSettings) -> int:
         rq = q.get("regime") or {}
         _line("market regime", f"{rq.get('regime')}  session {rq.get('regime_session')}  "
                                f"{rq.get('status')}  ({rq.get('calculation_version')})")
+        _line("regime universe", f"{rq.get('universe_quality')}  (point-in-time validation from "
+                                 f"{rq.get('point_in_time_from')})")
         _line("regime validation", (rq.get("validation") or {}).get("status"))
         if rq.get("stale"):
             problems.append("market regime stale")

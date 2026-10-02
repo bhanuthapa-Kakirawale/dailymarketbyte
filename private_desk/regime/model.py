@@ -8,10 +8,14 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 
-SCHEMA_VERSION = "private-market-regime-1.0"
+# 1.1: + universe_quality (POINT_IN_TIME / BACKDATED_UNIVERSE / UNKNOWN) and universe provenance
+SCHEMA_VERSION = "private-market-regime-1.1"
 # Bump on ANY change to a metric, threshold or rule: cached snapshots carry it and are rebuilt
 # when it differs (private_desk/regime/store.py).
 CALCULATION_VERSION = "regime-v1.0-provisional"
+# Owner freeze decision (V1): approved for current private context; historical validation is
+# restricted to point-in-time universe sessions; volume thresholds provisional.
+MODEL_STATUS = "FROZEN / PROVISIONAL RESEARCH MODEL"
 
 # regime labels
 BULLISH, BEARISH, NEUTRAL, TRANSITIONAL, INSUFFICIENT_DATA = (
@@ -67,9 +71,11 @@ class MarketRegimeSnapshot:
     conflicting_evidence: tuple      # sentences: evidence against it
     missing_dimensions: tuple        # keys of UNAVAILABLE dimensions
     explanation: str                 # WHY THIS REGIME - built only from the dimensions above
-    universe: dict                   # label / members / membership source (+ backdated flag)
+    universe: dict                   # label / members / list source + provenance + quality note
     generated_at: str
     notes: tuple = field(default_factory=tuple)
+    # 1.1: METADATA, never a regime dimension and never part of WHY THIS REGIME
+    universe_quality: str = "UNKNOWN"
 
     def dimension(self, key: str) -> RegimeDimension | None:
         return next((d for d in self.dimensions if d.key == key), None)
@@ -95,6 +101,7 @@ class MarketRegimeSnapshot:
 
 
 __all__ = ["RegimeDimension", "MarketRegimeSnapshot", "SCHEMA_VERSION", "CALCULATION_VERSION",
+           "MODEL_STATUS",
            "REGIMES", "BULLISH", "BEARISH", "NEUTRAL", "TRANSITIONAL", "INSUFFICIENT_DATA",
            "POSITIVE", "NEGATIVE", "MIXED", "NEUTRAL_STATE", "UNAVAILABLE", "ELEVATED", "RISING",
            "FALLING", "STABLE", "NET_BUYERS", "NET_SELLERS", "BROAD", "NARROW", "BALANCED",

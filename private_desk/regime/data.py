@@ -9,8 +9,10 @@ Sources (all through `DeskRepository`, so read-only by construction):
 * per-constituent OHLCV (quality OK only) placed onto that spine - a row dated on a non-session
   is dropped, a session the stock has no row for stays NaN (never filled);
 * NIFTY 200 membership + NSE Industry sector from the Market Structure artifacts (the latest
-  artifact ON OR BEFORE each session; sessions before the first artifact use the earliest one and
-  are flagged `membership_backdated` - see docs/PRIVATE_MARKET_REGIME.md, known limitations);
+  artifact ON OR BEFORE each session; sessions before the first artifact use the earliest one).
+  Every session carries a UNIVERSE QUALITY (`universe_provenance`): POINT_IN_TIME,
+  BACKDATED_UNIVERSE or UNKNOWN - audit metadata only, it never changes a classification
+  (docs/PRIVATE_MARKET_REGIME.md, "Historical universe limitation");
 * India VIX and FII/DII from the canonical report of EXACTLY that session (context only).
 
 NO LOOKAHEAD: `until(d)` returns a view that physically ends at `d`. The engine only ever
@@ -28,6 +30,18 @@ from ..repository import BENCHMARK_SYMBOL, DeskRepository
 
 LOOKBACK_DAYS = 800          # calendar days of benchmark history loaded (spine + 50-session SMA)
 
+# universe quality (per session; metadata, never a regime input)
+POINT_IN_TIME = "POINT_IN_TIME"            # the session's own stored list, or a carried-forward
+                                           # list proven unchanged by the next stored list
+BACKDATED_UNIVERSE = "BACKDATED_UNIVERSE"  # a LATER list reused for an earlier session
+UNKNOWN = "UNKNOWN"                        # provenance cannot be established
+UNIVERSE_QUALITIES = (POINT_IN_TIME, BACKDATED_UNIVERSE, UNKNOWN)
+BACKDATED_NOTE = ("Historical constituent membership for this session was unavailable; the "
+                  "earliest stored universe was used. Prices remain session-bounded.")
+# sessions back from d whose membership the classification of d reads: the 10-session advance
+# share of d and of d-1 (confirmation rule) and both 5-session volume windows
+WINDOW_BACK = 10
+
 
 @dataclass(frozen=True)
 class RegimeData:
@@ -41,6 +55,8 @@ class RegimeData:
     universe_session: tuple              # [T] Market Structure session the membership came from
     universe_label: str = "NIFTY 200"
     context: dict = field(default_factory=dict)   # session -> report context (VIX / flows)
+    # list session -> {"symbols": frozenset, "source", "source_reference", "retrieved_at"}
+    universe_meta: dict = field(default_factory=dict, compare=False, repr=False)
     rvol_memo: dict = field(default_factory=dict, compare=False, repr=False)
 
     def index_of(self, d: dt.date) -> int | None:
@@ -66,16 +82,75 @@ class RegimeData:
     def last(self) -> dt.date:
         return self.sessions[-1]
 
+    # ------------------------------------------------------------------ universe provenance
+    def universe_provenance(self, j: int) -> dict:
+        """Which constituent list session j used and how far it can be trusted for j.
+
+        POINT_IN_TIME: the list stored for j itself, or the latest earlier list when the next
+        stored list is identical (membership proven unchanged across the gap).
+        BACKDATED_UNIVERSE: the list is dated AFTER j (j precedes the stored universe history).
+        UNKNOWN: no recorded provenance, or a carried-forward list that the next stored list
+        contradicts (membership changed in the gap) or that no later list confirms yet.
+        Later lists are used only to LABEL quality - never as a classification input."""
+        d, src = self.sessions[j], self.universe_session[j]
+        meta = self.universe_meta.get(src) or {}
+        out = {"session_date": d.isoformat(), "universe_source_date": src.isoformat(),
+               "universe_source_reference": meta.get("source_reference"),
+               "universe_source": meta.get("source"),
+               "universe_retrieved_at": meta.get("retrieved_at")}
+        if not meta.get("source_reference"):
+            return {**out, "universe_quality": UNKNOWN,
+                    "universe_note": "Constituent-list provenance is not recorded."}
+        if src > d:
+            return {**out, "universe_quality": BACKDATED_UNIVERSE,
+                    "universe_note": f"{BACKDATED_NOTE} (list of {src})"}
+        if src == d:
+            note = f"Constituent list stored for this session ({meta.get('source_reference')})."
+            ret = str(meta.get("retrieved_at") or "")[:10]
+            if ret and ret > d.isoformat():
+                note += f" Retrieved {ret}, after the session (rebuild)."
+            return {**out, "universe_quality": POINT_IN_TIME, "universe_note": note}
+        later = sorted(k for k in self.universe_meta if k > d)
+        if later and self.universe_meta[later[0]].get("symbols") == meta.get("symbols"):
+            return {**out, "universe_quality": POINT_IN_TIME,
+                    "universe_note": f"No list stored for this session; the {src} list is "
+                                     f"carried forward and the next stored list ({later[0]}) "
+                                     "is identical."}
+        why = (f"the next stored list ({later[0]}) differs - membership changed in the gap"
+               if later else "no later list confirms it yet")
+        return {**out, "universe_quality": UNKNOWN,
+                "universe_note": f"No list stored for this session; the {src} list was carried "
+                                 f"forward, but {why}."}
+
+    def window_universe_quality(self, j: int, back: int = WINDOW_BACK) -> dict:
+        """Universe quality across every session whose membership classifying j reads."""
+        rows = [self.universe_provenance(jj)["universe_quality"]
+                for jj in range(max(0, j - back), j + 1)]
+        worst = (POINT_IN_TIME if all(q == POINT_IN_TIME for q in rows) else
+                 BACKDATED_UNIVERSE if BACKDATED_UNIVERSE in rows else UNKNOWN)
+        return {"window_universe_quality": worst, "window_sessions": len(rows),
+                "window_non_point_in_time_sessions": sum(1 for q in rows if q != POINT_IN_TIME)}
+
 
 def _universes(repo: DeskRepository) -> list:
-    """`[(session, {symbol: {...}})]` for every Market Structure artifact, oldest first."""
+    """`[(session, {symbol: {...}}, universe_block)]` for every Market Structure artifact,
+    oldest first."""
     out = []
     for s in repo.market_structure_sessions():
         data, _ = repo.market_structure(s)
-        cons = ((data or {}).get("universe") or {}).get("constituents")
-        if cons:
-            out.append((s, cons))
+        uni = (data or {}).get("universe") or {}
+        if uni.get("constituents"):
+            out.append((s, uni["constituents"], uni))
     return out
+
+
+def earliest_point_in_time_session(repo: DeskRepository):
+    """The first session with its own stored constituent list - where point-in-time regime
+    validation can start. Discovered from the artifacts, never hard-coded."""
+    for s, _, uni in _universes(repo):
+        if uni.get("source_reference"):
+            return s
+    return None
 
 
 def _report_context(repo: DeskRepository, sessions) -> dict:
@@ -117,16 +192,16 @@ def load_regime_data(repo: DeskRepository, end: dt.date, *, constituents: dict |
     pos = {d: i for i, d in enumerate(sessions)}
 
     if constituents is not None:
-        universes = [(sessions[0], constituents)]
+        universes = [(sessions[0], constituents, {})]     # no provenance -> UNKNOWN
     else:
         universes = _universes(repo)
     if not universes:
         raise SourceUnavailable("no Market Structure artifact holds the NIFTY 200 constituents")
 
-    symbols = sorted({s for _, cons in universes for s in cons})
+    symbols = sorted({s for _, cons, _ in universes for s in cons})
     col = {s: j for j, s in enumerate(symbols)}
     sector = {}
-    for _, cons in universes:                       # later artifacts win (oldest first)
+    for _, cons, _ in universes:                    # later artifacts win (oldest first)
         for s, c in cons.items():
             sector[s] = (c or {}).get("sector") or "Unclassified"
 
@@ -135,7 +210,7 @@ def load_regime_data(repo: DeskRepository, end: dt.date, *, constituents: dict |
     source = []
     for i, d in enumerate(sessions):
         eligible = [u for u in universes if u[0] <= d]
-        u_session, cons = eligible[-1] if eligible else universes[0]
+        u_session, cons, _ = eligible[-1] if eligible else universes[0]
         source.append(u_session)
         for s in cons:
             member[i, col[s]] = True
@@ -160,7 +235,13 @@ def load_regime_data(repo: DeskRepository, end: dt.date, *, constituents: dict |
     return RegimeData(sessions=sessions, symbols=tuple(symbols), sector=sector, close=close,
                       volume=volume, member=member, nifty=nifty,
                       universe_session=tuple(source),
-                      context=_report_context(repo, sessions))
+                      context=_report_context(repo, sessions),
+                      universe_meta={u: {"symbols": frozenset(cons), "source": meta.get("source"),
+                                         "source_reference": meta.get("source_reference"),
+                                         "retrieved_at": meta.get("retrieved_at")}
+                                     for u, cons, meta in universes})
 
 
-__all__ = ["RegimeData", "load_regime_data", "BENCHMARK_SYMBOL"]
+__all__ = ["RegimeData", "load_regime_data", "earliest_point_in_time_session", "BENCHMARK_SYMBOL",
+           "POINT_IN_TIME", "BACKDATED_UNIVERSE", "UNKNOWN", "UNIVERSE_QUALITIES", "BACKDATED_NOTE",
+           "WINDOW_BACK"]

@@ -102,9 +102,13 @@ def regime_quality(svc, session: dt.date | None) -> dict:
     import os
 
     from ..regime import rules as rr
-    from ..regime.model import CALCULATION_VERSION, INSUFFICIENT_DATA, SCHEMA_VERSION
+    from ..regime.data import UNIVERSE_QUALITIES, earliest_point_in_time_session
+    from ..regime.eligibility import research_eligibility
+    from ..regime.model import (CALCULATION_VERSION, INSUFFICIENT_DATA, MODEL_STATUS,
+                                SCHEMA_VERSION)
     from ..regime.research import RESEARCH_DIRNAME
     out = {"calculation_version": CALCULATION_VERSION, "schema_version": SCHEMA_VERSION,
+           "model_status": MODEL_STATUS, "volume_threshold_status": rr.VOLUME_THRESHOLD_STATUS,
            "required": "TREND and BREADTH, plus at least one of SECTORS / VOLUME / VOLATILITY",
            "session": session}
     if session is None:
@@ -123,6 +127,13 @@ def regime_quality(svc, session: dt.date | None) -> dict:
         "window_counts": {k: sum(1 for s in hist if s.regime == k) for k in
                           ("BULLISH", "BEARISH", "NEUTRAL", "TRANSITIONAL", INSUFFICIENT_DATA)},
         "stored_files": svc.regimes.stored_versions(),
+        "universe_quality": snap.universe_quality,
+        "universe_note": (snap.universe or {}).get("universe_note"),
+        "point_in_time_from": earliest_point_in_time_session(svc.repo),
+        "window_universe_coverage": {q: sum(1 for s in hist if s.universe_quality == q)
+                                     for q in UNIVERSE_QUALITIES},
+        "research_eligible": research_eligibility(snap)[0],
+        "research_ineligible_reasons": research_eligibility(snap)[1],
         "dimension_roles": {k: rr.CLASSIFIERS[k][1] for k in rr.DIMENSION_ORDER},
     })
     out["status"] = ("STALE" if r["stale"] else
@@ -132,13 +143,21 @@ def regime_quality(svc, session: dt.date | None) -> dict:
     try:
         with open(path, encoding="utf-8") as fh:
             v = json.load(fh)
+        groups = v.get("groups") or {}
+        pit = groups.get("POINT_IN_TIME_VALIDATED") or {}
+        current = (v.get("calculation_version") == CALCULATION_VERSION
+                   and v.get("schema_version") == SCHEMA_VERSION)
         out["validation"] = {
-            "status": "CURRENT" if v.get("calculation_version") == CALCULATION_VERSION
-            else "OUTDATED_VERSION", "calculation_version": v.get("calculation_version"),
+            "status": "CURRENT" if current else "OUTDATED_VERSION",
+            "calculation_version": v.get("calculation_version"),
             "generated_at": v.get("generated_at"), "end_session": v.get("end_session"),
-            "sessions": v.get("sessions_total"), "eligible": v.get("eligible_sessions"),
-            "insufficient": v.get("insufficient_sessions"), "switches": v.get("regime_switches"),
-            "counts": v.get("counts_by_regime")}
+            "sessions": v.get("sessions_total"), "insufficient": v.get("insufficient_sessions"),
+            "universe_quality_counts": v.get("universe_quality_counts") or {},
+            "point_in_time_from": v.get("earliest_point_in_time_session"),
+            "pit_classifiable": pit.get("classifiable"), "pit_counts": pit.get("counts_by_regime"),
+            "pit_meaningful": v.get("primary_statistics_meaningful"),
+            "min_sessions": v.get("min_sessions_for_statistics"),
+            "research_eligible": v.get("research_eligible_sessions")}
     except (OSError, ValueError):
         out["validation"] = {"status": "NOT_BUILT", "hint": "python -m private_desk.regime.research"}
     return out

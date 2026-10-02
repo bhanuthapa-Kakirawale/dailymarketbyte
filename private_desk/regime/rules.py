@@ -37,6 +37,8 @@ VOLUME_MIN_EVENTS = 20              # fewer unusual-volume events in 5 sessions 
 VOLUME_UP_SHARE = 65.0              # >= share of up-day events = POSITIVE
 VOLUME_DOWN_SHARE = 45.0            # <= = NEGATIVE (asymmetric: see threshold review - the
                                     #    sample's median up-share is ~60%, not 50%)
+VOLUME_THRESHOLD_STATUS = "V1_PROVISIONAL"   # chosen on a ~6-month sample; never optimised
+                                             # against that same sample
 VOL_ELEVATED_PCT = 20.0             # realised 20-session annualised volatility >= ELEVATED
 VOL_CHANGE_PCT = 25.0               # +/- change vs 5 sessions earlier = RISING / FALLING
 RELATIVE_BROAD_PCT = 55.0           # context: share beating NIFTY 50 >= BROAD
@@ -70,7 +72,8 @@ RULES = {
                f"the last {mt.VOLUME_WINDOW} sessions, split by the stock's day direction. NEUTRAL "
                f"(quiet): fewer than {VOLUME_MIN_EVENTS} events. POSITIVE: up-day share >= "
                f"{VOLUME_UP_SHARE:g}%. NEGATIVE: up-day share <= {VOLUME_DOWN_SHARE:g}%. "
-               "MIXED: between."),
+               f"MIXED: between. Thresholds {VOLUME_THRESHOLD_STATUS}; volume is subordinate to "
+               "trend, breadth and sectors."),
     "VOLATILITY": (f"NIFTY 50 {mt.RV_WINDOW}-session realised volatility (annualised). ELEVATED: "
                    f">= {VOL_ELEVATED_PCT:g}% - blocks BULLISH. RISING / FALLING: changed by "
                    f">= {VOL_CHANGE_PCT:g}% vs {mt.RV_LAG} sessions earlier. STABLE otherwise. "

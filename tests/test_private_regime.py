@@ -446,11 +446,13 @@ def test_historical_reconstruction_matches_store_cut_at_each_session(desk_out):
     from private_desk.regime.research import build
     res = build(desk_out, SESSION, now=NOW_AFTER)
     sm = res["summary"]
-    proof = sm["no_lookahead_proof"]
+    proof = sm["price_point_in_time_proof"]
     assert proof["checked"] == sm["sessions_total"] > 50
     assert proof["identical"] == proof["checked"] and not proof["differences"]
+    assert "constituent lists not cut" in proof["scope"]            # the claim is PRICE-only
     assert sm["forward_returns_used"] is False
-    assert set(sm["counts_by_regime"]) == set(model.REGIMES)
+    for g in sm["groups"].values():
+        assert set(g["counts_by_regime"]) == set(model.REGIMES)
     for p in res["paths"]:
         assert os.path.dirname(p) == os.path.join(desk_out, "private_desk", "regime_research")
 
@@ -516,3 +518,194 @@ def test_snapshot_has_no_order_fields():
     for cls in (model.MarketRegimeSnapshot, model.RegimeDimension):
         for name in cls.__dataclass_fields__:
             assert not set(name.lower().split("_")) & set(FORBIDDEN_FIELD_TOKENS), name
+
+
+# ================================================================== historical universe correction
+from private_desk.regime.data import BACKDATED_UNIVERSE, POINT_IN_TIME, UNKNOWN  # noqa: E402
+from private_desk.regime.eligibility import (is_regime_research_eligible,  # noqa: E402
+                                             research_eligibility)
+
+RULE_TABLE_SHA256 = "08c0e36035cc3f93162bbe33f5706ede7df9ba55581eca395ef94b7fe2645b90"
+
+
+def _with_lists(data, lists: dict, used):
+    """`lists`: list session -> symbol set (with a synthetic source reference); `used`: session
+    index -> the list session it reads (membership arrays are unchanged)."""
+    meta = {d: {"symbols": frozenset(s), "source": "NSE_CONSTITUENT_FILE",
+                "source_reference": "synthetic://nifty200", "retrieved_at": d.isoformat()}
+            for d, s in lists.items()}
+    return dataclasses.replace(data, universe_meta=meta, rvol_memo={},
+                               universe_session=tuple(used(i) for i in range(len(data.sessions))))
+
+
+def _regime_fields(s):
+    d = _strip(s)
+    d.pop("universe")
+    d.pop("universe_quality")
+    return d
+
+
+def test_pre_history_sessions_are_backdated_and_record_their_source(svc):
+    sessions = svc.sessions()
+    old = svc.regime(sessions[-2])["snapshot"]                     # before the only stored list
+    assert old.universe_quality == BACKDATED_UNIVERSE
+    assert old.universe["universe_source_date"] == SESSION.isoformat()
+    assert old.universe["universe_source_reference"] == "synthetic://nifty200"
+    assert "earliest stored universe was used" in old.universe["universe_note"]
+    cur = svc.regime(SESSION)["snapshot"]
+    assert cur.universe_quality == POINT_IN_TIME
+    assert cur.universe["universe_source_date"] == SESSION.isoformat()
+    assert cur.universe["session_date"] == SESSION.isoformat()
+
+
+def test_universe_quality_is_metadata_never_a_classification_input():
+    data = _bull()
+    days = data.sessions
+    names = set(data.symbols)
+    backdated = _with_lists(data, {days[-1]: names}, lambda i: days[-1])
+    point_in_time = _with_lists(data, {d: names for d in days}, lambda i: days[i])
+    d = days[-10]
+    a, b = _classify(backdated, d), _classify(point_in_time, d)
+    assert a.universe_quality == BACKDATED_UNIVERSE and b.universe_quality == POINT_IN_TIME
+    assert _regime_fields(a) == _regime_fields(b)
+    assert "universe" not in a.explanation.lower()                  # WHY stays about the market
+    assert all(x.key != "UNIVERSE" for x in a.dimensions)
+
+
+def test_carried_forward_list_is_point_in_time_only_when_bracketed_by_an_identical_list():
+    data = _bull()
+    days, names = data.sessions, set(data.symbols)
+
+    def used(i):
+        return days[0] if i < 60 else days[60]
+    same = _with_lists(data, {days[0]: names, days[60]: names}, used)
+    changed = _with_lists(data, {days[0]: names, days[60]: names - {"SYN-A00"}}, used)
+    assert same.universe_provenance(30)["universe_quality"] == POINT_IN_TIME
+    assert changed.universe_provenance(30)["universe_quality"] == UNKNOWN
+    assert "differs" in changed.universe_provenance(30)["universe_note"]
+    tail = _with_lists(data, {days[0]: names}, lambda i: days[0])
+    assert tail.universe_provenance(len(days) - 1)["universe_quality"] == UNKNOWN   # unconfirmed
+    no_ref = dataclasses.replace(data, universe_meta={})
+    assert no_ref.universe_provenance(5)["universe_quality"] == UNKNOWN
+
+
+def test_research_eligibility_gate():
+    data = _bull()
+    days, names = data.sessions, set(data.symbols)
+    # every session reads its own identical list -> fully point-in-time
+    own = _with_lists(data, {d: names for d in days}, lambda i: days[i])
+    s = _classify(own)
+    ok, reasons = research_eligibility(s)
+    assert s.universe_quality == POINT_IN_TIME and ok and not reasons
+    assert is_regime_research_eligible(s)
+    bd = _classify(_with_lists(data, {days[-1]: names}, lambda i: days[-1]), days[-5])
+    assert not is_regime_research_eligible(bd)
+    assert "UNIVERSE_BACKDATED_UNIVERSE" in research_eligibility(bd)[1]
+    assert not is_regime_research_eligible(dataclasses.replace(s, universe_quality=UNKNOWN))
+    short = _data(n=40)
+    short_s = _classify(_with_lists(short, {d: names for d in short.sessions},
+                                    lambda i: short.sessions[i]))
+    assert short_s.regime == INSUFFICIENT_DATA and not is_regime_research_eligible(short_s)
+    # point-in-time on the session itself, but its lookback windows still read back-dated lists
+    first = _with_lists(data, {days[-3]: names}, lambda i: days[-3])
+    s3 = _classify(first, days[-3])
+    assert s3.universe_quality == POINT_IN_TIME
+    assert "WINDOW_UNIVERSE_NOT_POINT_IN_TIME" in research_eligibility(s3)[1]
+
+
+def test_backdated_sessions_remain_viewable_with_an_understated_badge(client, svc):
+    prev = svc.sessions()[-2]
+    r = client.get(f"/regime?session={prev}")
+    assert r.status_code == 200
+    assert "APPROXIMATE UNIVERSE" in r.text and "Prices remain session-bounded" in r.text
+    assert "known limitation" not in r.text                         # a badge, not an alarm banner
+    hist = client.get("/regime").text
+    assert ">APPROX<" in hist and ">PIT<" in hist and "point-in-time universe only" in hist
+    for url in ("/", "/regime"):                                     # current session: no warning
+        top = client.get(url).text.split("Recent regime history")[0]
+        assert "APPROXIMATE UNIVERSE" not in top and "UNIVERSE UNKNOWN" not in top
+
+
+def test_research_separates_primary_and_exploratory_statistics(desk_out):
+    from private_desk.regime.research import build
+    res = build(desk_out, SESSION, now=NOW_AFTER, lookahead_check=False)
+    sm = res["summary"]
+    g = sm["groups"]
+    q = sm["universe_quality_counts"]
+    assert sm["primary_group"] == "POINT_IN_TIME_VALIDATED"
+    assert g["POINT_IN_TIME_VALIDATED"]["sessions"] == q[POINT_IN_TIME] == 1
+    assert g["BACKDATED_UNIVERSE"]["sessions"] == q[BACKDATED_UNIVERSE] > 50
+    assert sum(g["POINT_IN_TIME_VALIDATED"]["counts_by_regime"].values()) == q[POINT_IN_TIME]
+    assert g["ALL_RECONSTRUCTED"]["sessions"] == sm["sessions_total"]
+    assert g["ALL_RECONSTRUCTED"]["label"].startswith("EXPLORATORY")
+    assert g["BACKDATED_UNIVERSE"]["label"].startswith("EXPLORATORY")
+    assert g["POINT_IN_TIME_VALIDATED"]["label"].startswith("PRIMARY")
+    assert sm["primary_statistics_meaningful"] is False
+    assert sm["earliest_point_in_time_session"] == SESSION.isoformat()
+    assert sm["research_eligible_sessions"] == 0                     # windows still back-dated
+    root = os.path.join(desk_out, "private_desk", "regime_research")
+    report = open(os.path.join(root, "validation_report.md"), encoding="utf-8").read().lower()
+    for text in ("PRIMARY - POINT_IN_TIME_VALIDATED", "EXPLORATORY - ALL_RECONSTRUCTED",
+                 "PRICE-POINT-IN-TIME + BACKDATED-UNIVERSE", "too few to be statistically meaningful"):
+        assert text.lower() in report, text
+    import csv as _csv
+    rows = list(_csv.DictReader(open(os.path.join(root, "regime_history.csv"), encoding="utf-8")))
+    assert {r["validation_group"] for r in rows} == {"POINT_IN_TIME_VALIDATED", "BACKDATED_UNIVERSE"}
+    assert all(r["universe_source_date"] for r in rows)
+
+
+def test_data_quality_reports_universe_coverage(svc, client):
+    q = svc.quality(SESSION)["regime"]
+    assert q["universe_quality"] == POINT_IN_TIME
+    assert q["point_in_time_from"] == SESSION
+    assert q["window_universe_coverage"][BACKDATED_UNIVERSE] > 0
+    assert q["model_status"] == model.MODEL_STATUS == "FROZEN / PROVISIONAL RESEARCH MODEL"
+    html = client.get("/quality").text
+    assert "Point-in-time validation from" in html and "Universe coverage (window)" in html
+
+
+def test_volume_thresholds_unchanged_and_provisional():
+    assert (rules.VOLUME_UP_SHARE, rules.VOLUME_DOWN_SHARE, rules.VOLUME_MIN_EVENTS) == (65.0, 45.0, 20)
+    assert rules.VOLUME_THRESHOLD_STATUS == "V1_PROVISIONAL"
+    assert "V1_PROVISIONAL" in rules.RULES["VOLUME"]
+    assert (rules.TREND_FLAT_SMA50_PCT, rules.TREND_FLAT_SPREAD_PCT, rules.BREADTH_HIGH_PCT,
+            rules.BREADTH_LOW_PCT, rules.PERSIST_MID_PCT, rules.PERSIST_BAND_PCT, rules.WASHOUT_PCT,
+            rules.VOL_ELEVATED_PCT, rules.VOL_CHANGE_PCT) == (1.0, 0.5, 60.0, 40.0, 50.0, 5.0,
+                                                              80.0, 20.0, 25.0)
+    assert model.CALCULATION_VERSION == "regime-v1.0-provisional"
+
+
+def test_regime_rule_table_is_frozen():
+    """Every combination of dimension states -> (regime, reason), plus the confirmation rule,
+    hashed. Pins BULLISH / BEARISH / NEUTRAL / TRANSITIONAL / gate behaviour exactly."""
+    import hashlib
+    import itertools
+    s5 = [POSITIVE, NEGATIVE, MIXED, NEUTRAL_STATE, UNAVAILABLE]
+    rows = []
+    for t, b, s, v, vol in itertools.product(s5, s5, [POSITIVE, NEGATIVE, MIXED, UNAVAILABLE], s5,
+                                             ["ELEVATED", "RISING", "FALLING", "STABLE", UNAVAILABLE]):
+        dims = _dims(TREND=t, BREADTH=b, SECTORS=s, VOLUME=v, VOLATILITY=vol)
+        rows.append(f"{t}|{b}|{s}|{v}|{vol}->{rules.decide(dims)}")
+    regimes = [BULLISH, BEARISH, NEUTRAL, TRANSITIONAL, INSUFFICIENT_DATA]
+    for c, p in itertools.product(regimes, regimes + [None]):
+        rows.append(f"{c}<{p}->{rules.confirm(c, 'X', p)}")
+    assert len(rows) == 2530
+    assert hashlib.sha256("\n".join(rows).encode()).hexdigest() == RULE_TABLE_SHA256
+
+
+def test_latest_real_session_is_point_in_time_and_unaffected_by_universe_metadata():
+    out = os.path.join(os.path.dirname(DESK), "output")
+    if not os.path.isfile(os.path.join(out, "data", "market_ohlcv.db")):
+        pytest.skip("no local production stores on this machine")
+    from private_desk.regime.data import load_regime_data
+    from private_desk.repository import DeskRepository
+    repo = DeskRepository(out)
+    if not repo.market_structure_sessions():
+        pytest.skip("no stored constituent list")
+    latest = repo.market_structure_sessions()[-1]
+    data = load_regime_data(repo, latest)
+    s = _classify(data, latest)
+    assert s.universe_quality == POINT_IN_TIME
+    stripped = _classify(dataclasses.replace(data, universe_meta={}, rvol_memo={}), latest)
+    assert stripped.universe_quality == UNKNOWN
+    assert _regime_fields(s) == _regime_fields(stripped)

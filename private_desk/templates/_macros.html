@@ -68,10 +68,17 @@
 <span class="rl rl-{{ r | lower }}" title="market environment label - context, not a signal">{{ r | replace('_', ' ') }}</span>
 {%- endmacro %}
 
+{% macro uq(g, always=false) -%}
+{% set q = g.universe_quality %}{% set note = (g.universe or {}).universe_note or '' %}
+{% if q == 'POINT_IN_TIME' %}{% if always %}<span class="uq uq-pit" title="{{ note }}">POINT-IN-TIME</span>{% endif %}
+{% elif q == 'BACKDATED_UNIVERSE' %}<span class="uq uq-bd" title="Historical constituent membership for this session was unavailable; the earliest stored universe was used. Prices remain session-bounded.">APPROXIMATE UNIVERSE</span>
+{% else %}<span class="uq uq-unk" title="{{ note or 'Constituent-list provenance cannot be established.' }}">UNIVERSE UNKNOWN</span>{% endif %}
+{%- endmacro %}
+
 {% macro regime_card(g, session, link=true) -%}
 <div class="regime-card">
   <div class="rg-h"><span class="rg-k">Market regime</span> {{ rlabel(g.regime) }}
-    <span class="dim">as of {{ g.session_date }}</span>
+    <span class="dim">as of {{ g.session_date }}</span> {{ uq(g) }}
     {% if link %}<a href="/regime?session={{ session }}" class="rg-more">detail →</a>{% endif %}</div>
   {% if g.dimensions %}
   <table class="rg-dims">

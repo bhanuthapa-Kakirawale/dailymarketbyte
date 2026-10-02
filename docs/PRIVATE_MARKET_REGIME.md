@@ -1,8 +1,19 @@
 # Private market regime classifier (V1, provisional)
 
 Package `private_desk/regime/`. Calculation version `regime-v1.0-provisional`, snapshot schema
-`private-market-regime-1.0`. PRIVATE / LOCAL ONLY: part of the Private Trading Intelligence Desk
+`private-market-regime-1.1`. PRIVATE / LOCAL ONLY: part of the Private Trading Intelligence Desk
 (docs/PRIVATE_DESK_USER_GUIDE.md), never imported by REPORT / PRE / POST (test-enforced).
+
+**STATUS: FROZEN / PROVISIONAL RESEARCH MODEL** (`model.MODEL_STATUS`, owner decision, Oct 2026):
+- approved for current private context;
+- deterministic and explainable;
+- not a forecast and not a trade signal;
+- historical validation is restricted to point-in-time universe sessions (section 6);
+- the volume thresholds are provisional until more history accumulates.
+
+The rule table is frozen. `tests/test_private_regime.py::test_regime_rule_table_is_frozen` hashes
+every combination of dimension states plus the confirmation rule. Changing a rule or a threshold
+is a new calculation version and needs owner approval.
 
 ## 1. What a market regime is, and what it is not
 
@@ -86,7 +97,8 @@ split by that stock's day direction.
 - NEGATIVE: share <= 45%.
 - MIXED: in between.
 The thresholds are asymmetric on purpose: in the stored sample the median up-share is about 60%,
-so 50% is not neutral (see section 6).
+so 50% is not neutral. Status **V1_PROVISIONAL** (section 6). Volume is subordinate to trend,
+breadth and sectors.
 
 ### STRESS: can only block BULLISH
 
@@ -141,47 +153,139 @@ reproducible from any history that covers its windows.
 Why it exists (measured on the 82 classifiable sessions): without it, 27 switches and 9
 one-session reversals (A-B-A). With it, 15 switches and 5 reversals.
 
-## 5. No lookahead
+## 5. No lookahead: price data vs universe membership
 
-Session d is classified from `RegimeData.until(d)`, a view that physically ends at d. Every
-window looks backwards (SMA, 10-session advance share, 20-session returns, 5-session volume
-events, realised volatility). No forward return is computed anywhere in the package.
+Two separate claims, never mixed.
 
-Proof, tested and in the research artifact: every historical session is reclassified from
-inputs **reloaded with the store cut at that session**, and the result must be byte-identical.
-Result: 131 / 131 identical. `tests/test_private_regime.py` also overwrites every row after d
-with random values and checks that the session-d result does not change.
+**PRICE DATA: no future data is ever used.** Session d is classified from `RegimeData.until(d)`,
+a view that physically ends at d. Every window looks backwards: SMA, 10-session advance share,
+20-session returns, 5-session volume events, realised volatility. No forward return is computed
+anywhere in the package. Proof, tested and in the research artifact: every historical session is
+reclassified from inputs reloaded with the PRICE store (OHLCV, benchmark, report context) cut at
+that session, and the result must be byte-identical. Result: 131 / 131 identical.
+`tests/test_private_regime.py` also overwrites every row after d with random values and checks
+that the session-d result does not change.
 
-Known limitation: NIFTY 200 **membership** is not recorded historically. Sessions before the
-first stored Market Structure list (2026-09-24) use that earliest list. Those snapshots are
-flagged `membership_backdated` and the detail page says so. This is a membership approximation,
-not price lookahead: no price, volume or report value after d is ever read.
+**UNIVERSE MEMBERSHIP: point-in-time only where historical membership is actually stored.**
+The price proof does not cut the constituent lists, and it is not a claim that a historical
+session's NIFTY 200 membership was known on that day. That is what the universe-quality label
+reports (section 6). A reconstructed session that uses a later list is
+**PRICE-POINT-IN-TIME + BACKDATED-UNIVERSE**. It is never described as fully point-in-time.
 
-## 6. Historical sample and validation (2026-10-02 build)
+## 6. Historical universe limitation
 
-`python -m private_desk.regime.research` writes `output/private_desk/regime_research/`:
-`distributions.json`, `regime_threshold_review.md`, `regime_history.csv`,
-`validation_summary.json`, `validation_report.md`.
+Exact historical NIFTY 200 membership is unavailable before the stored universe history begins.
+The first session with its own stored constituent list is **2026-09-24**. This date is
+discovered from the Market Structure artifacts, never hard-coded
+(`data.earliest_point_in_time_session`). No future prices are used for any session, but
+earlier sessions reuse a later constituent list. Those sessions are exploratory only. Primary
+validation starts where point-in-time membership is available.
 
-- Sample: **131** sessions with constituent OHLCV (2026-03-23 .. 2026-10-01). The benchmark goes
-  back to 2025-09-23 (253 sessions).
-- **82 classifiable** sessions (from 2026-06-08), **49 INSUFFICIENT_DATA**: BREADTH needs 50
-  sessions of constituent history.
-- Final counts: BEARISH 17, BULLISH 3, NEUTRAL 7, TRANSITIONAL 55, INSUFFICIENT_DATA 49.
-- Runs: one 17-session BEARISH run (08 Sep - 01 Oct), one 3-session BULLISH run (06-10 Aug), six
-  NEUTRAL runs averaging 1.2 sessions, eight TRANSITIONAL runs averaging 6.9.
-- The remaining flicker is NEUTRAL <-> TRANSITIONAL in the July range, where the index crossed
-  SMA20 back and forth (TREND MIXED <-> POSITIVE). That is a true borderline, not noise from a
-  single metric.
+### Universe quality (snapshot field `universe_quality`, schema 1.1)
+
+| Value | Meaning |
+|---|---|
+| `POINT_IN_TIME` | The session's own stored list; or the latest earlier list carried forward when the NEXT stored list is identical, which proves membership was unchanged across the gap. |
+| `BACKDATED_UNIVERSE` | A list dated AFTER the session was reused (the session precedes the stored history). |
+| `UNKNOWN` | Provenance not recorded; or a carried-forward list that the next stored list contradicts (membership changed in the gap) or that no later list confirms yet. |
+
+Every snapshot also records `universe_source_date`, `session_date`, `universe_source_reference`
+(the NSE constituent-file URL), `universe_retrieved_at`, `universe_note`, and the
+`window_universe_quality` of every session whose membership the classification read. That
+covers the 10-session advance-share windows of d and of d-1 (confirmation rule) and both
+5-session volume windows (`WINDOW_BACK = 10`).
+
+Universe quality is **metadata**. It never changes the regime, its dimensions or WHY THIS
+REGIME, and it is not a regime dimension (test-enforced). Later lists are used only to LABEL
+quality. The label can upgrade from UNKNOWN to POINT_IN_TIME when a later identical list
+arrives, and the snapshot cache rebuilds because the input fingerprint changes.
+
+Verified on the stored lists (2 Oct 2026). The 24, 25 and 28 Sep lists are identical. The 30 Sep
+list differs by 7 in / 7 out: APARINDS, HINDCOPPER, LICI, MAHABANK, MEESHO, NLCINDIA and VAML in;
+ALKEM, COROMANDEL, HUDCO, KPITTECH, SHREECEM, TATAELXSI and TATAINVEST out. That is the
+semi-annual rebalance. 29 Sep has no list of its own, so its membership is **UNKNOWN**. The 24 Sep
+list was retrieved on 26 Sep during a rebuild. It is identical to the 25 and 28 Sep lists and is
+treated as point-in-time; its note says so.
+
+### Validation groups (`validation_summary.json`, `validation_report.md`, `regime_history.csv`)
+
+| Group | Contents | Use |
+|---|---|---|
+| `POINT_IN_TIME_VALIDATED` | sessions with `universe_quality = POINT_IN_TIME` | **PRIMARY**: the only group any validation claim may use (counts, persistence, switching, durations, one-session reversals, dimension validation, Phase 2) |
+| `ALL_RECONSTRUCTED` | every reconstructed session | EXPLORATORY: classifier behaviour only |
+| `BACKDATED_UNIVERSE` | the back-dated sessions | EXPLORATORY / APPROXIMATE |
+
+Run statistics are computed over CONSECUTIVE sessions only: a gap in a group ends a segment, and
+runs touching a segment edge are counted as censored. Below 60 classifiable sessions a group's
+statistics are listed but explicitly marked NOT statistically meaningful.
+
+### Results (build of 2026-10-02, latest session 2026-10-01)
+
+- Reconstructed: **131** sessions (2026-03-23 .. 2026-10-01). The benchmark goes back to
+  2025-09-23 (253 sessions).
+- Universe quality: **5 POINT_IN_TIME** (24, 25, 28, 30 Sep, 1 Oct), **125 BACKDATED_UNIVERSE**,
+  **1 UNKNOWN** (29 Sep).
+- INSUFFICIENT_DATA: **49** (all before 2026-06-08; BREADTH needs 50 sessions of constituent
+  history).
+- PRIMARY (point-in-time), 5 classifiable sessions: BEARISH 5. There are 0 switches in 2
+  consecutive segments (24-28 Sep and 30 Sep - 1 Oct, split by the UNKNOWN 29 Sep), and both runs
+  are censored. **This is far too small to be statistically meaningful.** Persistence, switching
+  and duration cannot be validated yet.
+- EXPLORATORY (all reconstructed), 82 classifiable sessions:
+  - BEARISH 17, BULLISH 3, NEUTRAL 7, TRANSITIONAL 55, INSUFFICIENT_DATA 49;
+  - 15 switches and 5 one-session reversals (27 and 9 without the confirmation rule);
+  - one 17-session BEARISH run, one 3-session BULLISH run, six NEUTRAL runs averaging 1.2
+    sessions, eight TRANSITIONAL runs averaging 6.9.
+
+  These describe classifier behaviour on a back-dated universe, not validation.
 - Reconciliation: classifier advances / declines / unusual volume equal the stored Market
   Structure artifact counts on all 5 sessions that have one.
 - India VIX: 7 readings. FII/DII: 6 readings.
 
 **This is about 6 months of one market** (a March-April stress episode, a June-August range, a
-September decline). It is NOT enough for long-cycle validation. The thresholds are conventional
-round numbers, checked against these distributions, not fitted to them, and V1 is
-**provisional** until more history accumulates. No profitability conclusion is drawn or
-implied.
+September decline). Every threshold is a conventional round number, checked against the
+exploratory distributions, not fitted to them, and **must not be optimised against this same
+sample**. No profitability conclusion is drawn or implied.
+
+### NEUTRAL and TRANSITIONAL frequency
+
+TRANSITIONAL is frequent and NEUTRAL runs are short (exploratory sample). This may reflect
+genuinely conflicting evidence in the available market sample, for example the July range where
+the index crossed its 20-session average back and forth. **No rule is changed solely to force
+a desired distribution of labels.**
+
+### Volume thresholds: `V1_PROVISIONAL`
+
+The 65% / 45% up-share thresholds (`rules.VOLUME_THRESHOLD_STATUS`) were chosen on the limited
+~6-month sample. They are not retuned and not optimised against that sample. Volume
+participation is subordinate to (1) trend, (2) breadth and (3) sectors: it can never overturn
+them when they agree.
+
+### Phase 2 research gate: `eligibility.is_regime_research_eligible(snapshot)`
+
+The gate returns True only when ALL of these hold:
+1. the session is classifiable: neither the regime nor this session's candidate is
+   INSUFFICIENT_DATA;
+2. `universe_quality == POINT_IN_TIME`;
+3. source alignment passes:
+   - `window_universe_quality == POINT_IN_TIME`;
+   - the constituent list is dated on or before the session;
+   - every dimension describes exactly this session.
+
+`research_eligibility()` returns the failed reasons. Future Phase 2 work must use this gate by
+default. **BACKDATED_UNIVERSE (and UNKNOWN) sessions are excluded from:**
+- forward-return studies;
+- MFE / MAE studies;
+- regime-conditioned Radar performance;
+- threshold optimisation;
+- strategy research.
+
+They stay excluded unless the historical universe is later recovered.
+
+Today **0** sessions are eligible. Every point-in-time session's lookback windows still read
+back-dated or UNKNOWN (29 Sep) membership. If a constituent list is stored every session from
+now on, the first fully eligible session is **2026-10-15**: the eleventh session after 29 Sep on
+the NSE calendar.
 
 ## 7. Where it shows (Private Desk)
 
@@ -191,11 +295,28 @@ implied.
 - **/regime**: current classification, the rule applied, supporting and conflicting evidence,
   every dimension with its numbers, rule and source (sector table, 5-session volume table), the
   last 30 sessions of regime history, and the full rule set.
+- **Universe-quality badges** (understated, metadata, not part of WHY):
+  - the history table has a `Univ` column: PIT / APPROX / UNKN, with a "point-in-time universe
+    only" filter;
+  - a back-dated session's page shows an `APPROXIMATE UNIVERSE` badge with the tooltip
+    "Historical constituent membership for this session was unavailable; the earliest stored
+    universe was used. Prices remain session-bounded." plus a one-line note;
+  - the dashboard card shows a badge only when the viewed session is not point-in-time. The
+    current session shows no warning.
 - **Stock page** (Sector context): "Market regime (date): LABEL", context only.
-- **Data Quality**: classifier version, latest regime session and freshness (STALE when older
-  than the latest completed session), required / available / unavailable dimensions, membership
-  source, recent-window counts, historical-validation status (CURRENT / OUTDATED_VERSION /
-  NOT_BUILT), stored snapshot files.
+- **Data Quality** shows:
+  - classifier version and model status;
+  - latest regime session and freshness (STALE when older than the latest completed session);
+  - the latest session's universe quality;
+  - "Point-in-time validation from <date>", discovered from the artifacts;
+  - Phase 2 eligibility of the latest session with its reasons;
+  - required / available / unavailable dimensions;
+  - universe coverage, both for the recent window and for the whole history (POINT_IN_TIME /
+    BACKDATED_UNIVERSE / UNKNOWN);
+  - the PRIMARY (point-in-time) validation counts with a "not statistically meaningful" flag;
+  - the volume-threshold status;
+  - historical-validation status (CURRENT / OUTDATED_VERSION / NOT_BUILT);
+  - stored snapshot files.
 - **Radar CSV** gains a `market_regime` column. The **PrivateCandidatePacket** (schema 1.1)
   gains `market_regime` = {label, session_date, calculation_version, dimension states,
   reason_code}. Context only, with no order fields (test-enforced).
@@ -203,8 +324,8 @@ implied.
 ## 8. Storage and performance
 
 Snapshots are DERIVED and rebuildable: `output/private_desk/regime/regime_snapshots_<version>.json`,
-keyed by calculation version + a fingerprint of the OHLCV store, the market-history store and
-the Market Structure artifacts. Any change rebuilds. Deleting the folder only costs a
+keyed by calculation version + snapshot schema version + a fingerprint of the OHLCV store, the
+market-history store and the Market Structure artifacts. Any change rebuilds. Deleting the folder only costs a
 recompute (about 1 s for the dashboard session, about 1 s for a 30-session history). The
 dashboard computes only the session shown (plus the previous session's candidate). Full
 historical validation runs only from the research command. Nothing is written to any DMB
@@ -212,7 +333,8 @@ database.
 
 ## 9. Future research (not in V1)
 
-The snapshots carry session_date + label + dimension states + calculation_version, so Phase 2
-can join them to Radar setup outcomes. Example question: does Volume + Structure behave
+The snapshots carry session_date + label + dimension states + calculation_version +
+universe_quality, so Phase 2 can join them to Radar setup outcomes, through
+`is_regime_research_eligible` only (section 6). Example question: does Volume + Structure behave
 differently in BULLISH vs BEARISH sessions? V1 computes no forward return and makes no
 performance claim.

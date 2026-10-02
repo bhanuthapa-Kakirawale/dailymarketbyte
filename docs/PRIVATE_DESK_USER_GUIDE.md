@@ -61,9 +61,10 @@ evening job is still writing, a page may say DATA UNAVAILABLE. Reload it a minut
 | **Dashboard** | *What deserves attention first?* Market context → what changed today → today's **attention set** (about 8-12 candidates) → sector pulse. It is a SUBSET. |
 | **Radar** | *Show me everything.* The **complete** candidate list, with every column, the filters and a CSV download. It is the authoritative list. |
 | **Stock Explorer** | Every NIFTY 200 constituent, searchable. Any stock opens its intelligence page, whether or not it is a candidate. |
+| **Regime** | The market regime of the session: the rule applied, supporting and conflicting evidence, every dimension with its numbers, rule and source, the last 30 sessions of regime history, and the full V1 rule set (docs/PRIVATE_MARKET_REGIME.md). |
 | **Sectors** | NIFTY 200 breadth, the metric table with coverage and definitions, NSE sectoral indices (a separate universe), and the per-sector table with a reconciliation row. |
 | **History** | Every recorded Radar appearance. Filter by date range, symbol, sector, attention, family, detector, novelty and appearance. Shows how often each stock appeared. |
-| **Data Quality** | Source freshness, database health, Radar run markers and issues, detector-replay reconciliation, OHLCV coverage (missing or stale symbols), Market Structure coverage, official snapshot status, and recent DMB runs. |
+| **Data Quality** | Source freshness, database health, Radar run markers and issues, detector-replay reconciliation, OHLCV coverage (missing or stale symbols), Market Structure coverage, official snapshot status, the regime classifier's status (version, freshness, available dimensions, historical validation), and recent DMB runs. |
 
 ### Dashboard = attention subset, Radar = complete set
 
@@ -122,8 +123,21 @@ Click an item to open the stock page. "All changes by type" expands the full lis
 
 ### Market context (dashboard)
 
-DMB has **no regime classifier**, so the desk shows no BULLISH or BEARISH label. It shows the
-facts instead:
+The left card is the **market regime**: BULLISH, BEARISH, NEUTRAL, TRANSITIONAL or
+INSUFFICIENT_DATA. It comes from the deterministic classifier in docs/PRIVATE_MARKET_REGIME.md
+(no model, no score). The card shows:
+- the label and the session it describes;
+- the state of every dimension: Index trend, Breadth, Sector participation, Volume
+  participation (these four decide), Volatility (a stress check that can only block BULLISH),
+  and Relative strength and Institutional flow (context only);
+- **Why**: the rule that fired and the numbers each state rests on;
+- any unavailable dimension.
+
+`detail →` opens the **Regime** page. The label describes the current environment. It is not a
+forecast or a recommendation, and it never changes the Radar candidates, their order or the
+attention set.
+
+To the right are the session's plain facts:
 - the NIFTY 50 close, change and range, Bank NIFTY, India VIX and FII/DII flows. These come from
   the canonical report of that session, with each number's validation status.
 - NIFTY 200 advances, declines and unchanged, unusual volume, range events, and how many sectors
@@ -219,6 +233,7 @@ All of these are read-only. Nothing is fetched.
 | NIFTY, VIX, flows, sectoral indices | the canonical report in `output/reports/` |
 | Official lists | `output/official_snapshots/<SESSION>/` (checksum-verified) |
 | Pipeline status, issues | `output/radar/daily_radar_<SESSION>.json` |
+| Market regime | `private_desk.regime` over the OHLCV store (NIFTY 50 + NIFTY 200), the Market Structure constituent lists and the canonical report, from data up to that session only |
 
 **Detector replay and reconciliation.** The candidate history stores *which* rules fired, but
 not the values behind them. The desk recomputes the values by running the same detector chain
@@ -242,14 +257,20 @@ the nearest stored universe file is from 28 Sep.
   before and after use.
 - It is not part of REPORT / PRE / POST. Nothing in the pipeline imports it, so a desk failure
   cannot affect a video.
-- It has no regime label, no new score, no ranking and no hit rates. Historical outcome research
-  is Phase 2.
+- Its market regime label is deterministic context (docs/PRIVATE_MARKET_REGIME.md): no model,
+  no score, no forecast, and it never re-ranks or filters the Radar. The desk has no new score,
+  no ranking and no hit rates. Historical outcome research is Phase 2.
 
 ## 6. Files it writes, and cleanup
 
 Only `output/private_desk/`:
 - `cache/replay_<SESSION>.json`: detector-replay results, keyed by a fingerprint of the inputs
   and recomputed automatically when they change;
+- `regime/regime_snapshots_<version>.json`: derived market-regime snapshots, rebuilt when the
+  inputs or the calculation version change;
+- `regime_research/`: distributions, threshold review and historical validation written by
+  `python -m private_desk.regime.research` (run it after the evening job when you want a fresh
+  validation report);
 - `screenshots/`: owner-review captures, if any.
 
 The whole folder is **safe to delete at any time**. Everything in it is regenerated on the next

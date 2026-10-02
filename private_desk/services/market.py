@@ -1,7 +1,7 @@
-"""Market regime DIAGNOSTICS and sector pulse - no regime label.
+"""Market DIAGNOSTICS and sector pulse - the facts of exactly one session.
 
-DMB has no regime classifier, so the desk shows the underlying facts instead of inventing a
-BULLISH/BEARISH call:
+The regime LABEL is not computed here: it comes from the deterministic classifier in
+`private_desk.regime` (docs/PRIVATE_MARKET_REGIME.md). This module shows the plain facts beside it:
 * index / VIX / flows from the canonical report of exactly this session (its validation status
   travels with each number);
 * NIFTY 200 breadth, unusual volume and range events from the Market Structure artifact of
@@ -120,7 +120,7 @@ def sector_table(ms: dict, candidate_views: list) -> list:
 
 
 def regime_diagnostics(report_diag: dict, ms: dict, sectors: list) -> dict:
-    """Plain counts; no classification."""
+    """Plain counts for the market-context facts row; no classification (see private_desk.regime)."""
     out = {}
     if ms.get("status") != "UNAVAILABLE":
         m = ms["metrics"]

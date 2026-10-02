@@ -58,3 +58,28 @@
 {% macro breadthbar(a, d, total) -%}
 {% if total %}<div class="bar" title="{{ a }} advances / {{ d }} declines of {{ total }}"><i class="a" style="width:{{ (a or 0) / total * 100 }}%"></i><i class="u" style="width:{{ (total - (a or 0) - (d or 0)) / total * 100 }}%"></i><i class="d" style="width:{{ (d or 0) / total * 100 }}%"></i></div>{% endif %}
 {%- endmacro %}
+
+{% macro rstate(s, short=false) -%}
+{% set cls = {'POSITIVE': 'up', 'NEGATIVE': 'dn', 'ELEVATED': 'dn', 'RISING': 'wa', 'MIXED': 'mx', 'UNAVAILABLE': 'na'}.get(s, 'nt') %}
+<span class="rs rs-{{ cls }}" title="{{ s }}">{{ {'POSITIVE': 'POS', 'NEGATIVE': 'NEG', 'MIXED': 'MIX', 'NEUTRAL': 'NEU', 'UNAVAILABLE': '—', 'ELEVATED': 'ELEV', 'RISING': 'RISE', 'FALLING': 'FALL', 'STABLE': 'STBL'}.get(s, s[:4]) if short else s | replace('_', ' ') }}</span>
+{%- endmacro %}
+
+{% macro rlabel(r) -%}
+<span class="rl rl-{{ r | lower }}" title="market environment label - context, not a signal">{{ r | replace('_', ' ') }}</span>
+{%- endmacro %}
+
+{% macro regime_card(g, session, link=true) -%}
+<div class="regime-card">
+  <div class="rg-h"><span class="rg-k">Market regime</span> {{ rlabel(g.regime) }}
+    <span class="dim">as of {{ g.session_date }}</span>
+    {% if link %}<a href="/regime?session={{ session }}" class="rg-more">detail →</a>{% endif %}</div>
+  {% if g.dimensions %}
+  <table class="rg-dims">
+    {% for x in g.dimensions %}<tr title="{{ x.rule }}"><td>{{ x.name }}{% if x.role == 'CONTEXT' %} <span class="dim">· context</span>{% elif x.role == 'STRESS' %} <span class="dim">· stress check</span>{% endif %}</td><td>{{ rstate(x.state) }}</td></tr>{% endfor %}
+  </table>
+  {% endif %}
+  <div class="rg-why"><b>Why:</b> {{ g.explanation }}</div>
+  {% if g.missing_dimensions %}<div class="rg-miss">Unavailable: {{ g.missing_dimensions | join(', ') }}</div>{% endif %}
+  <div class="rg-foot">{{ g.calculation_version }} · deterministic rules · describes the current environment, not a forecast or a recommendation</div>
+</div>
+{%- endmacro %}

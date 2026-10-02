@@ -6,6 +6,7 @@ import datetime as dt
 
 from ..cache import DeskCache
 from ..db import SourceUnavailable
+from ..regime.store import RECENT_SESSIONS, RegimeStore
 from ..replay import get_replay
 from ..repository import DeskRepository
 from ..settings import DeskSettings
@@ -23,6 +24,7 @@ class DeskService:
         self.settings = settings
         self.repo = DeskRepository(settings.out_dir)
         self.cache = DeskCache(settings.cache_dir, settings.out_dir)
+        self.regimes = RegimeStore(self.repo, settings.regime_dir)
 
     # ------------------------------------------------------------------ session resolution
     def resolve_session(self, requested: str | None) -> tuple:
@@ -56,6 +58,19 @@ class DeskService:
     def replay(self, session: dt.date) -> dict:
         return get_replay(self.repo, self.cache, session)
 
+    # ------------------------------------------------------------------ market regime (context)
+    def regime(self, session: dt.date, n: int = RECENT_SESSIONS) -> dict:
+        """The market regime of `session` + the recent history before it. CONTEXT ONLY: nothing
+        here reads or changes a Radar candidate, its order or the attention set."""
+        from config import now_ist
+        history = self.regimes.snapshots(session, n=n, generated_at=now_ist().isoformat())
+        on_session = history and history[-1].session_date == session.isoformat()
+        snap = history[-1] if on_session else self.regimes.snapshot(session)
+        latest = self.freshness().latest_completed
+        return {"snapshot": snap, "history": list(reversed(history)),
+                "stale": bool(latest and dt.date.fromisoformat(snap.session_date) < latest),
+                "latest_completed": latest}
+
     # ------------------------------------------------------------------ pages
     def radar(self, session: dt.date) -> dict:
         replay = self.replay(session)
@@ -86,6 +101,7 @@ class DeskService:
         history_start = min(firsts) if firsts else None       # earliest recorded candidate row
         return {**r, "report": report, "ms": ms, "sectors": sectors,
                 "regime": mk.regime_diagnostics(report, ms, sectors),
+                "market_regime": self.regime(session, n=1)["snapshot"],
                 "changes": changes, "insights": insights, "attention": attention,
                 "change_summary": at.change_summary(r["views"], changes),
                 "change_items": at.change_items(attention, r["views"], history_start),
@@ -106,6 +122,7 @@ class DeskService:
         detail["sector_row"] = next((s for s in sector_rows if s["sector"] == detail["sector"]), None)
         detail["context"] = r["context"]
         detail["report"] = mk.report_diagnostics(self.repo, session)
+        detail["market_regime"] = self.regime(session, n=1)["snapshot"]   # context only
         return detail
 
     def chart(self, symbol: str, session: dt.date) -> dict:
@@ -125,7 +142,9 @@ class DeskService:
 
     def quality(self, session: dt.date | None) -> dict:
         replay = self.replay(session) if session else None
-        return qa.data_quality(self.repo, session, replay, self.freshness())
+        out = qa.data_quality(self.repo, session, replay, self.freshness())
+        out["regime"] = qa.regime_quality(self, session)
+        return out
 
     def universe_symbols(self, session: dt.date) -> dict:
         u, _ = self.repo.universe(session)
@@ -146,9 +165,12 @@ class DeskService:
                       "india_vix": d["report"].get("india_vix")}
         by_sector = {s["sector"]: {k: v for k, v in s.items() if k != "radar_symbols"}
                      for s in d["sectors"]}
+        regime = d["market_regime"]
+        market_regime = {**regime.summary(), "reason_code": regime.reason_code}
         now = now_ist()
         return [build_packet(v, market_context=market_ctx, sector_row=by_sector.get(v["sector"]),
-                             source_artifacts=sources, generated_at=now) for v in d["views"]]
+                             source_artifacts=sources, generated_at=now,
+                             market_regime=market_regime) for v in d["views"]]
 
 
 __all__ = ["DeskService"]

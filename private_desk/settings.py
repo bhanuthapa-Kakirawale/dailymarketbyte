@@ -45,6 +45,12 @@ class DeskSettings:
         return cls(out_dir=out_dir, cache_dir=cache_dir, host=require_loopback(host), port=port)
 
     @property
+    def regime_dir(self) -> str:
+        """Derived regime snapshots: a sibling of the cache (`<OUT>/private_desk/regime` by
+        default) - same rules as the cache: regeneratable, never production state."""
+        return os.path.join(os.path.dirname(self.cache_dir), "regime")
+
+    @property
     def url(self) -> str:
         host = f"[{self.host}]" if ":" in self.host else self.host
         return f"http://{host}:{self.port}"

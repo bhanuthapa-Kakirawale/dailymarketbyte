@@ -120,6 +120,8 @@
       <dt>Radar candidates in sector</dt><dd>{{ sr.radar_candidates }}{% if sr.radar_symbols %} <span class="dim">({{ sr.radar_symbols | join(', ') }})</span>{% endif %}</dd>
     </dl>
     {% else %}<p class="na">DATA UNAVAILABLE - no Market Structure sector row for this session.</p>{% endif %}
+    {% set mr = st.market_regime %}
+    {% if mr %}<div class="note rg-stock">Market regime ({{ mr.session_date }}): {{ m.rlabel(mr.regime) }} <a href="/regime?session={{ session }}">why →</a><br>Context only - it does not change this stock's Radar evidence, state or order.</div>{% endif %}
   </section>
 
   <section class="panel">

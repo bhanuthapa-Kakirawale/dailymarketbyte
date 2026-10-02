@@ -12,12 +12,13 @@ execution. The owner confirms every action there. The desk must never become a s
 
 ## 2. The candidate packet (`private_desk/packet.py`)
 
-`PrivateCandidatePacket`, schema `private-candidate-packet-1.0`, is a frozen dataclass that
-serialises to JSON with `to_dict()`.
+`PrivateCandidatePacket`, schema `private-candidate-packet-1.1`, is a frozen dataclass that
+serialises to JSON with `to_dict()`. 1.0 -> 1.1 (private market regime V1) added the
+`market_regime` field only. Every 1.0 field is unchanged.
 
 | Field | Content |
 |---|---|
-| `schema_version` | `"private-candidate-packet-1.0"`. Changes only with a documented migration. |
+| `schema_version` | `"private-candidate-packet-1.1"`. Changes only with a documented migration. |
 | `session_date` | The Radar session (ISO date). |
 | `symbol`, `company`, `sector` | NSE symbol; company name and NIFTY 200 industry sector from the Market Structure artifact. |
 | `radar_state` | attention level, Radar novelty, desk appearance label, families, evidence direction, persistence, whether it was selected for a story |
@@ -29,7 +30,8 @@ serialises to JSON with `to_dict()`.
 | `official_events` | Exchange list memberships (F&O ban, ASM, GSM, IPO) with list date |
 | `source_artifact_ids` | Which stores and artifacts each part came from |
 | `generated_at` | When the packet was built |
-| `notes` | Always includes "Radar candidate = attention item, not a trade recommendation." |
+| `notes` | Always includes "Radar candidate = attention item, not a trade recommendation." and "Market regime = context of the session, not a forecast or a recommendation." |
+| `market_regime` | (1.1) The session's regime CONTEXT: `label`, `session_date`, `calculation_version`, `dimensions` (state per dimension), `reason_code`. See docs/PRIVATE_MARKET_REGIME.md. It never changes the candidate's evidence. |
 
 **Forbidden, and enforced by `tests/test_private_desk.py::test_candidate_packet_contains_no_order_fields`:**
 no field, at any nesting depth, may carry an order concept. That means no side, buy, sell,

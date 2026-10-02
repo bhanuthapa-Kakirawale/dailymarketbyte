@@ -59,6 +59,12 @@ def run(settings: DeskSettings) -> int:
         if o.get("missing") or o.get("stale"):
             problems.append("OHLCV coverage incomplete")
         _line("canonical report", (q.get("report") or {}).get("status"))
+        rq = q.get("regime") or {}
+        _line("market regime", f"{rq.get('regime')}  session {rq.get('regime_session')}  "
+                               f"{rq.get('status')}  ({rq.get('calculation_version')})")
+        _line("regime validation", (rq.get("validation") or {}).get("status"))
+        if rq.get("stale"):
+            problems.append("market regime stale")
 
     print()
     if problems:

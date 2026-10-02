@@ -18,9 +18,12 @@
   <a href="/radar?session={{ session }}" class="viewall">View all {{ total }} in Radar →</a></span></h1>
 
 <section class="panel">
-  <h2>Market context <span class="dim lc">facts only - DMB has no regime classifier, so no BULLISH/BEARISH label is shown</span></h2>
+  <h2>Market context <span class="dim lc">regime from deterministic rules over stored data · facts from exactly this session</span></h2>
   {% set n = d.report.nifty or {} %}{% set r = d.regime %}
-  <div class="kv kv-tight">
+  <div class="ctx">
+  {{ m.regime_card(d.market_regime, session) }}
+  <div>
+  <div class="kv kv-ctx">
     <div><div class="k">NIFTY 50</div><div class="v">{{ n.close | num }}</div><div class="s">{{ n.change_pct | pct }} · {{ n.close_status or d.report.status }}</div></div>
     <div><div class="k">NIFTY range</div><div class="v sm">{{ n.low | num }} – {{ n.high | num }}</div><div class="s">open {{ n.open | num }}</div></div>
     <div><div class="k">Bank NIFTY</div><div class="v">{{ d.report.bank_nifty_change_pct | pct }}</div></div>
@@ -32,6 +35,8 @@
     <div><div class="k">FII / DII ₹ Cr</div><div class="v sm">{{ d.report.fii_net_cr | num(0) }} / {{ d.report.dii_net_cr | num(0) }}</div><div class="s">{{ d.report.fii_status | na }}</div></div>
   </div>
   {% if d.insights %}<div class="note" style="margin-top:5px">{% for i in d.insights[:3] %}· {{ i.statement }} <span class="dim">(n={{ i.sample_size }})</span> {% endfor %}</div>{% endif %}
+  </div>
+  </div>
 </section>
 
 <section class="panel changed">

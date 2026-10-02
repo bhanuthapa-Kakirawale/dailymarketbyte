@@ -258,8 +258,8 @@ def test_dashboard_loads_from_stored_data(client):
     assert r.status_code == 200
     assert "PRIVATE / LOCAL ONLY" in r.text and SESSION.isoformat() in r.text
     assert "What changed today" in r.text and "Sector pulse" in r.text
-    text = r.text.replace("BULLISH/BEARISH", "")         # only the "no regime label" note
-    assert "BULLISH" not in text and "BEARISH" not in text
+    # the regime classifier (docs/PRIVATE_MARKET_REGIME.md) replaced the "no regime label" note
+    assert "regime-card" in r.text and "no regime classifier" not in r.text
 
 
 def test_every_page_renders(client):

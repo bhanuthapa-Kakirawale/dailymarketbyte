@@ -88,6 +88,27 @@
 </section>
 
 <section class="panel">
+  <h2>Market regime classifier <span class="dim lc">private context · derived, rebuildable</span></h2>
+  {% set rq = q.regime %}
+  {% if rq and rq.status != 'NO_SESSION' %}
+  <dl class="facts">
+    <dt>Status</dt><dd><span class="b {{ 'ok' if rq.status == 'OK' else 'warn' }}">{{ rq.status }}</span>{% if rq.stale %} regime session {{ rq.regime_session }} is older than the latest completed session {{ rq.latest_completed }}{% endif %}</dd>
+    <dt>Classifier version</dt><dd>{{ rq.calculation_version }} ({{ rq.schema_version }})</dd>
+    <dt>Latest regime</dt><dd>{{ rq.regime }} · session {{ rq.regime_session }}</dd>
+    <dt>Required inputs</dt><dd style="white-space:normal;font-family:var(--sans)">{{ rq.required }}</dd>
+    <dt>Available dimensions</dt><dd>{{ rq.available | join(', ') or 'none' }}</dd>
+    <dt>Unavailable dimensions</dt><dd>{{ rq.unavailable | join(', ') or 'none' }}</dd>
+    <dt>Membership</dt><dd>{{ rq.membership.label | na }} · {{ rq.membership.members | na }} members · list of {{ rq.membership.membership_from | na }}{% if rq.membership.membership_backdated %} <span class="b warn">BACK-DATED</span>{% endif %}</dd>
+    <dt>Recent window</dt><dd>{{ rq.window }} sessions · {% for k, v in rq.window_counts.items() %}{{ k }} {{ v }}{% if not loop.last %} · {% endif %}{% endfor %}</dd>
+    {% set v = rq.validation %}
+    <dt>Historical validation</dt><dd>{% if v.status == 'NOT_BUILT' %}<span class="b warn">NOT BUILT</span> run <span class="mono">{{ v.hint }}</span>{% else %}<span class="b {{ 'ok' if v.status == 'CURRENT' else 'warn' }}">{{ v.status }}</span> {{ v.calculation_version }} · to {{ v.end_session }} · {{ v.sessions }} sessions, {{ v.eligible }} classifiable, {{ v.insufficient }} insufficient · {{ v.switches }} switches · built {{ (v.generated_at or '')[:16] }}{% endif %}</dd>
+    <dt>Stored snapshot files</dt><dd>{{ rq.stored_files | join(', ') or 'none yet' }}</dd>
+  </dl>
+  <div class="note">The classifier reads the OHLCV store, the Market Structure constituent lists and the canonical reports read-only; its snapshots live under private_desk/regime/ and are rebuilt whenever the inputs or the calculation version change.</div>
+  {% else %}<p class="na">DATA UNAVAILABLE - no Radar session to classify.</p>{% endif %}
+</section>
+
+<section class="panel">
   <h2>Canonical report & recent DMB runs <span class="dim" style="text-transform:none;letter-spacing:0">(read-only view)</span></h2>
   <p>Report for session: <span class="b {{ 'ok' if q.report.status == 'FOUND' else 'warn' }}">{{ q.report.status }}</span> {{ q.report.report_id | na }}</p>
   <table><thead><tr><th>Started</th><th>Job</th><th>Target</th><th>Source session</th><th>Status</th></tr></thead><tbody>

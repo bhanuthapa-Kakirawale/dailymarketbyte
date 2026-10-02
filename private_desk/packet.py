@@ -4,13 +4,17 @@ Defined now so a future integration (docs/PRIVATE_DESK_KITE_INTEGRATION.md) has 
 build against. It carries observations and their provenance ONLY: no side, quantity, price,
 order type, product, account, entry, stop or target - a test fails if any such field appears.
 Phase 1 builds packets for the CSV export; nothing sends them anywhere.
+
+1.1 (private market regime V1): adds `market_regime` - the session's regime label, its dimension
+states, reason code and calculation version (docs/PRIVATE_MARKET_REGIME.md). CONTEXT ONLY: it
+describes the market the candidate appeared in and never changes the candidate's evidence.
 """
 from __future__ import annotations
 
 import datetime as dt
 from dataclasses import asdict, dataclass, field
 
-SCHEMA_VERSION = "private-candidate-packet-1.0"
+SCHEMA_VERSION = "private-candidate-packet-1.1"
 
 # Field names that would turn context into an instruction. Never allowed on the packet.
 FORBIDDEN_FIELD_TOKENS = ("order", "quantity", "qty", "price_limit", "limit_price",
@@ -36,13 +40,15 @@ class PrivateCandidatePacket:
     source_artifact_ids: tuple           # where each part came from
     generated_at: str
     notes: tuple = field(default_factory=tuple)
+    market_regime: dict = field(default_factory=dict)   # 1.1: label + dimension states (context)
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
 def build_packet(view: dict, *, market_context: dict, sector_row: dict | None,
-                 source_artifacts: list, generated_at: dt.datetime) -> PrivateCandidatePacket:
+                 source_artifacts: list, generated_at: dt.datetime,
+                 market_regime: dict | None = None) -> PrivateCandidatePacket:
     reasons = tuple(i["text"] for i in view["why"] if i.get("text"))
     return PrivateCandidatePacket(
         schema_version=SCHEMA_VERSION, session_date=view["session"].isoformat(),
@@ -61,7 +67,9 @@ def build_packet(view: dict, *, market_context: dict, sector_row: dict | None,
         official_events=tuple({"kind": e["kind"], "status": e["status"],
                                "source_date": e.get("source_date")} for e in view["official"]),
         source_artifact_ids=tuple(source_artifacts), generated_at=generated_at.isoformat(),
-        notes=("Radar candidate = attention item, not a trade recommendation.",))
+        notes=("Radar candidate = attention item, not a trade recommendation.",
+               "Market regime = context of the session, not a forecast or a recommendation."),
+        market_regime=dict(market_regime or {}))
 
 
 __all__ = ["PrivateCandidatePacket", "build_packet", "SCHEMA_VERSION", "FORBIDDEN_FIELD_TOKENS"]

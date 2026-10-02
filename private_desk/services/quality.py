@@ -94,4 +94,54 @@ def data_quality(repo: DeskRepository, session: dt.date | None, replay: dict | N
     return out
 
 
-__all__ = ["data_quality"]
+def regime_quality(svc, session: dt.date | None) -> dict:
+    """Regime classifier status for the Data Quality page: version, freshness vs the latest
+    completed session, inputs present / missing, recent-window coverage and the last historical
+    validation run (research artifact, when it has been built)."""
+    import json
+    import os
+
+    from ..regime import rules as rr
+    from ..regime.model import CALCULATION_VERSION, INSUFFICIENT_DATA, SCHEMA_VERSION
+    from ..regime.research import RESEARCH_DIRNAME
+    out = {"calculation_version": CALCULATION_VERSION, "schema_version": SCHEMA_VERSION,
+           "required": "TREND and BREADTH, plus at least one of SECTORS / VOLUME / VOLATILITY",
+           "session": session}
+    if session is None:
+        out["status"] = "NO_SESSION"
+        return out
+    r = svc.regime(session)
+    snap, hist = r["snapshot"], r["history"]
+    out.update({
+        "regime": snap.regime, "regime_session": snap.session_date, "stale": r["stale"],
+        "latest_completed": r["latest_completed"],
+        "available": [d.key for d in snap.dimensions if d.available],
+        "unavailable": list(snap.missing_dimensions),
+        "membership": snap.universe,
+        "window": len(hist),
+        "window_insufficient": sum(1 for s in hist if s.regime == INSUFFICIENT_DATA),
+        "window_counts": {k: sum(1 for s in hist if s.regime == k) for k in
+                          ("BULLISH", "BEARISH", "NEUTRAL", "TRANSITIONAL", INSUFFICIENT_DATA)},
+        "stored_files": svc.regimes.stored_versions(),
+        "dimension_roles": {k: rr.CLASSIFIERS[k][1] for k in rr.DIMENSION_ORDER},
+    })
+    out["status"] = ("STALE" if r["stale"] else
+                     "INSUFFICIENT_DATA" if snap.regime == INSUFFICIENT_DATA else "OK")
+    path = os.path.join(svc.settings.out_dir, "private_desk", RESEARCH_DIRNAME,
+                        "validation_summary.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            v = json.load(fh)
+        out["validation"] = {
+            "status": "CURRENT" if v.get("calculation_version") == CALCULATION_VERSION
+            else "OUTDATED_VERSION", "calculation_version": v.get("calculation_version"),
+            "generated_at": v.get("generated_at"), "end_session": v.get("end_session"),
+            "sessions": v.get("sessions_total"), "eligible": v.get("eligible_sessions"),
+            "insufficient": v.get("insufficient_sessions"), "switches": v.get("regime_switches"),
+            "counts": v.get("counts_by_regime")}
+    except (OSError, ValueError):
+        out["validation"] = {"status": "NOT_BUILT", "hint": "python -m private_desk.regime.research"}
+    return out
+
+
+__all__ = ["data_quality", "regime_quality"]

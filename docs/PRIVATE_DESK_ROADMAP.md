@@ -2,7 +2,8 @@
 
 **Phase 1 is built and feature-complete, pending the owner's final visual approval** (read-only local dashboard; Dashboard = attention subset, Radar = complete set): docs/PRIVATE_DESK_USER_GUIDE.md, package
 `private_desk/`, future broker contract docs/PRIVATE_DESK_KITE_INTEGRATION.md. Screens 1-4 below
-exist (market regime as diagnostics only - no classifier yet); watchlist, outcome research
+exist. Screen 1 now has a deterministic regime classifier, V1 provisional
+(docs/PRIVATE_MARKET_REGIME.md, context only). Watchlist, outcome research
 (Phase 2), the Kite hand-off and the feedback loop (Phases 3/4) and the position/risk desk do not.
 
 This is a future, local-only web application for the owner. It would turn PRIVATE_ANALYTICS

@@ -164,3 +164,34 @@ details.allchg .changes { margin-top: 6px; }
 .whybox h2 { color: var(--text); font-size: 12.5px; display: flex; justify-content: space-between; align-items: center; }
 .whybox .why li { font-size: 13px; }
 @media (max-width: 1100px) { .g-main, .g-dash, .g2, .g3, .g4, .citems, .csum, .kv-tight { grid-template-columns: 1fr 1fr; } .topstat { display: none; } }
+/* market regime (context, deliberately restrained - not a signal) */
+.ctx { display: grid; grid-template-columns: minmax(300px, 1.15fr) minmax(0, 2fr); gap: 10px; align-items: start; }
+.kv-ctx { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.regime-card { background: var(--panel2); border: 1px solid var(--line); border-radius: 3px; padding: 6px 9px; }
+.rg-h { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+.rg-k { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; font-weight: 700; }
+.rg-more { margin-left: auto; font-size: 11.5px; }
+.rl { font-family: var(--mono); font-weight: 700; font-size: 13.5px; letter-spacing: .04em; padding: 0 7px;
+  border: 1px solid #39414b; border-left-width: 3px; border-radius: 2px; color: var(--text); background: #1f242c; }
+.rl-bullish { border-left-color: #3d7a5a; } .rl-bearish { border-left-color: #8a4646; }
+.rl-neutral { border-left-color: #5d6876; } .rl-transitional { border-left-color: #8a7240; }
+.rl-insufficient_data { border-left-color: #39414b; color: var(--muted); }
+table.rg-dims { width: auto; min-width: 100%; }
+table.rg-dims td { padding: 1px 4px 1px 0; border: none; font-size: 12px; }
+table.rg-dims tr:hover td { background: none; }
+.rs { font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: .03em; }
+.rs-up { color: #7fbf9a; } .rs-dn { color: #d08a8a; } .rs-wa { color: #cdb27a; } .rs-mx { color: #a9b6c6; }
+.rs-nt { color: var(--muted); } .rs-na { color: var(--dim); }
+.rg-why { font-size: 12px; margin-top: 4px; line-height: 1.35; }
+.rg-miss { color: var(--warn); font-size: 11px; margin-top: 3px; }
+.rg-foot { color: var(--dim); font-size: 10.5px; margin-top: 4px; }
+.rg-hist td { font-size: 11.5px; }
+.rg-ev li { margin: 2px 0; font-size: 12px; }
+@media (max-width: 1100px) { .ctx { grid-template-columns: 1fr; } }
+.rg-dim { border-left-color: #39414b; }
+.rg-facts { margin-top: 3px; white-space: normal; }
+.rg-sub { margin-top: 4px; }
+.rg-rule { margin-top: 3px; }
+dl.facts.rg-rules dt { padding-top: 2px; } dl.facts.rg-rules dd { white-space: normal; font-family: var(--sans); }
+table.rg-hist th, table.rg-hist td { padding: 2px 4px; }
+.rg-stock { margin-top: 6px; }

@@ -160,7 +160,7 @@ def create_app(settings: DeskSettings) -> FastAPI:
         w.writerow(["session_date", "symbol", "company", "sector", "attention_level",
                     "novelty_type", "appearance", "families", "detector_ids", "price_change_pct",
                     "relative_volume", "vs_nifty_5d_pp", "vs_nifty_20d_pp", "replay_status",
-                    "official_events", "reasons", "note"])
+                    "official_events", "reasons", "market_regime", "note"])
         for p in packets:
             st = p.radar_state
             w.writerow([p.session_date, p.symbol, p.company, p.sector, st["attention_level"],
@@ -169,7 +169,7 @@ def create_app(settings: DeskSettings) -> FastAPI:
                         p.metrics["relative_volume"], p.metrics["vs_nifty_5d_pp"],
                         p.metrics["vs_nifty_20d_pp"], p.metrics["replay_status"],
                         "|".join(f"{e['kind']}:{e['status']}" for e in p.official_events),
-                        " / ".join(p.reasons), p.notes[0]])
+                        " / ".join(p.reasons), p.market_regime.get("label"), p.notes[0]])
         return Response(buf.getvalue(), media_type="text/csv", headers={
             "Content-Disposition": f'attachment; filename="private_radar_{s}.csv"'})
 
@@ -209,6 +209,16 @@ def create_app(settings: DeskSettings) -> FastAPI:
         if s is None:
             return unavailable(request, notice, "sectors")
         return page(request, "sectors.html", s, notice, d=svc.dashboard(s))
+
+    @app.get("/regime", response_class=HTMLResponse)
+    def regime(request: Request, session: str | None = None):
+        s, notice = svc.resolve_session(session)
+        if s is None:
+            return unavailable(request, notice, "regime")
+        from .regime import rules as regime_rules
+        return page(request, "regime.html", s, notice, rg=svc.regime(s),
+                    regime_rules=regime_rules.REGIME_RULES,
+                    confirmation_rule=regime_rules.CONFIRMATION_RULE)
 
     @app.get("/history", response_class=HTMLResponse)
     def history(request: Request, start: str = "", end: str = "", symbol: str = "",

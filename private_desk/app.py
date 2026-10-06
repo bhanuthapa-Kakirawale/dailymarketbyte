@@ -217,6 +217,13 @@ def create_app(settings: DeskSettings) -> FastAPI:
             return unavailable(request, notice, "institutional")
         return page(request, "institutional.html", s, notice, d=svc.institutional(s))
 
+    @app.get("/events", response_class=HTMLResponse)
+    def events(request: Request, session: str | None = None, family: str = ""):
+        s, notice = svc.resolve_session(session)
+        if s is None:
+            return unavailable(request, notice, "events")
+        return page(request, "events.html", s, notice, d=svc.market_events(s), family=family)
+
     @app.get("/regime", response_class=HTMLResponse)
     def regime(request: Request, session: str | None = None):
         s, notice = svc.resolve_session(session)

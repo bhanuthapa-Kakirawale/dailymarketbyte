@@ -16,8 +16,10 @@ class EventFamily(str, Enum):
     FNO_BAN = "FNO_BAN"                          # implemented (fo_secban.csv)
     SURVEILLANCE_ASM = "SURVEILLANCE_ASM"        # implemented (parser; NSE website API)
     SURVEILLANCE_GSM = "SURVEILLANCE_GSM"        # implemented (parser; NSE website API)
-    CORPORATE_EVENT = "CORPORATE_EVENT"          # model + policy; adapter planned
-    BOARD_MEETING = "BOARD_MEETING"              # planned
+    # CORPORATE_EVENT / BOARD_MEETING: superseded by market_events/ (Market Events Engine V1),
+    # which revisions each filing independently - never implement an adapter for these here too.
+    CORPORATE_EVENT = "CORPORATE_EVENT"          # model + policy; superseded, see market_events/
+    BOARD_MEETING = "BOARD_MEETING"              # superseded, see market_events/
     PRICE_BAND_CHANGE = "PRICE_BAND_CHANGE"      # planned
     TRADE_TO_TRADE = "TRADE_TO_TRADE"            # planned
     MWPL = "MWPL"                                # planned

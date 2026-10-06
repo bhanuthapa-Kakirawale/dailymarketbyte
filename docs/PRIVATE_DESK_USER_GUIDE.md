@@ -64,6 +64,7 @@ evening job is still writing, a page may say DATA UNAVAILABLE. Reload it a minut
 | **Regime** | The market regime of the session: the rule applied, supporting and conflicting evidence, every dimension with its numbers, rule and source, the last 30 sessions of regime history, and the full V1 rule set (docs/PRIVATE_MARKET_REGIME.md). |
 | **Sectors** | NIFTY 200 breadth, the metric table with coverage and definitions, NSE sectoral indices (a separate universe), the per-sector table with a reconciliation row, and a separate FPI sector flow (NSDL) table. |
 | **Institutional** | NSE provisional FII/FPI + DII cash flow (latest + last 10 reported sessions), CDSL's latest depository-reported daily category/route table, NSDL's latest fortnightly sector table with AUC shown separately - docs/INSTITUTIONAL_FLOW_INTELLIGENCE.md. |
+| **Market Events** | Earnings/IPO/OFS/government-auction/buyback/open-offer/delisting calendar, TODAY / TOMORROW / NEXT 7 DAYS / RECENTLY ANNOUNCED per family, with a family filter. No family has a live source yet - every row shows NOT_SUPPORTED_YET until one does - docs/MARKET_EVENTS_ENGINE.md. |
 | **History** | Every recorded Radar appearance. Filter by date range, symbol, sector, attention, family, detector, novelty and appearance. Shows how often each stock appeared. |
 | **Data Quality** | Source freshness, database health, Radar run markers and issues, detector-replay reconciliation, OHLCV coverage (missing or stale symbols), Market Structure coverage, official snapshot status, institutional-flow status (NSE/CDSL/NSDL + sector-mapping coverage), the regime classifier's status (version, freshness, available dimensions, historical validation), and recent DMB runs. |
 
@@ -246,6 +247,7 @@ All of these are read-only. Nothing is fetched.
 | NIFTY, VIX, flows, sectoral indices | the canonical report in `output/reports/` |
 | Official lists | `output/official_snapshots/<SESSION>/` (checksum-verified) |
 | Institutional flow (NSE/CDSL/NSDL) | `output/institutional_flows/<SOURCE>/` (immutable snapshots, no fetch on page load) |
+| Market events (earnings/IPO/OFS/auctions/buyback/open offer/delisting) | `output/market_events/<FAMILY>/` (immutable revisions, no fetch on page load) |
 | Pipeline status, issues | `output/radar/daily_radar_<SESSION>.json` |
 | Market regime | `private_desk.regime` over the OHLCV store (NIFTY 50 + NIFTY 200), the Market Structure constituent lists and the canonical report, from data up to that session only |
 

@@ -99,7 +99,20 @@ def official_index(repo: DeskRepository, session: dt.date) -> dict:
                 "issue_close_date": rec.get("issue_close_date"),
                 "listing_date": rec.get("listing_date"),
             })
-    return {"by_symbol": index, "status": status}
+    # Market Events Engine V1: EARNINGS/BUYBACK/OPEN_OFFER/DELISTING rows extend this SAME
+    # card (per-symbol "Official events") rather than a second, parallel one. Kept in its own
+    # `market_events_status` key (not merged into `status`) so the existing official_snapshots
+    # "no snapshot stored" fallback keeps checking only the kinds it always has.
+    from . import market_events as mev
+    me_status, me_symbols = {}, set()
+    for family in mev.STOCK_FAMILIES:
+        events = repo.market_events_latest(family, on_or_before=session)
+        me_status[family] = {"status": "OK" if events else "NOT_SUPPORTED_YET",
+                             "records": len(events)}
+        me_symbols.update(ev.symbol for ev in events if ev.symbol)
+    for sym in me_symbols:
+        index.setdefault(sym, []).extend(mev.stock_official_rows(repo, sym, session))
+    return {"by_symbol": index, "status": status, "market_events_status": me_status}
 
 
 # ------------------------------------------------------------------ WHY THIS STOCK

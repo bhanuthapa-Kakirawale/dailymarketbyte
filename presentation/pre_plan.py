@@ -58,10 +58,11 @@ WATCH_MAX = 3
 OPTIONAL_BUDGET = 2
 OPTIONAL_PRIORITY = ("STOCK_WATCH", "FLOWS", "VIX", "SECTORS")
 SECTION_ORDER = ("OVERNIGHT", "SETUP", "FLOWS", "VIX", "SECTORS", "EVENT", "EXCHANGE", "IPO",
-                 "STOCK_WATCH", "WATCH")
+                 "MARKET_EVENTS", "STOCK_WATCH", "WATCH")
 # Public intelligence sections (PUBLIC V2): outside the previous-session optional budget, but the
-# first to go under the runtime ceiling after it.
-PUBLIC_OPTIONAL = ("IPO", "EXCHANGE")
+# first to go under the runtime ceiling after it. MARKET_EVENTS (Market Events Engine V1) joins
+# the same group - never a second, parallel budget.
+PUBLIC_OPTIONAL = ("IPO", "EXCHANGE", "MARKET_EVENTS")
 MAX_RUNTIME = 65.0
 
 # Seconds per scene - set by how much there is to read, never stretched to fill a budget.
@@ -69,7 +70,7 @@ DUR = {"OVERNIGHT": 5.0, "OVERNIGHT_PER_CUE": 0.6, "GIFT": 0.8, "SETUP_PULSE": 5
        "SETUP_CHART": 6.2, "VIX": 4.8, "FLOWS": 5.4, "SECTORS": 5.6, "EVENT": 5.0,
        "STOCKS_BASE": 4.2, "STOCKS_PER": 1.9, "WATCH_BASE": 3.2, "WATCH_PER": 2.3,
        "EXCHANGE_BASE": 3.6, "EXCHANGE_PER": 1.7, "IPO_CARD": 6.4, "IPO_BOARD_BASE": 3.8,
-       "IPO_BOARD_PER": 1.0,
+       "IPO_BOARD_PER": 1.0, "MARKET_EVENTS_BASE": 3.6, "MARKET_EVENTS_PER": 1.7,
        "CLOSING": 2.6}
 
 
@@ -118,6 +119,7 @@ class PreMarketBrief:
     public_intelligence: object | None = None
     exchange_watch: dict | None = None
     ipo_watch: dict | None = None
+    market_events: dict | None = None
     public_audit: dict = field(default_factory=dict)
     public_omitted: list = field(default_factory=list)
     # Institutional Flow Intelligence V1 (institutional_flows.context.load_institutional):
@@ -153,6 +155,7 @@ class PreMarketBrief:
             "fact_provenance": self.fact_provenance, "gift_policy": self.gift_policy,
             "publication_profile": self.publication_profile,
             "exchange_watch": self.exchange_watch, "ipo_watch": self.ipo_watch,
+            "market_events": self.market_events,
             "institutional": self.institutional,
             "institutional_nse_context": self.institutional_nse_context,
         }
@@ -403,6 +406,7 @@ class PreSectionPlan:
     watch: list = field(default_factory=list)       # [WatchItemModel]
     exchange: dict | None = None                    # EXCHANGE WATCH model (public V2)
     ipo: dict | None = None                         # IPO WATCH model (public V2)
+    market_events: dict | None = None               # MARKET EVENTS model (Market Events Engine V1)
     watch_headline: str = "What to watch at the open"
     watch_subline: str = "Reference points, not trade signals"
     closing_line: str = "That's your setup before the bell."
@@ -957,15 +961,19 @@ class PreEditorialPlanner:
         sectors_m, sectors_ok = _sectors(brief, reasons)
         stocks_m = _stocks(brief, reasons)
         exchange_m, ipo_m = brief.exchange_watch, brief.ipo_watch
+        market_events_m = brief.market_events
         reasons["EXCHANGE"] = (f"included: {len(exchange_m['cards'])} official exchange event(s)"
                                if exchange_m else "omitted: no validated official exchange event "
                                                   "for today")
         reasons["IPO"] = ("included: dated IPO event(s) today" if ipo_m else
                           "omitted: no official IPO event dated today")
+        reasons["MARKET_EVENTS"] = ("included: market event(s) today" if market_events_m else
+                                    "omitted: no official market event dated today")
 
         show = {"OVERNIGHT": overnight is not None, "SETUP": True, "VIX": vix_ok,
                 "FLOWS": flows_ok, "SECTORS": sectors_ok, "EVENT": event is not None,
                 "EXCHANGE": exchange_m is not None, "IPO": ipo_m is not None,
+                "MARKET_EVENTS": market_events_m is not None,
                 "STOCK_WATCH": stocks_m is not None, "WATCH": True}
         qualified = [k for k in OPTIONAL_PRIORITY if show[k]]
         for k in qualified[OPTIONAL_BUDGET:]:
@@ -983,7 +991,7 @@ class PreEditorialPlanner:
                   "FLOWS": f"FII / DII · {wd3}", "SECTORS": f"SECTORS · {wd3}",
                   "EVENT": "TODAY'S CALENDAR", "STOCK_WATCH": f"STOCK WATCH · {wd3}",
                   "EXCHANGE": "EXCHANGE WATCH", "IPO": "IPO WATCH",
-                  "WATCH": "WATCH AT THE OPEN"}
+                  "MARKET_EVENTS": "MARKET EVENTS", "WATCH": "WATCH AT THE OPEN"}
         durations = {
             "OVERNIGHT": round(DUR["OVERNIGHT"] + DUR["OVERNIGHT_PER_CUE"] * max(0, len(overnight.cues) - 1)
                                + (DUR["GIFT"] if overnight.gift else 0.0), 2) if overnight else 0.0,
@@ -999,6 +1007,9 @@ class PreEditorialPlanner:
             "IPO": (DUR["IPO_CARD"] if ipo_m["layout"] == "CARD" else
                     round(DUR["IPO_BOARD_BASE"] + DUR["IPO_BOARD_PER"] * len(ipo_m["rows"]), 2))
             if ipo_m else 0.0,
+            "MARKET_EVENTS": round(DUR["MARKET_EVENTS_BASE"]
+                                   + DUR["MARKET_EVENTS_PER"] * len(market_events_m["cards"]), 2)
+            if market_events_m else 0.0,
         }
         order = [k for k in SECTION_ORDER if show[k]]
         # hard ceiling: drop optional sections, lowest priority first, never core ones
@@ -1023,6 +1034,7 @@ class PreEditorialPlanner:
             stock_watch=stocks_m if show["STOCK_WATCH"] else None, watch=watch,
             exchange=exchange_m if show["EXCHANGE"] else None,
             ipo=ipo_m if show["IPO"] else None,
+            market_events=market_events_m if show["MARKET_EVENTS"] else None,
             watch_subline=("Reference points from " + brief.prev_weekday +
                            (" and overnight" if overnight else "") + ", not trade signals"),
             omitted=omitted, synthetic=brief.synthetic)

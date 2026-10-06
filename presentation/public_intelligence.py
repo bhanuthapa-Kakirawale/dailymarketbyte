@@ -38,12 +38,18 @@ class PublicIntelligence:
     exchange_snapshots: dict = field(default_factory=dict)
     ipo_snapshot: dict | None = None
     capture: dict | None = None
+    # Market Events Engine V1: family -> [MarketEvent] already persisted/captured, and the
+    # per-family status (PERSISTED_SNAPSHOT / CAPTURED_THIS_RUN / HISTORICAL_SNAPSHOT_UNAVAILABLE
+    # / NOT_CAPTURED). NOT_SUPPORTED_YET families simply carry no events - never a failure.
+    market_events: dict = field(default_factory=dict)
+    market_events_status: dict = field(default_factory=dict)
 
     def inputs(self) -> dict:
         return {"market_structure": {"source": self.structure_status, **(self.structure_ref or {})},
                 "exchange_watch": {"source": self.exchange_status,
                                    "snapshots": self.exchange_snapshots},
                 "ipo_watch": {"source": self.ipo_status, "snapshot": self.ipo_snapshot},
+                "market_events": self.market_events_status,
                 "capture": self.capture}
 
 
@@ -52,6 +58,7 @@ class PublicSections:
     structure: list = field(default_factory=list)         # [(insight, provenance lines)]
     exchange: dict | None = None
     ipo: dict | None = None
+    market_events: dict | None = None
     reasons: dict = field(default_factory=dict)
     omitted: list = field(default_factory=list)
     audit: dict = field(default_factory=dict)
@@ -132,6 +139,24 @@ def plan_public_sections(gate, intel: PublicIntelligence | None, day: dt.date, m
     from ipo_watch.watch import derive_events
     out.audit["ipo"]["derived_events"] = derive_events(intel.ipos, day)
     sections["IPO_WATCH"] = _ipo_omission(intel, ipos, ok, ipo_omit)
+
+    # ------------------------------------------------------------ MARKET EVENTS
+    from market_events.watch import build_model as me_model
+    from market_events.watch import market_events_audit, market_events_facts, select_market_events
+
+    me_chosen, me_omit = select_market_events(intel.market_events, intel.universe_symbols, day)
+    me_ok = []
+    for ev in me_chosen:
+        if all(gate.admit(f) for f in market_events_facts([ev])):
+            me_ok.append(ev)
+        else:
+            me_omit.append({"event_key": ev.event_key, "reason": "publication gate refused"})
+    out.market_events = me_model(me_ok, mode)
+    out.reasons["MARKET_EVENTS"] = (f"included: {len(me_ok)} market event(s) dated {day}"
+                                    if me_ok else f"omitted: no official market event dated {day}")
+    out.omitted += [{"section": "MARKET EVENTS", **o} for o in me_omit]
+    out.audit["market_events"] = market_events_audit(me_ok, me_omit)
+    sections["MARKET_EVENTS"] = _market_events_omission(intel, me_chosen, me_ok, me_omit)
     out.audit["inputs"] = intel.inputs()
     return out
 
@@ -256,6 +281,30 @@ def _ipo_omission(intel, chosen, ok, omitted) -> dict:
                          "on this date", input_source=src,
                          snapshot_status=snap.get("status") or "SUCCESS",
                          connectivity=snap.get("connectivity_status") or "REACHABLE")
+
+
+def _market_events_omission(intel, chosen, ok, omitted) -> dict:
+    statuses = intel.market_events_status or {}
+    if ok:
+        return _status_block("RENDERED", f"{len(ok)} market event(s)", True,
+                             "; ".join(sorted(set(statuses.values()))) or None, "SUCCESS")
+    attempted = any(v in ("PERSISTED_SNAPSHOT", "CAPTURED_THIS_RUN") for v in statuses.values())
+    if not attempted:
+        if statuses and all(v == "HISTORICAL_SNAPSHOT_UNAVAILABLE" for v in statuses.values()):
+            return _status_block("HISTORICAL_SNAPSHOT_UNAVAILABLE",
+                                 "no stored market event for this historical session",
+                                 input_source="HISTORICAL_SNAPSHOT_UNAVAILABLE")
+        return _status_block("NOT_SUPPORTED_YET", "no official source for any market-events "
+                             "family has been verified reachable this pass",
+                             input_source="NOT_SUPPORTED_YET")
+    if chosen and _rights_refused(omitted):
+        return _status_block("RIGHTS_BLOCKED", "the publication gate refused every selected "
+                             "market event", snapshot_status="SUCCESS")
+    if chosen:
+        return _status_block("NO_ELIGIBLE_EVENT", "market events exist but none qualifies for "
+                             "this date", snapshot_status="SUCCESS")
+    return _status_block("NO_ELIGIBLE_EVENT", "the stored sources were read and carry no market "
+                         "event for this date", snapshot_status="SUCCESS", connectivity="REACHABLE")
 
 
 # --------------------------------------------------------------------------- existing sections
@@ -409,6 +458,35 @@ def load_public_intelligence(structure_session: dt.date | None, list_date: dt.da
     else:
         intel.ipo_status = missing
         intel.notes.append(f"no official IPO snapshot for {session}")
+
+    # ------------------------------------------------------------ Market Events
+    from market_events.context import load_market_events
+    from market_events.models import ALL_FAMILIES, PERSISTED_SNAPSHOT
+
+    me_capture_fn = None
+    if fetch and not replay:
+        from market_events.models import REPORT_JOB as ME_MODE
+        from market_events.service import MarketEventsService
+
+        def me_capture_fn(family):
+            res = MarketEventsService(out_dir).capture(now, ME_MODE, families=(family,))
+            stored = res["results"].get(family, {}).get("events", [])
+            from market_events.store import load_latest
+            if any(s.get("written") for s in stored):
+                return load_latest(out_dir, family, on_or_before=session)
+            return None
+    # Point-in-time boundary: a live run's cutoff is real "now"; a replay's cutoff is the END
+    # of the session being replayed, so an event first captured after that session - even if
+    # dated on or before it - can never appear as if it was known at the time (mandatory
+    # point-in-time correctness, docs/MARKET_EVENTS_ENGINE.md).
+    from config import IST
+    me_cutoff = now if not replay else dt.datetime.combine(
+        session, dt.time(23, 59, 59), tzinfo=IST)
+    me_ctx = load_market_events(out_dir, cutoff=me_cutoff, live=fetch and not replay,
+                                on_or_before=session, families=ALL_FAMILIES,
+                                capture_fn=me_capture_fn)
+    intel.market_events = me_ctx.events
+    intel.market_events_status = me_ctx.status
     return intel
 
 

@@ -129,6 +129,7 @@ def stock_detail(repo: DeskRepository, symbol: str, session: dt.date, *, replay:
         "appearance_count": sum(1 for d in hist_dates if d <= session),
         "official": official["by_symbol"].get(symbol, []),
         "official_status": official["status"],
+        "market_events_status": official.get("market_events_status", {}),
     }
 
 

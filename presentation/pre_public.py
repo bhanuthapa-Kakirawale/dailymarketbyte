@@ -89,6 +89,7 @@ def apply_publication_profile(brief, profile=None) -> PublicationGate:
 
     ps = plan_public_sections(gate, intel, brief.pre_date, "PRE", max_structure=0)
     brief.exchange_watch, brief.ipo_watch = ps.exchange, ps.ipo
+    brief.market_events = ps.market_events
     brief.public_audit = ps.audit
     brief.public_omitted += ps.omitted
     return gate

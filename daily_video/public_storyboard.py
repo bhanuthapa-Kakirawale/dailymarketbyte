@@ -77,6 +77,22 @@ def ipo_spec(model) -> SceneSpec:
                              "mode": "IPO_BOARD"})
 
 
+def market_events_spec(model, mode: str = "POST") -> SceneSpec:
+    cards = [{k: c[k] for k in ("tag", "symbol", "company", "status", "line")}
+             for c in model["cards"]]
+    sub = "From official sources"
+    dur = round(3.6 + 1.7 * len(cards), 2)
+    return SceneSpec(
+        kind="MARKET_EVENTS", section="MARKET_EVENTS", duration=dur, headline=model["headline"],
+        subline=sub, texts={"headline": model["headline"], "subline": sub, "cards": cards,
+                            "provenance": _prov(model["provenance_lines"])},
+        data={"event_keys": model["event_keys"], "sources": model.get("sources", [])},
+        freeze={"t": round(dur - 0.5, 2), "what": model["headline"],
+                "where": "one card per event: the family chip, the company/instrument, one "
+                "fixed factual line", "why": "an official calendar/lifecycle event - not a "
+                "signal", "mode": "MARKET_EVENTS"})
+
+
 def scene_audit(storyboard) -> list:
     out = []
     for s in storyboard.scenes:
@@ -109,12 +125,13 @@ def audit_storyboard(sb, product: str, metadata: dict | None = None,
         gate=gate, product=product, session_date=sb.session_date, public_text=sb.public_text(),
         scenes=scene_audit(sb), metadata=metadata or {},
         market_structure=pa.get("market_structure"), ipo=pa.get("ipo"),
-        exchange_watch=pa.get("exchange_watch"), hook=hook or None, sources=sb.sources,
+        exchange_watch=pa.get("exchange_watch"), market_events=pa.get("market_events"),
+        hook=hook or None, sources=sb.sources,
         video_path=video_path, synthetic=synthetic, claims=sb.claims,
         scene_texts=sb.claim_texts, omitted_sections=pa.get("omitted_sections"),
         audio=audio)
 
 
 
-__all__ = ["structure_spec", "exchange_spec", "ipo_spec", "scene_audit", "audit_storyboard",
-           "NO_PROVENANCE_KINDS"]
+__all__ = ["structure_spec", "exchange_spec", "ipo_spec", "market_events_spec", "scene_audit",
+           "audit_storyboard", "NO_PROVENANCE_KINDS"]

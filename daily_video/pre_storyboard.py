@@ -239,6 +239,13 @@ def _public_ipo(model):
     return ipo_spec(model)
 
 
+def _public_market_events(model):
+    from .public_storyboard import market_events_spec
+    spec = market_events_spec(model, "PRE")
+    spec.section = "MARKET_EVENTS"
+    return spec
+
+
 def build_pre_storyboard(brief, plan, dynamic_hook: bool = True, hook_ai: bool = False,
                          hook_client=None, sources: dict | None = None,
                          gate=None) -> Storyboard:
@@ -257,6 +264,7 @@ def build_pre_storyboard(brief, plan, dynamic_hook: bool = True, hook_ai: bool =
         "WATCH": lambda: _watch(plan.watch, plan.watch_headline, plan.watch_subline, d["WATCH"]),
         "EXCHANGE": lambda: _public_exchange(plan.exchange),
         "IPO": lambda: _public_ipo(plan.ipo),
+        "MARKET_EVENTS": lambda: _public_market_events(plan.market_events),
     }
     prov = pre_provenance(brief, plan)
     main = []
@@ -287,7 +295,7 @@ def build_pre_storyboard(brief, plan, dynamic_hook: bool = True, hook_ai: bool =
                       omitted=list(plan.omitted) + [
                           {"section": k, "reason": plan.reasons.get(k, "")}
                           for k in ("VIX", "FLOWS", "SECTORS", "EVENT", "STOCK_WATCH", "OVERNIGHT",
-                                    "EXCHANGE", "IPO")
+                                    "EXCHANGE", "IPO", "MARKET_EVENTS")
                           if k not in plan.order] + list(brief.public_omitted),
                       hook_plan=hook_record, section_labels=dict(plan.labels),
                       pre_plan=plan.to_dict(),

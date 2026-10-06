@@ -493,7 +493,8 @@ def pulse_is_redundant(order, pulse, dynamic_hook: bool) -> bool:
 # --------------------------------------------------------------------------- entry point
 POST_MAX_RUNTIME = 62.0
 # Dropped first when a public POST would run past POST_MAX_RUNTIME (never a core section).
-POST_TRIM_ORDER = ("GLOBAL", "EVENT", "MOVERS", "FLOWS", "NIFTY", "IPO", "EXCHANGE")
+POST_TRIM_ORDER = ("GLOBAL", "EVENT", "MOVERS", "FLOWS", "NIFTY", "IPO", "MARKET_EVENTS",
+                   "EXCHANGE")
 
 
 def _report_facts(pres, key):
@@ -564,7 +565,7 @@ def build_storyboard(plan, pres, radar_presentation: dict | None = None,
     from publication import PublicationGate
     from publication.classify import mover_fact, radar_story_fact
 
-    from .public_storyboard import exchange_spec, ipo_spec, structure_spec
+    from .public_storyboard import exchange_spec, ipo_spec, market_events_spec, structure_spec
 
     known = dict(getattr(intelligence, "known_securities", None) or {})
     gate = PublicationGate(profile, known)
@@ -670,6 +671,8 @@ def build_storyboard(plan, pres, radar_presentation: dict | None = None,
         main.append(exchange_spec(ps.exchange, "POST"))
     if ps.ipo:
         main.append(ipo_spec(ps.ipo))
+    if ps.market_events:
+        main.append(market_events_spec(ps.market_events, "POST"))
     main += [structure_spec(ins, lines) for ins, lines in ps.structure]
 
     # Runtime ceiling - content-driven: nothing is stretched; optional sections go first.
@@ -684,7 +687,8 @@ def build_storyboard(plan, pres, radar_presentation: dict | None = None,
             post.reasons[key] = f"omitted: POST runtime ceiling {POST_MAX_RUNTIME:.0f}s"
             if key in post.order:
                 post.order.remove(key)
-            pub_key = {"EXCHANGE": "EXCHANGE_WATCH", "IPO": "IPO_WATCH"}.get(key)
+            pub_key = {"EXCHANGE": "EXCHANGE_WATCH", "IPO": "IPO_WATCH",
+                      "MARKET_EVENTS": "MARKET_EVENTS"}.get(key)
             if pub_key:
                 sections_audit[pub_key] = {"rendered": False, "code": "EDITORIAL_CAP",
                                            "detail": f"runtime ceiling {POST_MAX_RUNTIME:.0f}s"}

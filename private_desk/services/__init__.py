@@ -15,6 +15,7 @@ from . import candidates as cs
 from . import history as hs
 from . import institutional as inst
 from . import market as mk
+from . import market_events as mev
 from . import quality as qa
 from . import stock as st
 from .freshness import compute_freshness, session_context
@@ -110,7 +111,10 @@ class DeskService:
                 # Institutional Flow Intelligence V1 - context only; never read by
                 # attention/candidates/regime, so it cannot change the attention set, Radar
                 # order or the regime classification.
-                "institutional": inst.dashboard_section(self.repo, session)}
+                "institutional": inst.dashboard_section(self.repo, session),
+                # Market Events Engine V1 - same posture: context only, never read by
+                # attention/candidates/regime/PrivateCandidatePacket.
+                "market_events": mev.dashboard_section(self.repo, session)}
 
     def sectors(self, session: dt.date) -> dict:
         d = self.dashboard(session)
@@ -121,6 +125,10 @@ class DeskService:
         return {"nse": inst.nse_section(self.repo, session),
                "cdsl": inst.cdsl_section(self.repo, session),
                "nsdl": inst.nsdl_section(self.repo, session)}
+
+    def market_events(self, session: dt.date) -> dict:
+        """The dedicated Market Events page."""
+        return mev.all_sections(self.repo, session)
 
     def stock(self, symbol: str, session: dt.date) -> dict:
         symbol = symbol.upper()
@@ -158,6 +166,7 @@ class DeskService:
         out = qa.data_quality(self.repo, session, replay, self.freshness())
         out["regime"] = qa.regime_quality(self, session)
         out["institutional"] = inst.quality_rows(self.repo, session)
+        out["market_events"] = mev.quality_rows(self.repo, session)
         return out
 
     def universe_symbols(self, session: dt.date) -> dict:

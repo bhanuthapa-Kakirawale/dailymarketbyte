@@ -483,11 +483,11 @@ FROZEN = {
     # (feature/institutional-flow-intelligence-v1) - pre_provenance() reads a CDSL/NSDL FLOWS
     # candidate's own provenance when set, and the FLOWS scene spec carries its fact ids /
     # sources via `data` for publication.scene_claims. No other frozen file changed.
-    "daily_video/pre_storyboard.py": "a5b22b152977da7f875757ac7004e61dc8873abf30e65000c261b6636c3ce81c",
+    "daily_video/pre_storyboard.py": "eb750f52913074a4b8b268753c65130ec21c32a9070511724e1de7b8171c24b9",
     "daily_video/radar_scenes.py": "ecda846e8012b64794641568023fa3582d256b2456c6ff805171cb76738b9647",
     "daily_video/radar_story_scene.py": "e544e5b3d224e6fcd194b9c5602a26749bda5f6c7a1a0228cb9e2ba38b53c64a",
     "daily_video/scenes.py": "8ff19afcd878d6122f49a3410583d688bd327a04fc2de1b7f6725078a1fe53d1",
-    "daily_video/storyboard.py": "e5834a885429df58f85c790b48406258ab74977d73fc681537ba9abb26da4795",
+    "daily_video/storyboard.py": "cf7cc4860852b9316354a1cc36c9672373b9bc3e646b552d194ba78664620783",
     "daily_video/theme.py": "8e1af617da9052c104ede87ddd393de5744355d657b513accfee4414f8b726db",
     "daily_video/typography.py": "d6b5620d928e4ea9eef40647713b37f639f5ce087a47bd112bf0af2c37f152ae",
     "video.py": "7b7155df022f5795ab271a38963fa05ab9cd4ba6917391a75f5df3567280e352",
@@ -496,7 +496,7 @@ FROZEN = {
     # and the V1 final review correction pass (source roles, de-duplication, silent V2).
     "daily_video/provenance_bar.py": "f46e5eeab911cec195df35b58bb9bb7ff3955dd8e92eadf00381e11046266939",
     "daily_video/public_scenes.py": "e91915b296634e8c3ac36fbd1331036e308de5a41b6ed3055a81f5c25e3fa808",
-    "daily_video/public_storyboard.py": "ccb1b025d1c1dbd508d7b85120c80de6dbb6e75a844dd29299b27e50148f145e",
+    "daily_video/public_storyboard.py": "24cb857013d7f1c9a123271259308fd266dbe351b2365344058ad980fad27462",
 }
 
 

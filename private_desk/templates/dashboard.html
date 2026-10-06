@@ -125,4 +125,13 @@
     </div>
   </div>
 </section>
+
+<section class="panel">
+  <h2>Market events <span class="dim lc">earnings · IPO · OFS · govt auctions · buyback · open offer · delisting - context only</span>
+    <a href="/events?session={{ session }}" class="viewall" style="float:right;text-transform:none;letter-spacing:0">Full detail →</a></h2>
+  {% set me = d.market_events %}
+  {% if me.any_today %}
+  <p>{{ me.any_today }} event(s) today: {% for fam, n in me.today_counts.items() %}{{ n }} {{ fam | replace('_', ' ') | lower }}{% if not loop.last %}, {% endif %}{% endfor %}</p>
+  {% else %}<p class="na">No market events recorded for today.</p>{% endif %}
+</section>
 {% endblock %}

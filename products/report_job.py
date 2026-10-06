@@ -119,6 +119,19 @@ def capture_institutional(out_dir: str, now: dt.datetime) -> dict:
         return {"institutional_flow_status": "FAILED", "error": f"{type(exc).__name__}: {exc}"}
 
 
+def capture_market_events(out_dir: str, now: dt.datetime) -> dict:
+    """Market Events capture (never raises; purely additive - never touches the canonical
+    report or the job's SUCCESS/DEGRADED/BLOCKED status). Every family with no verified-
+    reachable source this pass returns NOT_SUPPORTED_YET, which is recorded, not a failure."""
+    try:
+        from market_events.models import REPORT_JOB as ME_REPORT_JOB
+        from market_events.service import MarketEventsService
+        result = MarketEventsService(out_dir).capture(now, ME_REPORT_JOB)
+        return {"market_events_status": "CAPTURED", **result}
+    except Exception as exc:
+        return {"market_events_status": "FAILED", "error": f"{type(exc).__name__}: {exc}"}
+
+
 def resolve_session(session_date: dt.date | None, now: dt.datetime, calendar=None) -> tuple:
     """(session, None) or (None, (code, message)). Never a date whose close is not final."""
     from core.trading_calendar import SessionCalendar
@@ -141,7 +154,7 @@ def resolve_session(session_date: dt.date | None, now: dt.datetime, calendar=Non
 def run_report_job(session_date: dt.date | None = None, *, demo: bool = False,
                    now: dt.datetime | None = None, skip_radar: bool = False,
                    radar_fn=None, calendar=None, official_fn=None,
-                   institutional_fn=None) -> dict:
+                   institutional_fn=None, market_events_fn=None) -> dict:
     """The REPORT job. Returns the run record (also written to output/report_jobs/<D>/)."""
     import config
     import main
@@ -154,6 +167,7 @@ def run_report_job(session_date: dt.date | None = None, *, demo: bool = False,
     radar_fn = radar_fn or run_radar
     official_fn = official_fn or capture_official
     institutional_fn = institutional_fn or capture_institutional
+    market_events_fn = market_events_fn or capture_market_events
     record = {"version": REPORT_JOB_VERSION, "job_type": JOB_REPORT_BUILD,
               "started_at": dt.datetime.now(dt.timezone.utc).isoformat(), "as_of": now.isoformat(),
               "demo": demo}
@@ -255,6 +269,10 @@ def run_report_job(session_date: dt.date | None = None, *, demo: bool = False,
         # blocks, never degrades, and demo runs skip it just like official snapshots do.
         institutional = ({"institutional_flow_status": "SKIPPED", "reason": "demo"} if demo
                          else institutional_fn(out_dir, now))
+        # Market Events capture: same additive posture as institutional-flow capture above -
+        # never affects run_status, never blocks, never degrades.
+        market_events = ({"market_events_status": "SKIPPED", "reason": "demo"} if demo
+                         else market_events_fn(out_dir, now))
         degraded = []
         if official.get("official_snapshot_status") in ("DEGRADED", "FAILED") or (
                 official.get("capture") == "REFUSED" and official.get("window") != "HISTORICAL_SESSION"
@@ -290,6 +308,7 @@ def run_report_job(session_date: dt.date | None = None, *, demo: bool = False,
         print(f"REPORT {session}: {status} ({source}) -> {report_path}; radar {radar.get('status')}"
               f"; official snapshots {official.get('official_snapshot_status')}"
               f"; institutional flows {institutional.get('institutional_flow_status')}"
+              f"; market events {market_events.get('market_events_status')}"
               f"; state store {state_fields['state_store_backend']}"
               f" persisted={state_fields['persisted_to_state_store']}")
         return close(status, "REPORT_READY" if status != BLOCKED else "DATA_QA",
@@ -304,6 +323,7 @@ def run_report_job(session_date: dt.date | None = None, *, demo: bool = False,
                               "radar": radar, "intelligence": bool(snapshot),
                               "official_snapshots": official,
                               "institutional_flows": institutional,
+                              "market_events": market_events,
                               **{k: official.get(k) for k in (
                                   "official_snapshot_status", "ipo_snapshot_status",
                                   "exchange_snapshot_status", "fno_status", "asm_status",
@@ -343,4 +363,5 @@ def _write_record(record: dict, out_dir: str) -> dict:
 
 
 __all__ = ["run_report_job", "resolve_session", "existing_radar", "run_radar", "capture_official",
-           "REPORT_JOB_MODE", "REPORT_JOB_DEMO_MODE"]
+           "capture_institutional", "capture_market_events", "REPORT_JOB_MODE",
+           "REPORT_JOB_DEMO_MODE"]

@@ -10,6 +10,7 @@ What is synced (and nothing else - no MP4, no image, no .env, no token):
     market_structure     market_structure/     *.json    IMMUTABLE (session snapshots)
     official_snapshots   official_snapshots/   **.json   revisions IMMUTABLE, manifests mutable
     institutional_flows  institutional_flows/  **.json   IMMUTABLE (revisions + attempt logs)
+    market_events        market_events/        **.json   IMMUTABLE (revisions + attempt logs)
     databases            data/                 *.db      mutable (run history, OHLCV, editorial)
     radar                radar/                **.json   mutable
     intelligence         intelligence/         **.json   mutable (derived)
@@ -53,6 +54,7 @@ NAMESPACES = (
     Namespace("market_structure", "market_structure", "*.json", False, "all"),
     Namespace("official_snapshots", "official_snapshots", "*.json", True, "revisions"),
     Namespace("institutional_flows", "institutional_flows", "*.json", True, "all"),
+    Namespace("market_events", "market_events", "*.json", True, "all"),
     Namespace("databases", "data", "*.db", False, "none"),
     Namespace("radar", "radar", "*.json", True, "none"),
     Namespace("intelligence", "intelligence", "*.json", True, "none"),

@@ -313,6 +313,20 @@ class DeskRepository:
         from institutional_flows.store import latest_attempts
         return latest_attempts(self.out_dir, days=days)
 
+    # ------------------------------------------------------------------ market events
+    def market_events_latest(self, family: str, *, symbol: str | None = None,
+                             on_or_before: dt.date | None = None) -> list:
+        from market_events.store import load_latest
+        return load_latest(self.out_dir, family, symbol=symbol, on_or_before=on_or_before)
+
+    def market_events_list(self, family: str) -> list:
+        from market_events.store import list_events
+        return list_events(self.out_dir, family)
+
+    def market_events_attempts(self, days: int = 3) -> list:
+        from market_events.store import latest_attempts
+        return latest_attempts(self.out_dir, days=days)
+
     # ------------------------------------------------------------------ database health
     def db_health(self, name: str) -> dict:
         path = self.db_file(name)

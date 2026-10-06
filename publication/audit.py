@@ -60,7 +60,8 @@ def _visibility(scenes: list) -> tuple:
 def build_publication_audit(*, gate, product: str, session_date, public_text: dict,
                             scenes: list, metadata: dict | None = None,
                             market_structure: dict | None = None, ipo: dict | None = None,
-                            exchange_watch: dict | None = None, hook: dict | None = None,
+                            exchange_watch: dict | None = None,
+                            market_events: dict | None = None, hook: dict | None = None,
                             sources: dict | None = None, video_path: str | None = None,
                             synthetic: bool = False, claims: list | None = None,
                             scene_texts: dict | None = None, omitted_sections: dict | None = None,
@@ -144,6 +145,7 @@ def build_publication_audit(*, gate, product: str, session_date, public_text: di
                                           if f.publication_rights_status.value == "REVIEW_REQUIRED"}),
         "exchange_watch": exchange_watch or {"present": False},
         "ipo": ipo,
+        "market_events": market_events or {"present": False},
         "gemini": {"used": bool(hook and hook.get("source", "").startswith("GEMINI")),
                    "candidate_set": (hook or {}).get("candidates") or [],
                    "final_selected_claims": {k: (hook or {}).get(k) for k in

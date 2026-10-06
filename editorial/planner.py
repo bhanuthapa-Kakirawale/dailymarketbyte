@@ -136,12 +136,17 @@ def _flows_scene(report, snapshot, used_insights) -> ScenePlan | None:
     if fii is None or dii is None:
         return None
 
+    # Deterministic materiality context (intelligence.flow_materiality), carried through the
+    # scene's metadata rather than as a new parameter anywhere downstream - exactly how the
+    # streak secondary_text below already reaches the storyboard/planner without either of them
+    # needing to know about `snapshot`.
+    materiality = dict(getattr(snapshot, "flow_context", None) or {})
     scene = ScenePlan(scene_id="flows", scene_type=SceneType.FLOWS,
                       # NSE's provisional net cash-market figures - "provisional" stays visible
                       primary_text="FII / DII FLOWS · PROVISIONAL",
                       show_ticker="FLOWS" in TICKER_SCENES,
                       source_fact_ids=list(flows.get("fact_ids") or []),
-                      metadata={"presentation": "FLOWS_SCAN"})
+                      metadata={"presentation": "FLOWS_SCAN", "materiality": materiality})
     for label, value, metric in (("FII", float(fii), Metric.FII_NET_CASH),
                                  ("DII", float(dii), Metric.DII_NET_CASH)):
         fact_id = _fact_id(report, metric)
@@ -159,6 +164,17 @@ def _flows_scene(report, snapshot, used_insights) -> ScenePlan | None:
         direction = "sellers" if streak.metadata.get("direction") == "SELLING" else "buyers"
         scene.secondary_text = f"{streak.subject}s net {direction}, {sessions} recorded sessions"
         scene.source_insight_ids = [streak.insight_id]
+    else:
+        # No streak insight exists exactly when today does NOT continue a 2+ session run - the
+        # one case left to announce is a REVERSAL after a run of >= 3 opposite-direction
+        # sessions (intelligence.flow_materiality). A streak insight, when it exists, always
+        # takes priority; the two are mutually exclusive by construction (MIN_STREAK_TO_REPORT).
+        reversal = next((ctx for ctx in materiality.values()
+                         if ctx.get("streak_state") == "DIRECTION_REVERSES"), None)
+        if reversal:
+            direction = "buyers" if reversal["current_value"] > 0 else "sellers"
+            scene.secondary_text = (f"{reversal['subject']}s net {direction}, first time in "
+                                    f"{reversal['prior_run_length'] + 1} recorded sessions")
     return apply_timing(scene)
 
 

@@ -31,6 +31,7 @@ class SourceFamily(str, Enum):
     AI_DISCOVERY = "AI_DISCOVERY"                      # Gemini: finds and paraphrases
     INTERNAL = "INTERNAL"                              # computed or rule-derived here
     FIXTURE = "FIXTURE"                                # synthetic demo data
+    DEPOSITORY = "DEPOSITORY"                          # CDSL/NSDL: the depository itself
     UNKNOWN = "UNKNOWN"
 
 
@@ -44,6 +45,8 @@ GROUP_YAHOO = "YAHOO"
 GROUP_GEMINI = "GEMINI"
 GROUP_INTERNAL = "INTERNAL"
 GROUP_DEMO = "DEMO_FIXTURE"
+GROUP_CDSL = "CDSL"            # Central Depository Services - a separate witness from NSE
+GROUP_NSDL = "NSDL"            # National Securities Depository - a separate witness from NSE
 GROUP_UNKNOWN = "UNKNOWN"
 
 # Prefix for news publishers: the independence group is the publisher, not the aggregator
@@ -115,6 +118,10 @@ SRC_NSE_SURVEILLANCE = "nse_surveillance"        # ASM / GSM lists (NSE website 
 SRC_NSE_IPO = "nse_ipo_issues"                   # current / upcoming / past issues (NSE website API)
 SRC_SEBI_OFFER_DOC = "sebi_offer_document"       # DRHP / RHP / prospectus, entered by hand
 SRC_MARKET_STRUCTURE = "daily_byte_market_structure"  # our own aggregate over exchange data
+# Institutional Flow Intelligence V1
+SRC_NSE_FIIDII_API = "nse_fiidii_api"             # NSE's own provisional FII/FPI+DII cash flow
+SRC_CDSL_FPI_DAILY = "cdsl_fpi_daily"             # CDSL's daily depository-reported FPI flow
+SRC_NSDL_FPI_FORTNIGHTLY = "nsdl_fpi_fortnightly"  # NSDL's fortnightly sector-wise FPI flow
 
 _REGISTRY: dict[str, SourceMetadata] = {
     SRC_NSE: SourceMetadata(
@@ -246,6 +253,34 @@ _REGISTRY: dict[str, SourceMetadata] = {
         retrieval_method="deterministic aggregation (market_structure/)",
         display_rights_status="OWN_CONTENT",
         notes="Counts over a named index universe; never names a security publicly."),
+    SRC_NSE_FIIDII_API: SourceMetadata(
+        source_name=SRC_NSE_FIIDII_API, source_type=SourceType.PRIMARY,
+        source_family=SourceFamily.EXCHANGE, independence_group=GROUP_NSE,
+        retrieval_method="https GET www.nseindia.com/api/fiidiiTradeReact",
+        reference="https://www.nseindia.com", market_timestamp_available=False,
+        display_rights_status="UNREVIEWED",
+        notes="The exchange's own same-day FII/FPI + DII cash-market flow - explicitly "
+              "provisional, subject to revision. Same venue/independence group as "
+              "nse_website: a corroborating nse_website reading is not a second witness."),
+    SRC_CDSL_FPI_DAILY: SourceMetadata(
+        source_name=SRC_CDSL_FPI_DAILY, source_type=SourceType.PRIMARY,
+        source_family=SourceFamily.DEPOSITORY, independence_group=GROUP_CDSL,
+        retrieval_method="https GET www.cdslindia.com/eservices/publications/fiidaily",
+        reference="https://www.cdslindia.com/eservices/publications/fiidaily",
+        market_timestamp_available=False, display_rights_status="UNREVIEWED",
+        notes="CDSL's own daily depository-reported FPI flow. CDSL states this is compiled "
+              "from custodian reports and covers trades 'on and upto the previous trading "
+              "day(s)' - never labelled 'final' or a single trading session."),
+    SRC_NSDL_FPI_FORTNIGHTLY: SourceMetadata(
+        source_name=SRC_NSDL_FPI_FORTNIGHTLY, source_type=SourceType.PRIMARY,
+        source_family=SourceFamily.DEPOSITORY, independence_group=GROUP_NSDL,
+        retrieval_method="https GET www.fpi.nsdl.co.in (fortnight discovered from the "
+                         "selection page's own <select>, never a hard-coded period/URL)",
+        reference="https://www.fpi.nsdl.co.in/web/Reports/FPI_Fortnightly_Selection.aspx",
+        market_timestamp_available=False, display_rights_status="UNREVIEWED",
+        notes="NSDL's own fortnightly sector-wise FPI net investment, official regulatory "
+              "publication. AUC (asset-under-custody value) is kept separate from net "
+              "investment (flow) and never described as buying/selling."),
 }
 
 
@@ -305,5 +340,7 @@ __all__ = ["SourceMetadata", "SourceFamily", "source_metadata", "independence_gr
            "SRC_NSE", "SRC_YAHOO", "SRC_GEMINI", "SRC_GOOGLE_NEWS", "SRC_RULE_EXPIRY",
            "SRC_DERIVED", "SRC_DEMO", "SRC_NSEIX_LIVE", "SRC_NSEIX_DSP", "SRC_RBI_PRESS",
            "SRC_FED_CALENDAR", "SRC_NSE_CONSTITUENTS", "SRC_NSE_FO_BAN", "SRC_NSE_SURVEILLANCE",
-           "SRC_NSE_IPO", "SRC_SEBI_OFFER_DOC", "SRC_MARKET_STRUCTURE", "GROUP_NSE", "GROUP_NSEIX", "GROUP_RBI", "GROUP_FED", "GROUP_YAHOO", "GROUP_GEMINI",
-           "GROUP_INTERNAL", "GROUP_DEMO", "GROUP_UNKNOWN", "NEWS_GROUP_PREFIX"]
+           "SRC_NSE_IPO", "SRC_SEBI_OFFER_DOC", "SRC_MARKET_STRUCTURE", "SRC_NSE_FIIDII_API",
+           "SRC_CDSL_FPI_DAILY", "SRC_NSDL_FPI_FORTNIGHTLY", "GROUP_NSE", "GROUP_NSEIX",
+           "GROUP_RBI", "GROUP_FED", "GROUP_YAHOO", "GROUP_GEMINI", "GROUP_INTERNAL",
+           "GROUP_DEMO", "GROUP_CDSL", "GROUP_NSDL", "GROUP_UNKNOWN", "NEWS_GROUP_PREFIX"]

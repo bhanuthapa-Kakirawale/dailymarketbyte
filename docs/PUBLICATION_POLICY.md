@@ -33,7 +33,7 @@ An omitted argument can never widen what a viewer sees.
 
 Every candidate statement is a `PublishableFact` carrying: `scope` (MARKET / INDEX / SECTOR /
 SECURITY / IPO), `origin` (OFFICIAL_EXCHANGE / OFFICIAL_REGULATOR / OFFICIAL_COMPANY /
-MARKET_DATA / INTERNAL_ANALYTICS / NEWS / AI), `content_class` (MARKET_AGGREGATE /
+OFFICIAL_DEPOSITORY / MARKET_DATA / INTERNAL_ANALYTICS / NEWS / AI), `content_class` (MARKET_AGGREGATE /
 EXCHANGE_EVENT / CORPORATE_EVENT / IPO_EVENT / FINANCIAL_STATISTIC / TECHNICAL_ANALYSIS /
 OPINION / RECOMMENDATION), `orientation` (HISTORICAL / CURRENT_FACT / SCHEDULED_EVENT /
 FORWARD_LOOKING), `source_name`, `source_label` (what the viewer sees), `source_reference`,
@@ -42,6 +42,11 @@ FORWARD_LOOKING), `source_name`, `source_label` (what the viewer sees), `source_
 
 Classification happens where the content is built (the planner / storyboard) - never by parsing
 rendered text afterwards (the same rule as provenance).
+
+Institutional-flow facts (`institutional_flows/facts.py`) carry the tags
+`FPI_DII_PROVISIONAL`, `FPI_DEPOSITORY_REPORTED`, `FPI_SECTOR_FLOW`; NSE's is `origin
+MARKET_DATA` (matching the existing canonical FII/DII classification), CDSL's and NSDL's are
+`OFFICIAL_DEPOSITORY`. See docs/INSTITUTIONAL_FLOW_INTELLIGENCE.md.
 
 ## The PUBLIC_UNREGISTERED rules (`publication/policy.py`)
 
@@ -93,7 +98,7 @@ Technical accessibility is not publication permission.
 | Status | Meaning | Sources |
 |---|---|---|
 | `APPROVED` | our own content / derived aggregates / hand-entered official schedules | `daily_byte_derived`, `daily_byte_market_structure`, `expiry_calendar_rule`, `rbi_press_release`, `federal_reserve_calendar` |
-| `REVIEW_REQUIRED` | redistribution terms not reviewed | NSE (website, archive files, F&O ban, surveillance, IPO), Yahoo, SEBI offer documents |
+| `REVIEW_REQUIRED` | redistribution terms not reviewed | NSE (website, archive files, F&O ban, surveillance, IPO, FII/DII flow), Yahoo, SEBI offer documents, CDSL (FPI daily flow), NSDL (FPI fortnightly sector flow) |
 | `RESTRICTED` | never published | Gemini, Google News headlines, NSE IX (GIFT) while the rights review is OPEN, synthetic fixtures |
 | `UNKNOWN` | not in the registry - blocked | - |
 

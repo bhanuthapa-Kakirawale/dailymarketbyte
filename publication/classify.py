@@ -24,7 +24,8 @@ SOURCE_LABELS = {
     S.SRC_RULE_EXPIRY: "NSE expiry rule", S.SRC_DERIVED: "Daily Market Byte calculation",
     S.SRC_MARKET_STRUCTURE: "Daily Market Byte count", S.SRC_NSEIX_LIVE: "NSE IX",
     S.SRC_NSEIX_DSP: "NSE IX", S.SRC_GEMINI: "AI", S.SRC_GOOGLE_NEWS: "news headline",
-    S.SRC_DEMO: "synthetic fixture",
+    S.SRC_DEMO: "synthetic fixture", S.SRC_NSE_FIIDII_API: "NSE",
+    S.SRC_CDSL_FPI_DAILY: "CDSL", S.SRC_NSDL_FPI_FORTNIGHTLY: "NSDL",
 }
 _RANK = {RightsStatus.APPROVED: 0, RightsStatus.REVIEW_REQUIRED: 1, RightsStatus.UNKNOWN: 2,
          RightsStatus.RESTRICTED: 3}
@@ -54,6 +55,8 @@ def origin_for(source_name: str) -> Origin:
         return Origin.INTERNAL_ANALYTICS
     if meta.source_family is S.SourceFamily.REGULATOR:
         return Origin.OFFICIAL_REGULATOR
+    if meta.source_family is S.SourceFamily.DEPOSITORY:
+        return Origin.OFFICIAL_DEPOSITORY
     return Origin.MARKET_DATA
 
 

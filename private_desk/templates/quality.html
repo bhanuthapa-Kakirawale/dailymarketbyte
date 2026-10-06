@@ -119,6 +119,25 @@
 </section>
 
 <section class="panel">
+  <h2>Institutional flow <span class="dim lc">NSE / CDSL / NSDL - immutable stored snapshots, no fetch on page load</span></h2>
+  {% set inst = q.institutional %}
+  {% if inst.nse %}
+  <dl class="facts">
+    <dt>NSE latest</dt><dd>{% if inst.nse.latest %}{{ inst.nse.latest.report_key }} <span class="b {{ 'ok' if inst.nse.freshness == 'FRESH' else 'warn' }}">{{ inst.nse.freshness }}</span>{% else %}<span class="na">UNAVAILABLE</span>{% endif %}</dd>
+    <dt>CDSL latest</dt><dd>{% if inst.cdsl.latest %}report date {{ inst.cdsl.latest.report_date }} <span class="b {{ 'ok' if inst.cdsl.freshness == 'FRESH' else 'warn' }}">{{ inst.cdsl.freshness }}</span>{% if inst.cdsl.latest.bootstrap %} <span class="b warn">BOOTSTRAP</span>{% endif %}{% else %}<span class="na">UNAVAILABLE</span>{% endif %}</dd>
+    <dt>NSDL latest / previous</dt><dd>{% if inst.nsdl.latest %}{{ inst.nsdl.latest.period_note }} <span class="b {{ 'ok' if inst.nsdl.freshness == 'FRESH' else 'warn' }}">{{ inst.nsdl.freshness }}</span> / {{ inst.nsdl.previous_period | na }}{% else %}<span class="na">UNAVAILABLE</span>{% endif %}</dd>
+    {% if inst.sector_mapping %}<dt>NSDL sector mapping</dt><dd>{{ inst.sector_mapping.mapped }} mapped / {{ inst.sector_mapping.unmapped }} unmapped{% if inst.sector_mapping.unmapped_labels %} <span class="note">({{ inst.sector_mapping.unmapped_labels | join(', ') }})</span>{% endif %}</dd>{% endif %}
+  </dl>
+  <h2 style="margin-top:8px">Recent capture attempts</h2>
+  <table><thead><tr><th>When</th><th>Source</th><th>Status</th></tr></thead><tbody>
+  {% for a in inst.attempts %}{% set st = a.status or (a.latest or {}).get('status') or (a.discovery or {}).get('status') %}{% set ts = a.retrieved_at or (a.latest or {}).get('retrieved_at') %}
+  <tr><td class="mono">{{ (ts or '')[:19] | na }}</td><td>{{ a.source }}</td><td><span class="b {{ 'ok' if st in ('SUCCESS', 'UNCHANGED', 'NEW_REPORT') else 'warn' }}">{{ st | na }}</span></td></tr>{% endfor %}
+  {% if not inst.attempts %}<tr><td colspan="3" class="na">No capture attempts recorded yet.</td></tr>{% endif %}
+  </tbody></table>
+  {% else %}<p class="na">DATA UNAVAILABLE - no session selected.</p>{% endif %}
+</section>
+
+<section class="panel">
   <h2>Canonical report & recent DMB runs <span class="dim" style="text-transform:none;letter-spacing:0">(read-only view)</span></h2>
   <p>Report for session: <span class="b {{ 'ok' if q.report.status == 'FOUND' else 'warn' }}">{{ q.report.status }}</span> {{ q.report.report_id | na }}</p>
   <table><thead><tr><th>Started</th><th>Job</th><th>Target</th><th>Source session</th><th>Status</th></tr></thead><tbody>

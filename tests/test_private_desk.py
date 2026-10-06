@@ -217,8 +217,8 @@ def _desk_sources():
 
 
 ALL_PAGES = ["/", "/radar", "/radar.csv", "/stock", "/stock/SYMA", "/stock/SYMB", "/stock/SYMD",
-             "/stock?q=SYMC", "/api/chart/SYMA", "/api/chart/SYMC", "/sectors", "/history",
-             "/history?family=VOLUME", "/quality", "/healthz"]
+             "/stock?q=SYMC", "/api/chart/SYMA", "/api/chart/SYMC", "/sectors", "/institutional",
+             "/history", "/history?family=VOLUME", "/quality", "/healthz"]
 
 
 # ------------------------------------------------------------------ 1. read-only access
@@ -453,7 +453,8 @@ def test_no_broker_network_or_upload_dependencies():
     banned_modules = ("kiteconnect", "kite", "upload", "googleapiclient", "google_auth_oauthlib",
                       "requests", "yfinance", "providers", "news", "smtplib", "urllib.request",
                       "http.client", "socket", "subprocess", "official_snapshots.service",
-                      "official_snapshots.sources", "radar.daily_pipeline.run_daily_radar")
+                      "official_snapshots.sources", "radar.daily_pipeline.run_daily_radar",
+                      "institutional_flows.service", "institutional_flows.sources")
     for path in _desk_sources():
         tree = ast.parse(open(path, encoding="utf-8").read())
         for node in ast.walk(tree):
@@ -468,6 +469,7 @@ def test_no_broker_network_or_upload_dependencies():
         src = open(path, encoding="utf-8").read().lower()
         for word in ("place_order", "modify_order", "cancel_order", "access_token", "api_key"):
             assert word not in src, f"{path}: {word}"
+        assert ".capture(" not in src, f"{path}: calls an acquisition .capture(...)"
 
 
 def test_every_route_is_read_only(client):

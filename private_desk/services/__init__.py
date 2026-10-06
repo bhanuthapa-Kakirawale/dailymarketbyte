@@ -13,6 +13,7 @@ from ..settings import DeskSettings
 from . import attention as at
 from . import candidates as cs
 from . import history as hs
+from . import institutional as inst
 from . import market as mk
 from . import quality as qa
 from . import stock as st
@@ -105,11 +106,21 @@ class DeskService:
                 "changes": changes, "insights": insights, "attention": attention,
                 "change_summary": at.change_summary(r["views"], changes),
                 "change_items": at.change_items(attention, r["views"], history_start),
-                "history_start": history_start}
+                "history_start": history_start,
+                # Institutional Flow Intelligence V1 - context only; never read by
+                # attention/candidates/regime, so it cannot change the attention set, Radar
+                # order or the regime classification.
+                "institutional": inst.dashboard_section(self.repo, session)}
 
     def sectors(self, session: dt.date) -> dict:
         d = self.dashboard(session)
         return d
+
+    def institutional(self, session: dt.date) -> dict:
+        """The dedicated Institutional Intelligence page."""
+        return {"nse": inst.nse_section(self.repo, session),
+               "cdsl": inst.cdsl_section(self.repo, session),
+               "nsdl": inst.nsdl_section(self.repo, session)}
 
     def stock(self, symbol: str, session: dt.date) -> dict:
         symbol = symbol.upper()
@@ -123,6 +134,8 @@ class DeskService:
         detail["context"] = r["context"]
         detail["report"] = mk.report_diagnostics(self.repo, session)
         detail["market_regime"] = self.regime(session, n=1)["snapshot"]   # context only
+        # Sector-level FPI context only - never a claim about this stock's own FPI activity.
+        detail["fpi_sector_context"] = inst.sector_context(self.repo, session, detail["sector"])
         return detail
 
     def chart(self, symbol: str, session: dt.date) -> dict:
@@ -144,6 +157,7 @@ class DeskService:
         replay = self.replay(session) if session else None
         out = qa.data_quality(self.repo, session, replay, self.freshness())
         out["regime"] = qa.regime_quality(self, session)
+        out["institutional"] = inst.quality_rows(self.repo, session)
         return out
 
     def universe_symbols(self, session: dt.date) -> dict:

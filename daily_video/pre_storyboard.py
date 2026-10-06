@@ -50,7 +50,11 @@ def pre_provenance(brief, plan) -> dict:
     out["SETUP"] = _prov(nifty_src, fmt_session_close(prev))
     out["SECTORS"] = _prov(nifty_src, fmt_session_close(prev))
     flow_ids = [f for f in brief.fact_provenance if "FII" in f.upper() or "DII" in f.upper()]
-    out["FLOWS"] = _prov(_labels(_report_names(brief, flow_ids) or ["nse_website"]), fmt_date(prev))
+    # Institutional Flow Intelligence V1: a CDSL/NSDL FLOWS scene carries its own provenance
+    # (a different source and "as of" than NSE's); the plan model's `provenance` wins when set.
+    flows_provenance = getattr(plan.flows, "provenance", None) if plan.flows else None
+    out["FLOWS"] = flows_provenance or _prov(
+        _labels(_report_names(brief, flow_ids) or ["nse_website"]), fmt_date(prev))
     if brief.vix is not None:
         out["VIX"] = _prov(_labels([brief.vix.source]), fmt_session_close(brief.vix.session))
     ov = plan.overnight
@@ -155,6 +159,11 @@ def _flows(f, dur):
     return SceneSpec(
         kind="FLOWS", section="FLOWS", duration=dur, headline=f.headline, subline=f.subline,
         texts={"bars": f.bars},
+        # Institutional Flow Intelligence V1: the fact ids / source names this scene's numbers
+        # resolve to when they are not plain canonical FII/DII facts (CDSL/NSDL candidates) -
+        # publication.scene_claims reads this instead of the legacy flow-fact lookup when set.
+        data={"fact_ids": getattr(f, "fact_ids", None) or [],
+             "sources": getattr(f, "sources", None) or []},
         freeze={"t": round(dur - 0.6, 2), "what": f.headline,
                 "where": "opposing bars from the centre line - left is selling, right is buying",
                 "why": "previous-session institutional flows, labelled with their day"})

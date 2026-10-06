@@ -122,6 +122,12 @@
     {% else %}<p class="na">DATA UNAVAILABLE - no Market Structure sector row for this session.</p>{% endif %}
     {% set mr = st.market_regime %}
     {% if mr %}<div class="note rg-stock">Market regime ({{ mr.session_date }}): {{ m.rlabel(mr.regime) }} <a href="/regime?session={{ session }}">why →</a><br>Context only - it does not change this stock's Radar evidence, state or order.</div>{% endif %}
+    {% set fc = st.fpi_sector_context %}
+    <div class="note" style="margin-top:6px">FPI sector context (sector-level, not stock-level):
+    {% if fc.status == 'OK' %}
+      {{ fc.sector }} - current fortnight {{ fc.current_cr | num(0) }}, previous {{ fc.previous_cr | num(0) }} ({{ fc.period_note }}).
+    {% else %}UNAVAILABLE - {{ fc.reason }}.{% endif %}
+    Sector flow is not evidence of FPI activity in this stock.</div>
   </section>
 
   <section class="panel">

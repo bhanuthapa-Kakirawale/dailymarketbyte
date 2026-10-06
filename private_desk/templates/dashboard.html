@@ -95,4 +95,34 @@
     {% else %}<p class="na">DATA UNAVAILABLE - {{ d.ms.reason }}</p>{% endif %}
   </section>
 </div>
+
+<section class="panel">
+  <h2>Institutional flow <span class="dim lc">NSE provisional · CDSL depository-reported · NSDL fortnightly sector - context only</span>
+    <a href="/institutional?session={{ session }}" class="viewall" style="float:right;text-transform:none;letter-spacing:0">Full detail →</a></h2>
+  {% set inst = d.institutional %}
+  <div class="grid g3">
+    <div>
+      <div class="dim lc">NSE · latest provisional session</div>
+      {% if inst.nse.latest %}
+      <div class="kv kv-ctx"><div><div class="k">FPI net</div><div class="v sm">{{ inst.nse.latest.fpi_net_investment | num(0) }}</div></div>
+        <div><div class="k">DII net</div><div class="v sm">{{ inst.nse.latest.dii_net_investment | num(0) }}</div></div></div>
+      <div class="note">{{ inst.nse.latest.report_key }} · <span class="b {{ 'ok' if inst.nse.freshness == 'FRESH' else 'warn' }}">{{ inst.nse.freshness }}</span></div>
+      {% else %}<p class="na">DATA UNAVAILABLE</p>{% endif %}
+    </div>
+    <div>
+      <div class="dim lc">CDSL · latest depository report</div>
+      {% if inst.cdsl.latest %}
+      <div class="note">Report date {{ inst.cdsl.latest.report_date }} · <span class="b {{ 'ok' if inst.cdsl.freshness == 'FRESH' else 'warn' }}">{{ inst.cdsl.freshness }}</span></div>
+      <div class="note">{{ inst.cdsl.categories | length }} category/route row(s) - gross purchases / gross sales</div>
+      {% else %}<p class="na">DATA UNAVAILABLE</p>{% endif %}
+    </div>
+    <div>
+      <div class="dim lc">NSDL · latest fortnightly sector report</div>
+      {% if inst.nsdl.latest %}
+      <div class="note">{{ inst.nsdl.latest.period_note }} · <span class="b {{ 'ok' if inst.nsdl.freshness == 'FRESH' else 'warn' }}">{{ inst.nsdl.freshness }}</span></div>
+      <div class="note">{{ inst.nsdl.sectors | length }} sector(s) net investment</div>
+      {% else %}<p class="na">DATA UNAVAILABLE</p>{% endif %}
+    </div>
+  </div>
+</section>
 {% endblock %}

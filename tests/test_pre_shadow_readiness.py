@@ -479,7 +479,11 @@ FROZEN = {
     "daily_video/hook_scene.py": "f6af246492bc2d0d5b92f24b18ed84cccd7fdbfddd99f26930ec865d88759d2f",
     "daily_video/market_scenes.py": "e2b981425c12d98def8ed3da62d58a405f54eaab411c168bbd4b8f669820e12d",
     "daily_video/pre_scenes.py": "87ad294e425015ea8bf3e1db150dc69d3de06865010af150d0487117077d70c3",
-    "daily_video/pre_storyboard.py": "d5e71add42e31820ee0e4c1b9696c303a05a270e4a69edac78912d65157e79f9",
+    # Re-pinned 2026-10-05 with owner approval: Institutional Flow Intelligence V1
+    # (feature/institutional-flow-intelligence-v1) - pre_provenance() reads a CDSL/NSDL FLOWS
+    # candidate's own provenance when set, and the FLOWS scene spec carries its fact ids /
+    # sources via `data` for publication.scene_claims. No other frozen file changed.
+    "daily_video/pre_storyboard.py": "a5b22b152977da7f875757ac7004e61dc8873abf30e65000c261b6636c3ce81c",
     "daily_video/radar_scenes.py": "ecda846e8012b64794641568023fa3582d256b2456c6ff805171cb76738b9647",
     "daily_video/radar_story_scene.py": "e544e5b3d224e6fcd194b9c5602a26749bda5f6c7a1a0228cb9e2ba38b53c64a",
     "daily_video/scenes.py": "8ff19afcd878d6122f49a3410583d688bd327a04fc2de1b7f6725078a1fe53d1",

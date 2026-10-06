@@ -671,4 +671,5 @@ def test_scheduled_workflows_use_the_state_store_not_the_cache(name):
         block = wf[:wf.index(line)].rsplit("- name:", 1)[1]
         assert "env.DMB_STATE_BACKEND != 'gcs'" in block, name
     assert "output/market_structure" in wf and "output/official_snapshots" in wf
+    assert "output/institutional_flows" in wf
     assert "group: daily-byte-state" in wf

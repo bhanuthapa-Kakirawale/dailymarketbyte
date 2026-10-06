@@ -30,6 +30,7 @@ No project ID, bucket name or credential is hard-coded. Run records and audits c
 | `reports/` | `reports/*.json` (canonical only, not `unfit/`) | immutable (create-only) |
 | `market_structure/` | `market_structure/*.json` | immutable |
 | `official_snapshots/` | `official_snapshots/<session>/*.json` | revisions immutable, manifest mutable |
+| `institutional_flows/` | `institutional_flows/**.json` | immutable (revisions + attempt logs; no manifest - see docs/INSTITUTIONAL_FLOW_INTELLIGENCE.md) |
 | `databases/` | `data/*.db` (run history, OHLCV, editorial) | mutable |
 | `radar/`, `intelligence/` | their `*.json` | mutable |
 | `run_history/` | `report_jobs/**.json` | mutable |

@@ -151,6 +151,12 @@ may not become canonical. Demo reports are exempt (`is_demo=1`, excluded from ev
   PRE hydrate them on a clean runner and read exactly what was persisted (manifest `inputs`:
   `PERSISTED_SNAPSHOT` with file + checksum). A replay never acquires: a snapshot that was not
   preserved is `HISTORICAL_SNAPSHOT_UNAVAILABLE`.
+- **Institutional Flow Intelligence V1** (docs/INSTITUTIONAL_FLOW_INTELLIGENCE.md):
+  `products.report_job.capture_institutional` runs after official-snapshot capture, acquiring
+  NSE/CDSL/NSDL institutional-flow snapshots - strictly additive, never fatal and never able to
+  change the job's SUCCESS/DEGRADED/BLOCKED status. PRE may also capture a missing CDSL/NSDL
+  snapshot on a live run. Persisted the same way as official snapshots
+  (`state.sync` namespace `institutional_flows`); a replay never fetches.
 - `python -m operations.stray_cleanup` removed the two known test-contamination REPORT_BUILD
   rows (backup + audit in `output/pre_shadow_readiness/`); `MarketHistory.remove_contaminated_runs`
   is a manual tool - the pipeline never deletes run history (ast-guarded).

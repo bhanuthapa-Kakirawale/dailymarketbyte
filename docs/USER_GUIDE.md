@@ -99,7 +99,9 @@ One command, run once. In order, and once each:
 - **SUCCESS:** everything was built.
 - **DEGRADED:** the canonical report is fine, but an optional part failed (for example the NSE
   lists were unreachable, or the Radar failed). The row shows `DEGRADED`; the POST simply omits
-  that section. Not a stop.
+  that section. Not a stop. Institutional-flow capture (NSE/CDSL/NSDL,
+  docs/INSTITUTIONAL_FLOW_INTELLIGENCE.md) is strictly additive and can never itself produce a
+  DEGRADED or BLOCKED verdict.
 - **BLOCKED:** the report failed data validation, or the session is not final or is not on the
   calendar. Nothing canonical was written, no POST is rendered. See section 6.
 

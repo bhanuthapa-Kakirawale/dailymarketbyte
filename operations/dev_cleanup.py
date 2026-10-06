@@ -41,7 +41,8 @@ NEVER_DIRS = (".git", "venv", ".venv", ".claude", "node_modules")
 
 # output/ folders that hold state, history, private intelligence or audit - never touched
 PROTECTED_OUTPUT = (
-    "data", "reports", "radar", "market_structure", "official_snapshots", "intelligence",
+    "data", "reports", "radar", "market_structure", "official_snapshots",
+    "institutional_flows", "intelligence",
     "exchange_watch", "publication", "qa", "report_jobs", "post", "pre_shadow", "premarket",
     "pre_shadow_readiness", "pre_production_readiness", "pre_data_sources",
     "benchmark_gap_recovery", "session_alignment_validation", "public_intelligence_v1",

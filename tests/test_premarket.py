@@ -415,7 +415,9 @@ def test_live_quote_from_a_closed_market_is_not_shown():
 def test_post_storyboard_contract_unchanged():
     from daily_video.storyboard import RADAR_PUBLISH_LIMIT, SECTION_LABELS, SceneSpec, Storyboard
     from presentation.post_plan import OPTIONAL_BUDGET, POST_PLAN_VERSION
-    assert POST_PLAN_VERSION == "post-3.0" and OPTIONAL_BUDGET == 2 and RADAR_PUBLISH_LIMIT == 3
+    # post-3.1: FLOWS materiality now reads institutional-flow history (Institutional Flow
+    # Intelligence V1) - version bumped deliberately, contract shape otherwise unchanged.
+    assert POST_PLAN_VERSION == "post-3.1" and OPTIONAL_BUDGET == 2 and RADAR_PUBLISH_LIMIT == 3
     assert SECTION_LABELS["PULSE"] == "MARKET PULSE" and SECTION_LABELS["FLOWS"] == "FII / DII"
     sb = Storyboard(dt.date(2026, 9, 24), "THU 24 SEP 2026", "SESSION RECAP",
                     [SceneSpec("PULSE", "PULSE", 5.4), SceneSpec("FLOWS", "FLOWS", 5.5)])

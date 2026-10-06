@@ -73,6 +73,39 @@ def _offline_official_lists(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _offline_institutional_flows(monkeypatch):
+    """NSE/CDSL/NSDL institutional-flow fetchers never reach the network in tests: each returns
+    the fail-closed SOURCE_UNAVAILABLE snapshot it returns in production when the source cannot
+    be reached. Tests that need real content inject their own fetcher functions."""
+    import institutional_flows.sources.cdsl as cdsl_mod
+    import institutional_flows.sources.nse as nse_mod
+    import institutional_flows.sources.nsdl as nsdl_mod
+    from institutional_flows.models import (CDSL, NSDL, NSE, RepresentedPeriod, SCHEMA_VERSION,
+                                            SOURCE_UNAVAILABLE, InstitutionalFlowSnapshot)
+    from institutional_flows.models import SOURCE_CLASS
+
+    def _unavailable(source, url, now_iso):
+        return InstitutionalFlowSnapshot(
+            schema_version=SCHEMA_VERSION, source=source, source_class=SOURCE_CLASS[source],
+            report_type="test", report_key="", report_date=None, data_as_of=None,
+            represented_period=RepresentedPeriod(), retrieved_at=now_iso,
+            first_retrieved_at=now_iso, status=SOURCE_UNAVAILABLE, source_url=url,
+            source_reference=url, connectivity_status="BLOCKED",
+            reason="network disabled in tests")
+
+    monkeypatch.setattr(nse_mod, "fetch_nse_fii_dii",
+                        lambda now_iso, nse=None: _unavailable(NSE, nse_mod.FII_DII_URL, now_iso))
+    monkeypatch.setattr(cdsl_mod, "fetch_cdsl_daily",
+                        lambda now_iso, get=None: _unavailable(CDSL, cdsl_mod.CDSL_URL, now_iso))
+    monkeypatch.setattr(nsdl_mod, "fetch_nsdl_fortnightly",
+                        lambda now_iso, get=None: {
+                            "latest": _unavailable(NSDL, nsdl_mod.SELECTION_URL, now_iso),
+                            "previous": None,
+                            "discovery": {"status": "SOURCE_UNAVAILABLE", "options": [],
+                                         "reason": "network disabled in tests"}})
+
+
+@pytest.fixture(autouse=True)
 def _offline_index_fallback(monkeypatch):
     """Benchmark gap recovery (`market.recover_index_gaps`) fetches NSE's end-of-day index file
     whenever a synthetic series skips a canonical weekday. Tests stay offline: the default

@@ -120,6 +120,12 @@ class PreMarketBrief:
     ipo_watch: dict | None = None
     public_audit: dict = field(default_factory=dict)
     public_omitted: list = field(default_factory=list)
+    # Institutional Flow Intelligence V1 (institutional_flows.context.load_institutional):
+    # {"cdsl": {"status", "snapshot"}, "nsdl": {"status", "latest", "previous"}}, each snapshot
+    # already an InstitutionalFlowSnapshot.to_dict() or None. Previous-session NSE materiality
+    # (large/streak/reversal) is computed separately into `institutional_nse_context`.
+    institutional: dict | None = None
+    institutional_nse_context: dict = field(default_factory=dict)
 
     @property
     def prev_weekday(self) -> str:
@@ -147,6 +153,8 @@ class PreMarketBrief:
             "fact_provenance": self.fact_provenance, "gift_policy": self.gift_policy,
             "publication_profile": self.publication_profile,
             "exchange_watch": self.exchange_watch, "ipo_watch": self.ipo_watch,
+            "institutional": self.institutional,
+            "institutional_nse_context": self.institutional_nse_context,
         }
 
 
@@ -324,6 +332,16 @@ class FlowsModel:
     headline: str
     subline: str
     bars: list
+    # Institutional Flow Intelligence V1: which candidate won (NSE / CDSL / NSDL_SECTOR),
+    # the provenance line to show (overrides the default NSE "SOURCE: NSE" when set), the
+    # fact ids / source names behind the bars (for publication/scene_claims.py), and the
+    # one-line reason this candidate was chosen - all optional so a plain NSE FlowsModel
+    # (what every pre-existing caller/test builds) still constructs unchanged.
+    kind: str = "NSE"
+    provenance: dict | None = None
+    fact_ids: list = field(default_factory=list)
+    sources: list = field(default_factory=list)
+    why: str = ""
 
 
 @dataclass
@@ -600,7 +618,10 @@ def _vix(brief, reasons):
     return model, big
 
 
-def _flows(brief, reasons):
+def _flows_nse_legacy(brief, reasons):
+    """Candidate C (fixed-threshold form): the previous session's NSE cash-market bars, by the
+    original fixed thresholds. Used only when there is not yet enough institutional-flow
+    history to judge materiality (`flow_materiality.INSUFFICIENT_HISTORY` on both sides)."""
     fd = brief.flows
     if not fd or fd.get("fii") is None or fd.get("dii") is None:
         reasons["FLOWS"] = "omitted: no validated FII/DII flows for the previous session - not fabricated"
@@ -618,13 +639,156 @@ def _flows(brief, reasons):
             {"name": "DII", "value": _crore(dii), "tag": "NET BUYERS" if dii >= 0 else "NET SELLERS",
              "numeric": dii, "positive": dii >= 0}]
     model = FlowsModel(headline=headline, subline=f"Net cash-market flows on {wd} (provisional)",
-                       bars=bars)
+                       bars=bars, kind="NSE")
     ok = big or contrast
-    reasons["FLOWS"] = ((f"included: FII {_crore(fii)}, DII {_crore(dii)} on {wd} - "
+    reasons["FLOWS"] = ((f"INSUFFICIENT_HISTORY: included on the legacy rule - FII {_crore(fii)}, "
+                         f"DII {_crore(dii)} on {wd} - "
                          + ("large" if big else "opposite sides, each >= Rs 1,000 cr"))
-                        if ok else f"omitted: FII {_crore(fii)}, DII {_crore(dii)} - neither large "
+                        if ok else f"INSUFFICIENT_HISTORY: omitted on the legacy rule - "
+                                   f"FII {_crore(fii)}, DII {_crore(dii)} - neither large "
                                    f"(>= Rs {fmt_in(FLOW_BIG_CRORE, 0)} cr) nor a clear contrast")
     return model, ok
+
+
+def _flows_nse_context(brief):
+    """Candidate C (materiality form): a genuine multi-session NSE story - a streak milestone
+    or a reversal - never a bare single-day magnitude alone, because POST already carried that
+    the evening before and PRE must not blindly repeat it."""
+    fd = brief.flows
+    if not fd or fd.get("fii") is None or fd.get("dii") is None:
+        return None, ""
+    ctx_by_subject = brief.institutional_nse_context or {}
+    story = next((ctx for ctx in ctx_by_subject.values()
+                 if (ctx.get("streak_state") == "DIRECTION_CONTINUES" and ctx.get("streak_milestone"))
+                 or ctx.get("streak_state") == "DIRECTION_REVERSES"), None)
+    if story is None:
+        return None, ""
+    fii, dii = float(fd["fii"]), float(fd["dii"])
+    wd = brief.prev_weekday
+    subject, value = story["subject"], story["current_value"]
+    direction = "buyers" if value >= 0 else "sellers"
+    if story["streak_state"] == "DIRECTION_REVERSES":
+        headline = (f"{subject}s were net {direction} on {wd}, reversing a "
+                   f"{story['prior_run_length']}-session run")
+        why = f"{subject} reverses a {story['prior_run_length']}-session run"
+    else:
+        headline = (f"{subject}s have been net {direction} for {story['streak_length']} "
+                   f"consecutive reported sessions")
+        why = f"{subject} streak reaches {story['streak_length']} recorded sessions"
+    bars = [{"name": "FII", "value": _crore(fii), "tag": "NET BUYERS" if fii >= 0 else "NET SELLERS",
+             "numeric": fii, "positive": fii >= 0},
+            {"name": "DII", "value": _crore(dii), "tag": "NET BUYERS" if dii >= 0 else "NET SELLERS",
+             "numeric": dii, "positive": dii >= 0}]
+    model = FlowsModel(headline=headline, subline=f"Net cash-market flows on {wd} (provisional)",
+                       bars=bars, kind="NSE", fact_ids=list(fd.get("fact_ids") or []),
+                       sources=["nse_website"], why=why)
+    return model, why
+
+
+def _flows_cdsl(brief):
+    """Candidate A: a CDSL depository-reported report that is new for THIS edition - its own
+    reporting date falls between the previous session and today, and it is not the very first
+    CDSL report this pipeline ever captured (a bootstrap report carries no "new today" meaning)."""
+    inst = brief.institutional or {}
+    cdsl = (inst.get("cdsl") or {}).get("snapshot")
+    if not cdsl or cdsl.get("status") != "SUCCESS" or cdsl.get("bootstrap"):
+        return None, ""
+    try:
+        report_date = dt.date.fromisoformat(cdsl.get("report_date") or "")
+    except ValueError:
+        return None, ""
+    if not (brief.previous_session <= report_date < brief.pre_date):
+        return None, ""
+    equity = {f["route"]: f["value"] for f in cdsl.get("facts", [])
+             if f.get("category") == "equity" and f.get("metric") == "net_investment"
+             and f.get("unit") == "INR_CRORE"}
+    stock_ex, primary = equity.get("stock_exchange"), equity.get("primary_market_others")
+    if stock_ex is None or primary is None:
+        return None, ""
+    total = stock_ex + primary
+    direction = "buyers" if total >= 0 else "sellers"
+    headline = f"FPIs were net {direction} of equity in the latest depository-reported figures"
+    bars = [{"name": "STOCK EXCHANGE", "value": _crore(stock_ex),
+            "tag": "NET BUYERS" if stock_ex >= 0 else "NET SELLERS", "numeric": stock_ex,
+            "positive": stock_ex >= 0},
+           {"name": "PRIMARY & OTHERS", "value": _crore(primary),
+            "tag": "NET BUYERS" if primary >= 0 else "NET SELLERS", "numeric": primary,
+            "positive": primary >= 0}]
+    from .provenance_label import fmt_date
+    provenance = {"source": "SOURCE: CDSL", "as_of": f"REPORT DATE: {fmt_date(report_date)}"}
+    model = FlowsModel(headline=headline, subline="Depository-reported FPI equity flow "
+                                                   "(not final)", bars=bars, kind="CDSL",
+                       provenance=provenance,
+                       fact_ids=[f"institutional:CDSL:{cdsl['report_key']}:equity:stock_exchange",
+                                f"institutional:CDSL:{cdsl['report_key']}:equity:primary_market_others"],
+                       sources=["cdsl_fpi_daily"],
+                       why=f"new CDSL report dated {fmt_date(report_date)}")
+    return model, model.why
+
+
+def _flows_nsdl_sector(brief):
+    """Candidate B: a NSDL fortnightly sector report new for this edition (its fortnight ends
+    within the last few days) and not the first one this pipeline ever captured."""
+    from institutional_flows.models import InstitutionalFlowSnapshot
+    from institutional_flows.sector_flow import select_public_bars, sector_flows
+    inst = brief.institutional or {}
+    latest = (inst.get("nsdl") or {}).get("latest")
+    if not latest or latest.get("status") != "SUCCESS" or latest.get("bootstrap"):
+        return None, ""
+    try:
+        fortnight_end = dt.date.fromisoformat(latest.get("report_key") or "")
+    except ValueError:
+        return None, ""
+    if (brief.pre_date - fortnight_end).days > 5:
+        return None, ""
+    snap = InstitutionalFlowSnapshot.from_dict(latest)
+    bars_models = select_public_bars(sector_flows(snap))
+    if not bars_models:
+        return None, ""
+    bars = [{"name": b.display_sector.upper(), "value": _crore(b.current_cr),
+            "tag": "NET INFLOW" if b.current_cr >= 0 else "NET OUTFLOW",
+            "numeric": b.current_cr, "positive": b.current_cr >= 0} for b in bars_models[:4]]
+    period = snap.represented_period
+    period_text = period.source_note.removeprefix("Net Investment ").strip() or \
+        fortnight_end.isoformat()
+    from .provenance_label import fmt_date
+    provenance = {"source": "SOURCE: NSDL", "as_of": f"FORTNIGHT: {period_text}"}
+    model = FlowsModel(headline="New fortnightly data: FPI equity flow by sector",
+                       subline=f"Net FPI equity investment, {period_text}", bars=bars,
+                       kind="NSDL_SECTOR", provenance=provenance,
+                       fact_ids=[f"institutional:NSDL:{snap.report_key}:{b.nsdl_sector}"
+                                for b in bars_models[:4]],
+                       sources=["nsdl_fpi_fortnightly"],
+                       why=f"new NSDL fortnightly sector report for {period_text}")
+    return model, model.why
+
+
+def _flows(brief, reasons):
+    """ONE flows scene at most, tried in priority order: a new CDSL report, then a new NSDL
+    sector report, then a genuinely new NSE multi-session story - PRE never just repeats
+    yesterday evening's plain NSE number. Below 10 prior eligible NSE sessions (no history yet
+    to judge materiality against) the original fixed-threshold NSE rule still applies."""
+    for candidate, label in ((_flows_cdsl(brief), "CDSL"), (_flows_nsdl_sector(brief), "NSDL")):
+        model, why = candidate
+        if model is not None:
+            reasons["FLOWS"] = f"included: {why}"
+            return model, True
+    ctx_by_subject = brief.institutional_nse_context or {}
+    has_history = ctx_by_subject and all(
+        ctx.get("magnitude_state") != "INSUFFICIENT_HISTORY" for ctx in ctx_by_subject.values())
+    if not has_history:
+        return _flows_nse_legacy(brief, reasons)
+    model, why = _flows_nse_context(brief)
+    if model is not None:
+        reasons["FLOWS"] = f"included: {why}"
+        return model, True
+    fd = brief.flows
+    if not fd or fd.get("fii") is None or fd.get("dii") is None:
+        reasons["FLOWS"] = "omitted: no validated FII/DII flows for the previous session - not fabricated"
+    else:
+        reasons["FLOWS"] = ("omitted: no new CDSL/NSDL report and no NSE streak milestone or "
+                            "reversal - PRE does not repeat POST's plain number")
+    return None, False
 
 
 def _event(brief, reasons, omitted):
@@ -750,9 +914,12 @@ def _watch(brief, show, setup, overnight, vix_m, flows_m, event, sectors_m, stoc
     if not show["FLOWS"] and fd and fd.get("fii") is not None and fd.get("dii") is not None \
             and max(abs(fd["fii"]), abs(fd["dii"])) >= FLOW_CONTRAST_CRORE:
         fii, dii = float(fd["fii"]), float(fd["dii"])
-        cands.append(WatchItemModel("FLOWS", "FII / DII", f"FIIs net {'bought' if fii >= 0 else 'sold'} "
+        # "net buyers/sellers", never "bought/sold" - the same wording POST uses
+        # (test_public_corrections.py pins this for POST; PRE now matches it).
+        cands.append(WatchItemModel("FLOWS", "FII / DII",
+                                    f"FIIs net {'buyers' if fii >= 0 else 'sellers'}, "
                                     f"{RS}{fmt_in(abs(fii), 0)} cr",
-                                    f"On {wd}; DIIs net {'bought' if dii >= 0 else 'sold'} "
+                                    f"On {wd}; DIIs net {'buyers' if dii >= 0 else 'sellers'}, "
                                     f"{RS}{fmt_in(abs(dii), 0)} cr", fii >= 0))
     if overnight is not None and overnight.gift is not None:
         g = overnight.gift

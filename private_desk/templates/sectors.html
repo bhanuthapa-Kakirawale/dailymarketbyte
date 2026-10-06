@@ -58,4 +58,20 @@
   </table>
   {% else %}<p class="na">DATA UNAVAILABLE</p>{% endif %}
 </section>
+
+<section class="panel" style="margin-top:10px">
+  <h2>FPI sector flow (NSDL) <span class="dim lc">separate universe/taxonomy from NIFTY 200 above - net equity investment, not a ranking</span>
+    <a href="/institutional?session={{ session }}" class="viewall" style="float:right;text-transform:none;letter-spacing:0">Full detail →</a></h2>
+  {% set nsdl = d.institutional.nsdl %}
+  {% if nsdl.status == 'OK' %}
+  <div class="note">{{ nsdl.latest.period_note }} · previous fortnight {{ nsdl.previous_period | na }}</div>
+  <table class="sortable"><thead><tr><th class="sort">Sector</th><th class="sort n">Current fortnight (₹ Cr)</th><th class="sort n">Previous fortnight (₹ Cr)</th><th class="sort n">Change (₹ Cr)</th><th>Direction</th></tr></thead>
+  <tbody>{% for s in nsdl.sectors %}
+  <tr><td>{{ s.sector }}</td><td class="n" data-v="{{ s.current_cr }}">{{ s.current_cr | num(0) }}</td>
+    <td class="n" data-v="{{ s.previous_cr }}">{{ s.previous_cr | num(0) }}</td>
+    <td class="n" data-v="{{ s.change_cr }}">{{ s.change_cr | num(0) }}</td>
+    <td><span class="b {{ 'ok' if 'INFLOW' in s.direction else ('warn' if 'OUTFLOW' in s.direction else 'unv') }}">{{ s.direction | replace('_', ' ') }}</span></td></tr>
+  {% endfor %}</tbody></table>
+  {% else %}<p class="na">DATA UNAVAILABLE - {{ nsdl.status }}</p>{% endif %}
+</section>
 {% endblock %}

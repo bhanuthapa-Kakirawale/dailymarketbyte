@@ -300,6 +300,19 @@ class DeskRepository:
             return None
         return snap
 
+    # ------------------------------------------------------------------ institutional flows
+    def institutional_snapshots(self, source: str) -> list:
+        from institutional_flows.store import list_snapshots
+        return list_snapshots(self.out_dir, source)
+
+    def institutional_latest(self, source: str, on_or_before: dt.date | None = None):
+        from institutional_flows.store import load_latest
+        return load_latest(self.out_dir, source, on_or_before=on_or_before)
+
+    def institutional_attempts(self, days: int = 3) -> list:
+        from institutional_flows.store import latest_attempts
+        return latest_attempts(self.out_dir, days=days)
+
     # ------------------------------------------------------------------ database health
     def db_health(self, name: str) -> dict:
         path = self.db_file(name)

@@ -26,7 +26,7 @@ The rules live in `operations/dev_cleanup.py` and are tested (`tests/test_operat
 - `output/data` (history, OHLCV, Radar candidate history, editorial selections)
 - `output/reports` (canonical reports, including `unfit/` diagnostics)
 - `output/radar` and **every `output/radar*` folder**: private intelligence, including rendered private charts
-- `output/market_structure`, `output/official_snapshots`, `output/intelligence`, `output/exchange_watch`
+- `output/market_structure`, `output/official_snapshots`, `output/institutional_flows`, `output/intelligence`, `output/exchange_watch`
 - `output/publication`, `output/qa`, `output/report_jobs`, `output/post`: run audit trail
 - `output/pre_shadow` and `output/premarket` (trial mornings)
 - `output/private_radar` (private renders)

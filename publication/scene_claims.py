@@ -222,8 +222,16 @@ def pre_claims(sb, brief, sheet=None) -> list:
                 out.append(rc(sid, v, f, nifty_ids, "change in points = close - previous close"
                               if "pts" in v else None))
         elif k == "FLOWS":
+            # Institutional Flow Intelligence V1: a CDSL/NSDL candidate scene declares its own
+            # fact ids / sources via spec.data (they are not canonical report fact ids); the
+            # legacy NSE flow_ids lookup remains the fallback for a plain NSE FLOWS scene.
+            own_ids = (spec.data or {}).get("fact_ids") or []
+            own_sources = (spec.data or {}).get("sources") or []
             for f, v in _numeric(texts):
-                out.append(rc(sid, v, f, flow_ids))
+                if own_ids:
+                    out.append(rc(sid, v, f, own_ids, sources=own_sources))
+                else:
+                    out.append(rc(sid, v, f, flow_ids))
         elif k == "SECTORS":
             for f, v in _numeric(texts):
                 name = texts.get(f.rsplit(".", 1)[0] + ".name", "") if f.startswith("rows.") else ""

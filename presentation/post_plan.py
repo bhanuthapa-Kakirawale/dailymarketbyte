@@ -21,8 +21,9 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 
 from config import fmt_in
+from intelligence.flow_materiality import is_material
 
-POST_PLAN_VERSION = "post-3.0"
+POST_PLAN_VERSION = "post-3.1"
 
 # --------------------------------------------------------------------------- policy
 FLAT_PCT = 0.10              # |Nifty| below this: "almost unchanged"
@@ -287,11 +288,38 @@ def plan_post_sections(pres, plan, radar_stories=(), universe="Nifty 100") -> Po
     fl = _scene(plan, "FLOWS")
     flows_ok = False
     if fl is not None and len(fl.items) >= 2:
-        vals = [it.numeric for it in fl.items[:2] if it.numeric is not None]
-        flows_ok = bool(vals) and max(abs(v) for v in vals) >= FLOW_MIN_CRORE
-        reasons["FLOWS"] = ("included: institutional net flow of at least Rs "
-                            f"{fmt_in(FLOW_MIN_CRORE, 0)} cr" if flows_ok else
-                            f"omitted: net flows below Rs {fmt_in(FLOW_MIN_CRORE, 0)} cr")
+        materiality = (fl.metadata or {}).get("materiality") or {}
+        has_history = materiality and all(
+            ctx.get("magnitude_state") != "INSUFFICIENT_HISTORY" for ctx in materiality.values())
+        if has_history:
+            material = [ctx for ctx in materiality.values() if is_material(ctx)]
+            flows_ok = bool(material)
+            if flows_ok:
+                bits = []
+                for ctx in material:
+                    if ctx["magnitude_state"] in ("LARGE_NET_BUY", "LARGE_NET_SELL"):
+                        bits.append(f"{ctx['subject']} flow is {ctx['multiple_of_median']:.1f}x "
+                                   f"the prior-10-session median")
+                    elif ctx["streak_state"] == "DIRECTION_REVERSES":
+                        bits.append(f"{ctx['subject']} reverses a "
+                                   f"{ctx['prior_run_length']}-session run")
+                    else:
+                        bits.append(f"{ctx['subject']} streak reaches "
+                                   f"{ctx['streak_length']} recorded sessions")
+                reasons["FLOWS"] = "included: " + "; ".join(bits)
+            else:
+                reasons["FLOWS"] = ("omitted: within normal range of the prior 10 sessions "
+                                    "(no large move, streak milestone, or reversal)")
+        else:
+            # legacy fallback: fewer than 10 prior eligible sessions of history to judge
+            # materiality against, so the original fixed-threshold rule still applies.
+            vals = [it.numeric for it in fl.items[:2] if it.numeric is not None]
+            flows_ok = bool(vals) and max(abs(v) for v in vals) >= FLOW_MIN_CRORE
+            reasons["FLOWS"] = (
+                "INSUFFICIENT_HISTORY: included on the legacy rule - institutional net flow "
+                f"of at least Rs {fmt_in(FLOW_MIN_CRORE, 0)} cr" if flows_ok else
+                f"INSUFFICIENT_HISTORY: omitted on the legacy rule - net flows below Rs "
+                f"{fmt_in(FLOW_MIN_CRORE, 0)} cr")
     else:
         reasons["FLOWS"] = "omitted: no validated FII/DII flow facts in the report - not fabricated"
 

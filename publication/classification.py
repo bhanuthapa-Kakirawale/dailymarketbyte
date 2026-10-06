@@ -26,6 +26,7 @@ class Origin(str, Enum):
     OFFICIAL_EXCHANGE = "OFFICIAL_EXCHANGE"
     OFFICIAL_REGULATOR = "OFFICIAL_REGULATOR"
     OFFICIAL_COMPANY = "OFFICIAL_COMPANY"
+    OFFICIAL_DEPOSITORY = "OFFICIAL_DEPOSITORY"       # CDSL / NSDL - the depository itself
     MARKET_DATA = "MARKET_DATA"
     INTERNAL_ANALYTICS = "INTERNAL_ANALYTICS"
     NEWS = "NEWS"
@@ -33,7 +34,7 @@ class Origin(str, Enum):
 
 
 OFFICIAL_ORIGINS = frozenset({Origin.OFFICIAL_EXCHANGE, Origin.OFFICIAL_REGULATOR,
-                              Origin.OFFICIAL_COMPANY})
+                              Origin.OFFICIAL_COMPANY, Origin.OFFICIAL_DEPOSITORY})
 
 
 class ContentClass(str, Enum):

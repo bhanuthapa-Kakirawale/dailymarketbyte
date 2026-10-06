@@ -34,6 +34,35 @@ class InstitutionalContext:
                         "previous": ref(self.nsdl_previous)}}
 
 
+SAME_SESSION_AVAILABLE = "SAME_SESSION_AVAILABLE"
+AWAITING_PUBLICATION = "AWAITING_PUBLICATION"      # NSE's latest known figure is an older date
+NO_SNAPSHOT = "NO_SNAPSHOT"                        # nothing captured for this source yet
+
+
+def nse_same_session_status(out_dir: str, session_date: dt.date) -> dict:
+    """Is NSE's own provisional FII/FPI + DII figure available FOR `session_date` yet, per the
+    newest stored `institutional_flows` NSE snapshot - a read-only, local cross-check used only
+    to WORD a POST/PRE omission precisely (never to decide whether to show a number: that
+    decision is, and stays, the canonical report's own `institutional_flows` field).
+
+    Distinguishes "NSE has not published today's figure yet" (a normal, expected timing gap
+    this pipeline must never paper over with yesterday's number) from "no NSE snapshot has ever
+    been captured" - two different operational situations with different explanations."""
+    from .models import NSE
+    from .store import load_latest
+    latest = load_latest(out_dir, NSE)
+    if latest is None:
+        return {"status": NO_SNAPSHOT, "latest_report_key": None}
+    try:
+        latest_date = dt.date.fromisoformat(latest.report_key)
+    except (TypeError, ValueError):
+        return {"status": NO_SNAPSHOT, "latest_report_key": latest.report_key}
+    if latest_date >= session_date:
+        return {"status": SAME_SESSION_AVAILABLE, "latest_report_key": latest.report_key}
+    return {"status": AWAITING_PUBLICATION, "latest_report_key": latest.report_key,
+           "sessions_behind": max(0, (session_date - latest_date).days)}
+
+
 def load_institutional(out_dir: str, *, cutoff: dt.datetime, live: bool,
                        on_or_before: dt.date | None = None,
                        capture_fn=None) -> InstitutionalContext:
@@ -80,4 +109,5 @@ def load_institutional(out_dir: str, *, cutoff: dt.datetime, live: bool,
     return ctx
 
 
-__all__ = ["InstitutionalContext", "load_institutional"]
+__all__ = ["InstitutionalContext", "load_institutional", "nse_same_session_status",
+           "SAME_SESSION_AVAILABLE", "AWAITING_PUBLICATION", "NO_SNAPSHOT"]

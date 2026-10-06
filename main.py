@@ -931,7 +931,7 @@ def run(args):
             doc = PU.manifest(entry_point="main.py -> products.route -> main.run",
                               report_source=outcome.source, report_id=report.report_id,
                               session=session, sb=sb, audit=audit, upload_status=upload_status,
-                              video_path=out,
+                              video_path=out, out_dir=OUT_DIR,
                               qa={"video_qa": qa_result.status.value,
                                   "video_qa_blocking": list(qa_result.blocking_issues),
                                   "frames_qa": rendered["frames_qa"],
@@ -939,6 +939,13 @@ def run(args):
             with open(os.path.join(run_dir, "production_manifest.json"), "w",
                       encoding="utf-8") as fh:
                 json.dump(doc, fh, indent=2, ensure_ascii=False, default=str)
+            print(f"      POST SECTION DECISIONS ({doc['duration']:.1f}s, "
+                  f"{len(doc['scenes'])} scenes):")
+            for key, d in doc["post_section_decisions"].items():
+                verdict = "SELECTED" if d["selected"] else "OMITTED"
+                print(f"        {key:<16} {verdict:<8} {d['reason']}")
+            for key, note in doc["post_data_readiness"].items():
+                print(f"      POST DATA READINESS: {key} - {note}")
             return doc
 
         if not (qa_result.passed and content_ok and read_result.passed and publication_ok):

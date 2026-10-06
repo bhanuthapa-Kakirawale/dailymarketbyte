@@ -129,8 +129,44 @@ def render_post(sb, out_path: str, frames_dir: str, watermark: str | None = None
             "render": render}
 
 
+def section_decisions(sb) -> dict:
+    """Every POST section's SELECTED/OMITTED decision + its existing reason, in one place - the
+    core/optional sections (`presentation.post_plan.PostSectionPlan.order` + `.reasons`) and the
+    public-intelligence sections (`optional_sections`, which already carries `rendered`). Reuses
+    what the planners already decided and said; invents nothing new."""
+    post_plan = sb.post_plan or {}
+    order = set(post_plan.get("order") or [])
+    core = dict(post_plan.get("reasons") or {})
+    out = {key: {"selected": key in order, "reason": reason} for key, reason in core.items()}
+    for key, block in ((sb.public_audit or {}).get("omitted_sections") or {}).items():
+        out[key] = {"selected": bool(block.get("rendered")), "reason": block.get("detail", "")}
+    return out
+
+
+def data_readiness(sb, out_dir: str | None, session) -> dict:
+    """POST DATA READINESS: for any section omitted because a source has not yet published
+    same-session data, say so explicitly rather than leaving a bare 'no facts' reason. Read-only,
+    local (`institutional_flows.store`); never changes what is selected or shown - diagnostic
+    only, same as `optional_sections`."""
+    out = {}
+    flows_reason = ((sb.post_plan or {}).get("reasons") or {}).get("FLOWS", "")
+    if out_dir and "FLOWS" not in {s.kind for s in sb.scenes} and \
+            "no validated FII/DII flow facts" in flows_reason:
+        from institutional_flows.context import AWAITING_PUBLICATION, nse_same_session_status
+        status = nse_same_session_status(out_dir, session)
+        if status["status"] == AWAITING_PUBLICATION:
+            out["NSE_FII_DII"] = (
+                f"SAME_SESSION_FLOW_NOT_YET_AVAILABLE - NSE's latest published FII/DII figure "
+                f"is for {status['latest_report_key']}, "
+                f"{status.get('sessions_behind', '?')} session(s) behind {session} - the "
+                f"previous session's number is withheld rather than shown as today's")
+        elif status["status"] == "NO_SNAPSHOT":
+            out["NSE_FII_DII"] = "no NSE institutional-flow snapshot captured yet"
+    return out
+
+
 def manifest(*, entry_point, report_source, report_id, session, sb, audit, upload_status,
-             video_path, qa) -> dict:
+             video_path, qa, out_dir=None) -> dict:
     return {"product": PRODUCT, "entry_point": entry_point, "planner": PLANNER,
             "renderer": RENDERER, "legacy_renderer_invoked": False,
             "report_source": report_source, "report_id": report_id,
@@ -139,6 +175,10 @@ def manifest(*, entry_point, report_source, report_id, session, sb, audit, uploa
             "sections": [s[1] or s[0] for s in sb.sections()],
             "duration": sb.total_duration, "video": video_path, "qa": qa,
             "optional_sections": (sb.public_audit or {}).get("omitted_sections", {}),
+            # Every section's SELECTED/OMITTED decision + reason, and (when relevant) whether an
+            # omission was a timing gap rather than a planner choice - docs/PRODUCTION_SCHEDULE.md.
+            "post_section_decisions": section_decisions(sb),
+            "post_data_readiness": data_readiness(sb, out_dir, session),
             # durable-state provenance: which persisted snapshot fed each public section
             "inputs": (sb.public_audit or {}).get("inputs"),
             "publication_audit": {"final": audit["final"],

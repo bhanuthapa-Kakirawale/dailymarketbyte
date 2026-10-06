@@ -144,7 +144,7 @@
   <table><thead><tr><th>Family</th><th>Status</th><th class="n">Records</th><th>Note</th></tr></thead><tbody>
   {% for fam, v in me.families.items() %}
   <tr><td>{{ fam | replace('_', ' ') }}</td>
-      <td><span class="b {{ 'ok' if v.status == 'OK' else 'warn' }}">{{ v.status }}</span></td>
+      <td><span class="b {{ 'ok' if v.status in ('OK', 'VIEW_ONLY') else 'warn' }}">{{ v.status }}</span></td>
       <td class="n">{{ v.count }}</td>
       <td>{% if v.not_supported_yet %}<span class="note">NOT_SUPPORTED_YET - no verified-reachable source this pass</span>{% endif %}</td></tr>
   {% endfor %}

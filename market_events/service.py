@@ -7,8 +7,8 @@ from __future__ import annotations
 import datetime as dt
 
 from .models import (ALL_FAMILIES, CANCELLED_CHANGE, NEW_EVENT, NOT_SUPPORTED_YET, REVISED,
-                     TERMINAL_STATUSES, UNCHANGED, VALIDATED)
-from .store import list_events, record_attempt, write_revision
+                     TERMINAL_STATUSES, UNCHANGED, VALIDATED, MarketEvent)
+from .store import list_events, load_latest, record_attempt, write_revision
 
 
 class MarketEventsService:
@@ -20,6 +20,19 @@ class MarketEventsService:
         from .sources import DEFAULT_FETCHERS
         for family, fn in DEFAULT_FETCHERS.items():
             self._fetchers.setdefault(family, fn)
+
+    def _lookup_open_event(self, family: str, symbol: str) -> MarketEvent | None:
+        """The latest NON-TERMINAL event for (family, symbol), else None. Passed to any
+        fetcher that declares `needs_lookup = True`, so it can decide: reuse an existing open
+        event_key (this filing is a revision/reschedule of a pending one) vs. mint a brand-new
+        one (a new cycle) - never called otherwise, so a fetcher that doesn't need this never
+        pays for the extra store read."""
+        open_evs = [e for e in load_latest(self.out_dir, family, symbol=symbol,
+                                           validated_only=False) if e.status not in TERMINAL_STATUSES]
+        if not open_evs:
+            return None
+        open_evs.sort(key=lambda e: e.first_retrieved_at)
+        return open_evs[-1]
 
     def _store_one(self, family: str, ev, now: dt.datetime, mode: str) -> dict:
         now_iso = now.isoformat()
@@ -76,7 +89,8 @@ class MarketEventsService:
                 results[family] = {"family": family, "status": NOT_SUPPORTED_YET, "events": []}
                 continue
             try:
-                res = fn(now_iso)
+                res = (fn(now_iso, lookup_fn=self._lookup_open_event)
+                      if getattr(fn, "needs_lookup", False) else fn(now_iso))
             except Exception as exc:
                 record_attempt(self.out_dir, family, mode, now,
                                {"family": family, "status": "EXCEPTION",

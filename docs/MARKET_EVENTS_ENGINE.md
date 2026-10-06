@@ -7,8 +7,10 @@ and the Private Desk's own, broader event calendar. One reusable
 acquisition→revision→replay→rights pipeline (`market_events/`), not seven independent hacks,
 mirroring `institutional_flows/`'s proven shape rather than duplicating it.
 
-**Status: the engine, its tests, and every PRE/POST/Private Desk surface are built and wired.
-No family has a live adapter yet** - see Known limitations.
+**Status (P2A, 2026-10-06): EARNINGS is live from NSE's own board-meeting feed. IPO is live as
+a read-only projection over the existing, already-live `ipo_watch` pipeline (never a second
+acquisition). OFS has no identified live source - see Known limitations. Every other family
+still returns `NOT_SUPPORTED_YET`.**
 
 ## Purpose
 
@@ -54,7 +56,20 @@ MarketEvent(
 * `status_capture` is the acquisition-attempt vocabulary
   (`SUCCESS`/`SOURCE_UNAVAILABLE`/`PARSE_ERROR`/`VALIDATION_FAILED`/`NOT_SUPPORTED_YET`) -
   `NOT_SUPPORTED_YET` mirrors `official_snapshots.NOT_SUPPORTED` (ESM): a family this pass never
-  attempts, not a failure.
+  attempts, not a failure. There is deliberately **no separate `NO_DATA` value**: "reachable,
+  zero qualifying events today" is `FamilyFetchResult(status=SUCCESS, events=[])`, which
+  `MarketEventsService.capture()` already treats as healthy (nothing written, no attempt-log
+  failure) - adding a real `NO_DATA` status would ripple into the `VALIDATED`/`FAILED`
+  frozensets for a distinction this shape already makes.
+* **Event identity across a reschedule** (`MarketEventsService._lookup_open_event`): a filing
+  with no stable per-row ID (e.g. NSE's board-meetings feed, where the one field that changes
+  on a reschedule is exactly the meeting date) reconciles identity via an opt-in fetcher
+  contract: `fetch_x.needs_lookup = True` makes `capture()` pass `lookup_fn(family, symbol)` -
+  the latest NON-TERMINAL event for that symbol, or `None`. The fetcher reuses that event's
+  `event_key` on a match (`status=REVISED_DATE` if the date itself changed) or mints a fresh
+  key (`f"{family}:{symbol}:{sha256(symbol|family|today)[:16]}"`, "today" being when THIS
+  pipeline first saw it) when none is open. Fully backward-compatible: a fetcher without the
+  marker is called exactly as before.
 * `records_checksum_value` (`MarketEvent.seal()`) hashes **both** `status` and `facts` -
   unlike `institutional_flows` (which hashes facts alone, since its snapshots carry no business
   lifecycle status), a Market Event's status is itself part of what changed: a filing that gets
@@ -70,20 +85,27 @@ official source is unreachable or unverified, the family returns `SOURCE_UNAVAIL
 
 | Family | Candidate real source | V1 status |
 |---|---|---|
-| EARNINGS | NSE/BSE corporate-filings API (board-meeting/result intimation) | `NOT_SUPPORTED_YET` - unverified this pass |
-| IPO | `ipo_watch`/`official_snapshots` | shown via the existing IPO WATCH scene, not duplicated here |
-| OFS | NSE corporate-announcements feed, filtered to OFS | `NOT_SUPPORTED_YET` |
+| EARNINGS | NSE's board-meeting prior-intimation feed (`market_events/sources/earnings.py`) | **LIVE** - `/api/corporate-board-meetings?index=equities`, confirmed reachable and returning real data (verified 2026-10-06; a live pull classified 5 genuine results-qualifying board meetings, e.g. Asian Paints Limited, 29-Oct-2026) |
+| IPO | `ipo_watch`/`official_snapshots` (`market_events/sources/ipo_projection.py`) | **LIVE as a read-only projection** - never re-acquired; shown via the existing IPO WATCH scene in PRE/POST, and via this projection on the Private Desk's `/events`/dashboard/Data Quality only |
+| OFS | NSE corporate-announcements feed (`/api/corporate-announcements?index=equities`) | `NOT_SUPPORTED_YET` - **no identified live source**, see Known limitations |
 | GOVT_SECURITIES_AUCTION | RBI's semi-annual G-Sec/T-Bill borrowing calendar | `NOT_SUPPORTED_YET` (planned: hand-maintained controlled file, see Known limitations) |
-| BUYBACK | Same corp-filings API family as EARNINGS | `NOT_SUPPORTED_YET` |
-| OPEN_OFFER | NSE/BSE announcements + SEBI SAST filings (often unstructured PDFs) | `NOT_SUPPORTED_YET` |
-| DELISTING | NSE/BSE delisting announcements | `NOT_SUPPORTED_YET` |
+| BUYBACK | Same corp-filings API family as EARNINGS | `NOT_SUPPORTED_YET` - deferred to P2C |
+| OPEN_OFFER | NSE/BSE announcements + SEBI SAST filings (often unstructured PDFs) | `NOT_SUPPORTED_YET` - deferred to P2C |
+| DELISTING | NSE/BSE delisting announcements | `NOT_SUPPORTED_YET` - deferred to P2C |
 
 Governing rule (already established via `official_snapshots.NOT_SUPPORTED`, and the project's
 "reliability over feature count" posture): **no live adapter is written against an endpoint
 that has not actually been verified reachable from this environment.** `market_events/sources/`
-holds `DEFAULT_FETCHERS`, one per family, each currently a `NOT_SUPPORTED_YET` stub carrying an
-explicit `not_supported_yet = True` marker (so Data Quality can tell "never attempted" apart
-from "has a real adapter" once one lands).
+holds `DEFAULT_FETCHERS`, one per family; EARNINGS now maps to a real adapter
+(`market_events.sources.earnings.fetch_earnings`), IPO's stub carries an honest reason
+("sourced via `ipo_watch` by design, never acquired by this engine" - not "unreachable", since
+it IS reachable, just intentionally out of this engine's scope), and every other family stays
+the generic `NOT_SUPPORTED_YET` stub carrying an explicit `not_supported_yet = True` marker (so
+Data Quality can tell "never attempted" apart from "has a real adapter").
+
+`python validate_market_events_sources.py` is the manual, read-only connectivity diagnostic
+(mirrors `validate_pre_production.py --connectivity-only`) - one probe per family, never writes
+to `market_events/`, never gates anything.
 
 ## Government securities auction yield semantics (design constraint for the eventual adapter)
 
@@ -94,6 +116,46 @@ guaranteed for the upcoming one. After the result is officially published, `Cut-
 may be shown with its own result date/source. This rule governs the `GOVT_SECURITIES_AUCTION`
 family's `facts` the moment a real source lands; nothing here is bypassable by a looser display
 choice downstream.
+
+## EARNINGS classification (`market_events/sources/earnings.py`)
+
+NSE's `/api/corporate-board-meetings?index=equities` lists every upcoming board meeting, for
+any purpose - a row becomes an EARNINGS `MarketEvent` only if its own `bm_desc`/`bm_purpose`
+text explicitly matches `financial\s+results` (confirmed live wording: "...consider and
+approve the Unaudited Financial results..."). A meeting "to consider Other business" is
+dropped, never shown. Company name comes directly from the feed's own `sm_name` field (a
+regex fallback reads it from the filing's own sentence - "`<Company>` has informed the
+Exchange..." - for the rare row missing that field; never guessed). `reporting_period` is only
+ever an explicit Q1-Q4/H1-H2/9M/FY token found in the source text itself; most real rows state
+none, so `"UNKNOWN"` is the common, correct case - never computed from the meeting date.
+Identity across a reschedule uses the `needs_lookup` mechanism above (this feed's
+`oriiginalMeetingDate`/`proposedMeetingDate` fields exist but were `null` in every row sampled
+live this session - the lookup-based reconciliation does not depend on them being populated).
+
+## IPO adaptation strategy (`market_events/sources/ipo_projection.py`)
+
+`project_ipo_events(ipos, day)` is a **pure function, no network, never calls
+`market_events/store.py`** - it reuses `ipo_watch.watch.todays_event()`'s own dated-event rule
+over already-validated `IPOEvent` objects, so a projected `MarketEvent` can never disagree with
+the IPO WATCH scene about the same IPO (both read the identical source data; see
+`crosscheck_against_ipo_watch()`, exercised by tests, for the equivalence proof - there is
+structurally only one source here, so a divergence is a bug in the projection, never a live
+`SOURCE_CONFLICT`). `capture_mode="PROJECTION"` marks these events as never-acquired-by-this-
+engine. The Private Desk calls it over a -3..+7 day window per session (since a single call is
+only ever "today's" dated events) and unions the results for its TODAY/TOMORROW/NEXT 7 DAYS/
+RECENTLY ANNOUNCED buckets; the per-family `quality_rows()`/`family_section()` status is
+`"VIEW_ONLY"`, not `NOT_SUPPORTED_YET` or `OK` (it was never meant to be "captured" by this
+engine at all).
+
+## OFS semantics
+
+No live source has been identified for OFS this pass - see Known limitations for the exact,
+evidenced blocker. The family's model support (scope/rights/editorial priority, shared with
+IPO) is fully built and tested against fixtures; `DEFAULT_FETCHERS[OFS]` stays
+`NOT_SUPPORTED_YET` until a real source is found. If one is built later, it must never invent a
+floor price or close date, must use the same `needs_lookup` reconciliation as EARNINGS (a
+revised OFS floor price is a revision of the same event, not a new one), and must never use
+Chittorgarh/Groww/Moneycontrol or any other third-party OFS tracker as a production source.
 
 ## Revisions and change detection
 
@@ -200,28 +262,43 @@ owner-confirmed).
 
 ## Known limitations
 
-* **No family has a live adapter this pass.** Every family's default fetcher
-  (`market_events/sources/__init__.py:DEFAULT_FETCHERS`) returns `NOT_SUPPORTED_YET`. This is a
-  deliberate, honest V1 scope decision (spec's own "reliability over feature count" instruction),
-  not an oversight - the engine, store, replay, rights wiring, PRE/POST sections, and every
-  Private Desk surface are fully built and tested against synthetic fixtures, ready to light up
-  the moment a real adapter lands.
-* **Next step for EARNINGS/OFS/BUYBACK/OPEN_OFFER/DELISTING**: a live connectivity probe against
-  NSE/BSE's corporate-filings API (mirroring `validate_pre_production.py --connectivity-only`'s
-  pattern) must run from the actual target environment (GitHub Actions runners are known to be
-  blocked for `nseindia.com` - see the project's own "Known limitations" in CLAUDE.md) before any
-  parser is written. OPEN_OFFER and DELISTING are flagged as the two families most likely to
-  remain `NOT_SUPPORTED_YET` even if the probe otherwise succeeds (SEBI SAST letters are
-  typically unstructured PDFs; delisting is comparatively rare).
-* **Next step for GOVT_SECURITIES_AUCTION**: RBI's own semi-annual G-Sec/T-Bill borrowing
-  calendar is published as a document covering the whole half-year, making a hand-maintained
-  controlled file (mirroring `data/official_events.json`'s fail-closed loader in
-  `core/event_calendar.py`) cheaper and more reliable than a weekly scraper - but it requires
-  real, owner-verified entries (quoted line, source URL, verified-on date) exactly like the RBI
-  MPC schedule; no placeholder/synthetic entries are shipped in `data/`, since a half-built
-  calendar with invented dates would violate the "never guess an official schedule" rule more
-  seriously than simply not having one yet.
+* **EARNINGS is live** (`/api/corporate-board-meetings?index=equities`, verified reachable
+  2026-10-06 from this environment via the existing `market.NSE()` warm-up-cookie client - the
+  SAME client/session pattern that already powers `exchange_watch`/`ipo_watch`). GitHub Actions
+  runners are known to be blocked for `nseindia.com` in general (CLAUDE.md's own "Known
+  limitations"); this adapter's reachability from the actual production runner is **unverified**
+  and may degrade to `SOURCE_UNAVAILABLE` there - that is a normal, handled outcome
+  (`capture_market_events` is never fatal), not a design gap.
+* **OFS has no identified live source - exact blocker (verified 2026-10-06):**
+  `/api/corporate-announcements?index=equities` is reachable and returns real JSON, but a full
+  5-week pull (19,307 rows) of its own `desc` taxonomy - 109 distinct categories, including
+  `Buyback`/`Closure of Buy Back`/`Post Buyback Public Announcement` (BUYBACK) and
+  `Public Announcement-Open Offer` (OPEN_OFFER) - contains **no** "Offer for Sale"/"OFS"
+  category at all. Every dedicated OFS endpoint guess (`/api/ofs-today`, `/api/offer-for-sale`,
+  `/api/corporate-ofs`, `/api/ofs-data`, `/api/offer-for-sale-data`, `/api/ofs`,
+  `/api/ofs-all-current`) returned NSE's genuine "Resource not found" 404 (`HTTP_ERROR`, not a
+  block - confirmed by cross-checking against a known-real endpoint that also returns 200). The
+  real NSE OFS page (`nseindia.com/market-data/offer-for-sale`) is JS-rendered; its XHR path
+  could not be determined without browser DevTools, which were not available in this session.
+  **Conclusion: OFS is executed through a separate mechanism-notice process, not NSE's LODR
+  corporate-disclosure feed** - finding its real source needs either browser network inspection
+  of the live OFS page, or a different NSE/BSE API surface not yet identified. Per the task's
+  own success criteria, this is an accepted P2A outcome (EARNINGS+IPO going live is the hard
+  requirement).
+* **BUYBACK/OPEN_OFFER/DELISTING are explicitly deferred to P2C**, though note the
+  corporate-announcements taxonomy above already confirms `Buyback` and
+  `Public Announcement-Open Offer` categories exist and are reachable through the same feed -
+  a strong head start for that later packet, not re-investigated here.
+* **GOVT_SECURITIES_AUCTION** (P2B): RBI's own semi-annual G-Sec/T-Bill borrowing calendar is
+  published as a document covering the whole half-year, making a hand-maintained controlled
+  file (mirroring `data/official_events.json`'s fail-closed loader in `core/event_calendar.py`)
+  cheaper and more reliable than a weekly scraper - but it requires real, owner-verified
+  entries (quoted line, source URL, verified-on date) exactly like the RBI MPC schedule; no
+  placeholder/synthetic entries are shipped in `data/`.
 * Detailed earnings-result interpretation (revenue/EBITDA/PAT/margin parsing) is explicitly out
   of scope for V1 - a later packet.
 * Source-conflict handling (two official sources disagreeing on one filing) is designed for but
   unexercised, since no family currently reads more than one source.
+* The IPO projection window (-3..+7 days per Desk page load) re-reads the stored official
+  snapshot and re-runs `ipo_watch`'s own selection logic on every request - cheap at today's IPO
+  volume, but worth revisiting if the Desk ever needs to serve many concurrent requests.

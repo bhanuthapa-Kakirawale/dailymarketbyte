@@ -80,6 +80,9 @@ NOT_CAPTURED = "NOT_CAPTURED"
 SYNTHETIC = "SYNTHETIC"
 
 REPORT_JOB, PRE_FALLBACK = "REPORT_JOB", "PRE_FALLBACK"
+# A MarketEvent built on the fly from another pipeline's already-validated state (e.g. IPO,
+# projected from ipo_watch/official_snapshots) - never fetched, never written to store.py.
+PROJECTION = "PROJECTION"
 
 
 def event_checksum(facts) -> str:
@@ -179,4 +182,5 @@ __all__ = ["SCHEMA_VERSION", "EARNINGS", "IPO", "OFS", "GOVT_SECURITIES_AUCTION"
            "VALIDATION_FAILED", "NOT_SUPPORTED_YET", "VALIDATED", "FAILED", "NEW_EVENT",
            "UNCHANGED", "REVISED", "CANCELLED_CHANGE", "PERSISTED_SNAPSHOT", "CAPTURED_THIS_RUN",
            "HISTORICAL_SNAPSHOT_UNAVAILABLE", "NOT_CAPTURED", "SYNTHETIC", "REPORT_JOB",
-           "PRE_FALLBACK", "event_checksum", "raw_checksum", "MarketEvent", "FamilyFetchResult"]
+           "PRE_FALLBACK", "PROJECTION", "event_checksum", "raw_checksum", "MarketEvent",
+           "FamilyFetchResult"]

@@ -25,9 +25,17 @@ FAMILY_CHIP = {EARNINGS: "EARNINGS", IPO: "IPO", OFS: "OFS",
               GOVT_SECURITIES_AUCTION: "GOVT AUCTION", BUYBACK: "BUYBACK",
               OPEN_OFFER: "OPEN OFFER", DELISTING: "DELISTING"}
 
+# IPO is shown via the existing, separately-tested IPO WATCH scene, never duplicated here.
+# Defense-in-depth: nothing currently populates intel.market_events["IPO"] (its default
+# fetcher stays a stub by design - see market_events/sources/__init__.py), so this filter is
+# not load-bearing today, but it makes the "never shown twice" invariant provable in code
+# rather than true only by omission.
+EXCLUDED_FROM_PUBLIC_SCENE = frozenset({IPO})
+
 
 def select_market_events(events_by_family: dict, universe_symbols, day: dt.date,
-                         limit: int = MAX_PUBLIC_EVENTS) -> tuple:
+                         limit: int = MAX_PUBLIC_EVENTS,
+                         exclude_families: frozenset = EXCLUDED_FROM_PUBLIC_SCENE) -> tuple:
     """(chosen [MarketEvent], omitted [{event_key, reason}])."""
     uni = set(universe_symbols or ())
     all_events, seen = [], set()
@@ -39,6 +47,11 @@ def select_market_events(events_by_family: dict, universe_symbols, day: dt.date,
 
     eligible, omitted = [], []
     for ev in all_events:
+        if ev.family in exclude_families:
+            omitted.append({"event_key": ev.event_key,
+                            "reason": "family excluded from the public Market Events scene "
+                                      "(shown via IPO WATCH instead)"})
+            continue
         if ev.symbol and uni and ev.symbol not in uni:
             omitted.append({"event_key": ev.event_key,
                             "reason": "symbol outside the tracked universe"})
@@ -121,5 +134,5 @@ def market_events_audit(chosen, omitted) -> dict:
            "omitted": omitted}
 
 
-__all__ = ["MAX_PUBLIC_EVENTS", "FAMILY_PRIORITY", "FAMILY_CHIP", "select_market_events",
-           "build_model", "market_events_facts", "market_events_audit"]
+__all__ = ["MAX_PUBLIC_EVENTS", "FAMILY_PRIORITY", "FAMILY_CHIP", "EXCLUDED_FROM_PUBLIC_SCENE",
+           "select_market_events", "build_model", "market_events_facts", "market_events_audit"]

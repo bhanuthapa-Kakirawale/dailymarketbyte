@@ -104,3 +104,21 @@ def test_market_events_facts_use_security_scope_for_earnings():
     facts = market_events_facts([ev])
     assert all(f.scope is Scope.SECURITY and f.security == "ABC"
               and f.content_class is ContentClass.CORPORATE_EVENT for f in facts)
+
+
+# --------------------------------------------------------------------------- IPO exclusion (P2A)
+def test_select_market_events_excludes_ipo_family_even_when_eligible():
+    from market_events.models import IPO
+    from market_events.watch import select_market_events
+    ev = _ev(IPO, "IPO:DEMOIPO:2026-10-06", "DEMOIPO", company="Demo IPO Ltd")
+    chosen, omitted = select_market_events({IPO: [ev]}, {"DEMOIPO"}, DAY)
+    assert chosen == []
+    assert omitted[0]["reason"].startswith("family excluded")
+
+
+def test_select_market_events_still_includes_ofs_family():
+    from market_events.models import OFS
+    from market_events.watch import select_market_events
+    ev = _ev(OFS, "OFS:ABC:x1", "ABC", company="ABC Ltd")
+    chosen, omitted = select_market_events({OFS: [ev]}, {"ABC"}, DAY)
+    assert len(chosen) == 1 and chosen[0].family == OFS

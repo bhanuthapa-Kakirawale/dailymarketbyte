@@ -9,9 +9,40 @@ from __future__ import annotations
 
 import datetime as dt
 
-from market_events.models import ALL_FAMILIES, BUYBACK, DELISTING, EARNINGS, OPEN_OFFER
+from market_events.models import ALL_FAMILIES, BUYBACK, DELISTING, EARNINGS, IPO, OPEN_OFFER
 
 STOCK_FAMILIES = (EARNINGS, BUYBACK, OPEN_OFFER, DELISTING)
+
+
+def _ipo_market_events(repo, session: dt.date) -> list:
+    """IPO is never acquired by this engine (ipo_watch/official_snapshots remains the one
+    source of truth) - this reads the ALREADY-CAPTURED official IPO snapshot (the same data
+    the stock page's "Official events" card already reads) and projects it into MarketEvents
+    for the Desk's unified pages. Never re-fetches NSE, never writes to market_events/store."""
+    from ipo_watch import IPOEvent, apply_offer_document, load_offer_documents
+    from market_events.sources.ipo_projection import project_ipo_events
+
+    snap = repo.official_snapshot(session, IPO)
+    if snap is None or snap.status not in ("SUCCESS", "NO_DATA"):
+        return []
+    ipos = [IPOEvent.from_snapshot_record(r) for r in snap.records]
+    docs, _ = load_offer_documents()
+    by_key = {(d.get("symbol") or d.get("company_name") or "").upper(): d for d in docs}
+    for ipo in ipos:
+        d = by_key.get((ipo.symbol or ipo.company_name).upper())
+        if d:
+            apply_offer_document(ipo, d)
+    # project_ipo_events is single-day (mirrors ipo_watch.todays_event exactly); the Desk's
+    # TODAY/TOMORROW/NEXT 7 DAYS/RECENTLY ANNOUNCED buckets need a window, so project each day
+    # in it and union the results - a different date for the same IPO is a genuinely different
+    # dated milestone (opens vs. closes vs. lists), never a duplicate.
+    out, seen = [], set()
+    for offset in range(-3, 8):
+        for ev in project_ipo_events(ipos, session + dt.timedelta(days=offset)):
+            if ev.event_key not in seen:
+                seen.add(ev.event_key)
+                out.append(ev)
+    return out
 
 
 def _safe_date(iso: str | None) -> dt.date | None:
@@ -41,6 +72,11 @@ def _bucket(events: list, session: dt.date) -> dict:
 
 
 def family_section(repo, family: str, session: dt.date) -> dict:
+    if family == IPO:
+        events = _ipo_market_events(repo, session)
+        buckets = _bucket(events, session)
+        return {"status": "VIEW_ONLY", "count": len(events), "source": "ipo_watch_projection",
+               **buckets}
     events = repo.market_events_latest(family)
     buckets = _bucket(events, session)
     return {"status": "OK" if events else "UNAVAILABLE", "count": len(events), **buckets}
@@ -82,6 +118,12 @@ def quality_rows(repo, session: dt.date | None) -> dict:
     out = {"families": {}, "attempts": []}
     if session is not None:
         for family in ALL_FAMILIES:
+            if family == IPO:
+                events = _ipo_market_events(repo, session)
+                out["families"][family] = {"status": "VIEW_ONLY", "count": len(events),
+                                           "source": "ipo_watch_projection",
+                                           "not_supported_yet": False}
+                continue
             events = repo.market_events_latest(family, on_or_before=session)
             out["families"][family] = {
                 "status": "OK" if events else "NO_DATA", "count": len(events),

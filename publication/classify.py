@@ -26,6 +26,7 @@ SOURCE_LABELS = {
     S.SRC_NSEIX_DSP: "NSE IX", S.SRC_GEMINI: "AI", S.SRC_GOOGLE_NEWS: "news headline",
     S.SRC_DEMO: "synthetic fixture", S.SRC_NSE_FIIDII_API: "NSE",
     S.SRC_CDSL_FPI_DAILY: "CDSL", S.SRC_NSDL_FPI_FORTNIGHTLY: "NSDL",
+    S.SRC_NSE_BOARD_MEETINGS: "NSE",
 }
 _RANK = {RightsStatus.APPROVED: 0, RightsStatus.REVIEW_REQUIRED: 1, RightsStatus.UNKNOWN: 2,
          RightsStatus.RESTRICTED: 3}

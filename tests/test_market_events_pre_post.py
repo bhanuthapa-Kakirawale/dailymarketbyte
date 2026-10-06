@@ -117,3 +117,36 @@ def test_scan_public_text_catches_recommendation_language_on_market_events_text(
     scan = scan_public_text({"market_events.0": "Apply for this IPO before it closes."},
                             known_securities={}, approved_securities=set(), ipo_context=True)
     assert scan.issues.get("ipo_recommendation_language")
+
+
+# --------------------------------------------------------------------------- IPO exclusion (P2A)
+def test_plan_public_sections_market_events_section_excludes_ipo_even_when_intel_carries_it():
+    """End-to-end through plan_public_sections: even if a future change were to populate
+    intel.market_events["IPO"] (nothing does today), the public MARKET_EVENTS section must
+    never render it - IPO stays on the existing IPO WATCH scene only."""
+    from market_events.models import EARNINGS, IPO, SCHEMA_VERSION, SUCCESS, MarketEvent
+    from presentation.public_intelligence import PublicIntelligence, plan_public_sections
+
+    class FakeGate:
+        profile = type("P", (), {"value": "PRIVATE_ANALYTICS"})()
+
+        def admit(self, fact):
+            return True
+
+    def ev(family, key, symbol):
+        return MarketEvent(schema_version=SCHEMA_VERSION, family=family, event_key=key,
+                           symbol=symbol, company=f"{symbol} Ltd", status="SCHEDULED",
+                           sub_type=None, data_as_of=DAY.isoformat(),
+                           source_name="nse_corp_board_meetings", source_reference="https://x",
+                           facts=[], status_capture=SUCCESS)
+
+    intel = PublicIntelligence()
+    intel.market_events = {
+        IPO: [ev(IPO, "IPO:DEMOIPO:x", "DEMOIPO")],
+        EARNINGS: [ev(EARNINGS, "EARNINGS:ABC:x", "ABC")],
+    }
+    intel.universe_symbols = {"DEMOIPO", "ABC"}
+    out = plan_public_sections(FakeGate(), intel, DAY, "PRE", max_structure=0)
+    families_shown = {c["tag"] for c in (out.market_events or {}).get("cards", [])}
+    assert "IPO" not in families_shown
+    assert "EARNINGS" in families_shown

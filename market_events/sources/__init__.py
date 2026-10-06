@@ -9,7 +9,7 @@ clears a specific source for a real adapter.
 """
 from __future__ import annotations
 
-from ..models import (ALL_FAMILIES, FamilyFetchResult, NOT_SUPPORTED_YET)
+from ..models import ALL_FAMILIES, EARNINGS, IPO, FamilyFetchResult, NOT_SUPPORTED_YET
 
 
 def _not_supported(family: str, reason: str):
@@ -25,6 +25,19 @@ def _not_supported(family: str, reason: str):
 _REASON = ("no official source for this family has been verified reachable from this "
           "environment this pass - see docs/MARKET_EVENTS_ENGINE.md")
 
+# IPO is never acquired by this engine BY DESIGN (ipo_watch/official_snapshots remains the one
+# source of truth) - not a "not verified reachable" gap, so its stub carries an honest reason
+# string distinct from the generic one above. Private Desk reads it via
+# market_events.sources.ipo_projection, never via this stub.
+_IPO_REASON = ("IPO is sourced via ipo_watch/official_snapshots by design, never acquired by "
+              "this engine - see market_events/sources/ipo_projection.py")
+
 DEFAULT_FETCHERS = {family: _not_supported(family, _REASON) for family in ALL_FAMILIES}
+DEFAULT_FETCHERS[IPO] = _not_supported(IPO, _IPO_REASON)
+
+from .earnings import fetch_earnings        # noqa: E402 - after DEFAULT_FETCHERS to avoid a
+                                             # circular import (earnings.py imports core.sources,
+                                             # which is safe, but keep the pattern consistent)
+DEFAULT_FETCHERS[EARNINGS] = fetch_earnings
 
 __all__ = ["DEFAULT_FETCHERS"]

@@ -40,9 +40,31 @@ def _write_market_events(out: str):
                             sub_type=TBILL_91))
 
 
+def _write_official_ipo_snapshot(out: str):
+    """A real validated official IPO snapshot for SESSION (what candidates.official_index()
+    already reads for the stock page) - written directly via official_snapshots.store, never
+    through market_events/ (IPO is never acquired by that engine)."""
+    from ipo_watch.models import BoardType, IPOEvent, IPOStatus
+    from official_snapshots.models import IPO, OfficialSnapshot, SUCCESS
+    from official_snapshots.store import write_revision
+
+    ipo = IPOEvent(company_name="Demo IPO Ltd", board_type=BoardType.MAINBOARD,
+                  status=IPOStatus.OPEN, source_name="nse_ipo_issues",
+                  source_reference="https://nseindia.com/ipo", data_as_of=SESSION,
+                  symbol="SYMIPO", issue_close_date=SESSION, price_band_low=100.0,
+                  price_band_high=110.0, lot_size=100, retrieved_at="2026-09-18T09:00:00+05:30")
+    snap = OfficialSnapshot(kind=IPO, session_date=SESSION.isoformat(),
+                            source_date=SESSION.isoformat(), source_name="nse_ipo_issues",
+                            source_reference="https://nseindia.com/ipo",
+                            retrieved_at="2026-09-18T09:00:00+05:30", status=SUCCESS,
+                            connectivity_status="REACHABLE", records=[ipo.to_snapshot_record()])
+    write_revision(out, snap)
+
+
 @pytest.fixture
 def desk_out_with_market_events(desk_out):
     _write_market_events(desk_out)
+    _write_official_ipo_snapshot(desk_out)
     return desk_out
 
 
@@ -154,3 +176,34 @@ def test_nothing_is_written_outside_private_desk(desk_out_with_market_events, cl
         client.get(url)
     after = _fingerprint(desk_out_with_market_events, exclude=("private_desk",))
     assert before == after
+
+
+# --------------------------------------------------------------------------- IPO projection (P2A)
+def test_events_page_shows_ipo_family_projected_from_official_snapshot(client,
+                                                                        desk_out_with_market_events):
+    r = client.get("/events")
+    assert r.status_code == 200
+    assert "Demo IPO Ltd" in r.text
+    assert "VIEW_ONLY" in r.text or "ipo_watch_projection" in r.text
+
+
+def test_events_page_ipo_family_never_writes_to_market_events_store(client,
+                                                                     desk_out_with_market_events):
+    from market_events.store import list_events
+    client.get("/events")
+    assert list_events(desk_out_with_market_events, "IPO") == []
+
+
+def test_dashboard_panel_includes_ipo_in_today_counts_when_applicable(client,
+                                                                      desk_out_with_market_events):
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "ipo" in r.text.lower()
+
+
+def test_quality_rows_ipo_family_marked_view_only_not_not_supported_yet(svc, desk_out,
+                                                                        desk_out_with_market_events):
+    q = svc.quality(SESSION)
+    ipo_row = q["market_events"]["families"]["IPO"]
+    assert ipo_row["status"] == "VIEW_ONLY"
+    assert ipo_row["not_supported_yet"] is False

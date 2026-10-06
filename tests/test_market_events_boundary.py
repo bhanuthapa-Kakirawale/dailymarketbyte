@@ -134,12 +134,14 @@ def test_source_failure_never_invents_a_plausible_event(tmp_path):
 
 
 def test_not_supported_yet_family_records_attempt_without_counting_as_failure(tmp_path):
+    """BUYBACK (not EARNINGS - EARNINGS has a real, live-calling fetcher since P2A, and this
+    test must never make a network call)."""
     from market_events.service import MarketEventsService
     from market_events.store import latest_attempts
 
-    svc = MarketEventsService(str(tmp_path))     # default fetchers - every family NOT_SUPPORTED_YET
+    svc = MarketEventsService(str(tmp_path))     # default fetchers - BUYBACK still NOT_SUPPORTED_YET
     res = svc.capture(dt.datetime(2026, 10, 5, 19, 30, tzinfo=IST), "REPORT_JOB",
-                      families=("EARNINGS",))
-    assert res["results"]["EARNINGS"]["status"] == "NOT_SUPPORTED_YET"
+                      families=("BUYBACK",))
+    assert res["results"]["BUYBACK"]["status"] == "NOT_SUPPORTED_YET"
     attempts = latest_attempts(str(tmp_path))
     assert any(a.get("status") == "NOT_SUPPORTED_YET" for a in attempts)

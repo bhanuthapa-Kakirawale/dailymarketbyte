@@ -122,6 +122,8 @@ SRC_MARKET_STRUCTURE = "daily_byte_market_structure"  # our own aggregate over e
 SRC_NSE_FIIDII_API = "nse_fiidii_api"             # NSE's own provisional FII/FPI+DII cash flow
 SRC_CDSL_FPI_DAILY = "cdsl_fpi_daily"             # CDSL's daily depository-reported FPI flow
 SRC_NSDL_FPI_FORTNIGHTLY = "nsdl_fpi_fortnightly"  # NSDL's fortnightly sector-wise FPI flow
+# Market Events Engine V1 (P2A - live EARNINGS)
+SRC_NSE_BOARD_MEETINGS = "nse_corp_board_meetings"  # NSE's board-meeting prior intimations
 
 _REGISTRY: dict[str, SourceMetadata] = {
     SRC_NSE: SourceMetadata(
@@ -281,6 +283,17 @@ _REGISTRY: dict[str, SourceMetadata] = {
         notes="NSDL's own fortnightly sector-wise FPI net investment, official regulatory "
               "publication. AUC (asset-under-custody value) is kept separate from net "
               "investment (flow) and never described as buying/selling."),
+    SRC_NSE_BOARD_MEETINGS: SourceMetadata(
+        source_name=SRC_NSE_BOARD_MEETINGS, source_type=SourceType.PRIMARY,
+        source_family=SourceFamily.EXCHANGE, independence_group=GROUP_NSE,
+        retrieval_method="https GET www.nseindia.com/api/corporate-board-meetings?index=equities",
+        reference="https://www.nseindia.com/companies-listing/corporate-filings-board-meetings",
+        market_timestamp_available=True, display_rights_status="UNREVIEWED",
+        notes="Undocumented website API; each row carries its own filing timestamp "
+              "(bm_timestamp) distinct from the scheduled meeting date (bm_date). No stable "
+              "per-filing ID across a reschedule - event identity is reconciled by "
+              "market_events.service._lookup_open_event, not by any field here. Shape can "
+              "change -> the adapter fails closed."),
 }
 
 
@@ -341,6 +354,7 @@ __all__ = ["SourceMetadata", "SourceFamily", "source_metadata", "independence_gr
            "SRC_DERIVED", "SRC_DEMO", "SRC_NSEIX_LIVE", "SRC_NSEIX_DSP", "SRC_RBI_PRESS",
            "SRC_FED_CALENDAR", "SRC_NSE_CONSTITUENTS", "SRC_NSE_FO_BAN", "SRC_NSE_SURVEILLANCE",
            "SRC_NSE_IPO", "SRC_SEBI_OFFER_DOC", "SRC_MARKET_STRUCTURE", "SRC_NSE_FIIDII_API",
-           "SRC_CDSL_FPI_DAILY", "SRC_NSDL_FPI_FORTNIGHTLY", "GROUP_NSE", "GROUP_NSEIX",
+           "SRC_CDSL_FPI_DAILY", "SRC_NSDL_FPI_FORTNIGHTLY", "SRC_NSE_BOARD_MEETINGS",
+           "GROUP_NSE", "GROUP_NSEIX",
            "GROUP_RBI", "GROUP_FED", "GROUP_YAHOO", "GROUP_GEMINI", "GROUP_INTERNAL",
            "GROUP_DEMO", "GROUP_CDSL", "GROUP_NSDL", "GROUP_UNKNOWN", "NEWS_GROUP_PREFIX"]

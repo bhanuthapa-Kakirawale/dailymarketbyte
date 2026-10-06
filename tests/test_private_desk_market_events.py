@@ -12,10 +12,12 @@ from test_private_desk import DESK, FORBIDDEN_WORDS, _fingerprint, client, desk_
 
 
 def _write_market_events(out: str):
-    """EARNINGS/BUYBACK/OPEN_OFFER/DELISTING/GOVT_SECURITIES_AUCTION revisions covering SESSION,
-    written directly to disk (not through the desk - the desk never writes market_events/)."""
+    """EARNINGS/BUYBACK/OPEN_OFFER/DELISTING/GOVT_SECURITIES_AUCTION/OFS revisions covering
+    SESSION, written directly to disk (not through the desk - the desk never writes
+    market_events/)."""
     from market_events.models import (BUYBACK, DELISTING, EARNINGS, GOVT_SECURITIES_AUCTION,
-                                      OPEN_OFFER, SCHEMA_VERSION, SUCCESS, TBILL_91, MarketEvent)
+                                      OFS, OPEN_OFFER, SCHEMA_VERSION, SUCCESS, TBILL_91,
+                                      MarketEvent)
     from market_events.store import write_revision
 
     def _ev(family, event_key, symbol, company, status, facts, sub_type=None):
@@ -38,6 +40,8 @@ def _write_market_events(out: str):
                             None, "91-day T-Bill", "SCHEDULED",
                             [{"label": "notified_amount_crore", "value": "10000"}],
                             sub_type=TBILL_91))
+    write_revision(out, _ev(OFS, "OFS:SYMA:ofs1", "SYMA", "Company SYMA", "OPEN",
+                            [{"label": "floor_price", "value": "250"}]))
 
 
 def _write_official_ipo_snapshot(out: str):
@@ -207,3 +211,41 @@ def test_quality_rows_ipo_family_marked_view_only_not_not_supported_yet(svc, des
     ipo_row = q["market_events"]["families"]["IPO"]
     assert ipo_row["status"] == "VIEW_ONLY"
     assert ipo_row["not_supported_yet"] is False
+
+
+# --------------------------------------------------------------------------- OFS UI propagation (P2B)
+def test_events_page_shows_ofs_family(client, desk_out_with_market_events):
+    r = client.get("/events")
+    assert r.status_code == 200
+    assert "OFS" in r.text
+    assert "Company SYMA" in r.text
+
+
+def test_dashboard_panel_includes_ofs_in_today_counts(client, desk_out_with_market_events):
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "ofs" in r.text.lower()
+
+
+def test_stock_page_official_events_card_includes_ofs_not_a_second_card(client,
+                                                                        desk_out_with_market_events):
+    r = client.get("/stock/SYMA")
+    assert r.status_code == 200
+    assert "OFS" in r.text
+    assert r.text.count("H · Official events") == 1
+
+
+def test_quality_rows_ofs_family_not_marked_not_supported_yet(svc, desk_out,
+                                                               desk_out_with_market_events):
+    q = svc.quality(SESSION)
+    ofs_row = q["market_events"]["families"]["OFS"]
+    assert ofs_row["not_supported_yet"] is False
+    assert ofs_row["status"] == "OK"
+
+
+def test_ofs_source_rights_still_review_required_in_desk_data():
+    """Rights classification is unaffected by the Desk's read-only views - re-confirms the
+    source-level guarantee already tested in test_market_events_sources.py."""
+    from core.sources import SRC_NSE_OFS
+    from publication.rights import rights_for
+    assert rights_for(SRC_NSE_OFS).status.value == "REVIEW_REQUIRED"

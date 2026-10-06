@@ -142,20 +142,21 @@ def test_parse_error_is_recorded_and_never_written(tmp_path):
 
 
 def test_not_supported_yet_every_family_by_default(tmp_path):
-    """EARNINGS (P2A) is now the one exception with a real, live-calling fetcher; IPO's stub
-    stays NOT_SUPPORTED_YET-shaped by design (it is never acquired by this engine - see its
-    own reworded reason string) and every other family is still genuinely unsupported.
-    EARNINGS is excluded from this capture specifically so this test never makes a live
-    network call (tests/ stays fully offline) - see the EARNINGS adapter tests further down
-    this file for its own offline, fixture-based coverage."""
-    from market_events.models import ALL_FAMILIES, EARNINGS
+    """EARNINGS (P2A) and OFS (P2B) are now the two exceptions with real, live-calling
+    fetchers; IPO's stub stays NOT_SUPPORTED_YET-shaped by design (it is never acquired by
+    this engine - see its own reworded reason string) and every other family is still
+    genuinely unsupported. EARNINGS/OFS are excluded from this capture specifically so this
+    test never makes a live network call (tests/ stays fully offline) - see the EARNINGS/OFS
+    adapter tests further down this file for their own offline, fixture-based coverage."""
+    from market_events.models import ALL_FAMILIES, EARNINGS, OFS
     from market_events.service import MarketEventsService
     from market_events.sources import DEFAULT_FETCHERS
 
     assert not getattr(DEFAULT_FETCHERS[EARNINGS], "not_supported_yet", False)
+    assert not getattr(DEFAULT_FETCHERS[OFS], "not_supported_yet", False)
 
     svc = MarketEventsService(str(tmp_path))
-    still_unsupported = tuple(f for f in ALL_FAMILIES if f != EARNINGS)
+    still_unsupported = tuple(f for f in ALL_FAMILIES if f not in (EARNINGS, OFS))
     res = svc.capture(NOW, "REPORT_JOB", families=still_unsupported)
     for family in still_unsupported:
         assert res["results"][family]["status"] == "NOT_SUPPORTED_YET"
@@ -295,3 +296,127 @@ def test_earnings_adapter_new_cycle_mints_new_key_when_no_open_event():
     events, _ = parse_board_meetings([_BM_RESULTS_ROW], _NOW_ISO, lookup_fn=lookup_fn)
     assert events[0].event_key.startswith("EARNINGS:STLTECH:")
     assert events[0].status == "SCHEDULED"
+
+
+# --------------------------------------------------------------------------- OFS adapter (P2B)
+# Fixtures below are literal shapes from REAL rows pulled live from
+# https://www.nseindia.com/api/live-ofs-active-issues (confirmed empty: {"data": []} - field
+# names for a populated row are taken from NSE's own frontend script, upcoming-ipo.js, since
+# no OFS was active when this was built - official evidence, documented in core/sources.py)
+# and https://www.nseindia.com/api/live-ofs-past-issues (471 real historical records) this
+# session (2026-10-06) - never re-fetched during a test run.
+_OFS_PAST_ROW = {
+    "allocatePrice": "120", "allocatePriceGeneral": "-", "allocatePriceRetail": "120",
+    "allocatedQty": "48600000", "category": "GENERAL",
+    "companyName": "Sustainable Energy Infra Trust", "floorPrice": "120",
+    "methodology": "Multiple", "noOfTimes": "      1.03", "noOfshareOffered": "48600000",
+    "offerDate": "24-Sep-2026", "symbol": "SEITINVITCUMU", "sr_no": 1,
+}
+_OFS_ACTIVE_ROW = {   # shape per upcoming-ipo.js's own field reads - not an observed live row
+    "symbol": "DEMOOFS", "series": "EQ", "companyName": "Demo OFS Ltd",
+    "ofsStartDate": "06-Oct-2026", "ofsEndDate": "07-Oct-2026", "floorPrice": "250",
+    "status": "Active",
+}
+
+
+def _ofs_payload(active_rows=(), past_rows=()):
+    class FakeNSE:
+        def get(self, path):
+            if "active" in path:
+                return {"data": list(active_rows)}
+            return {"data": list(past_rows)}
+    return FakeNSE()
+
+
+def test_ofs_adapter_every_row_is_ofs_by_construction_no_text_classification():
+    """Unlike EARNINGS, nothing here is filtered by text - the source IS the OFS listing."""
+    from market_events.sources.ofs import fetch_ofs
+    res = fetch_ofs("2026-09-28T19:00:00+05:30", nse=_ofs_payload(past_rows=[_OFS_PAST_ROW]))
+    assert res.status == "SUCCESS"
+    assert len(res.events) == 1
+    assert res.events[0].family == "OFS"
+
+
+def test_ofs_adapter_normalizes_past_issue_fields():
+    from market_events.sources.ofs import fetch_ofs
+    res = fetch_ofs("2026-09-28T19:00:00+05:30", nse=_ofs_payload(past_rows=[_OFS_PAST_ROW]))
+    ev = res.events[0]
+    assert ev.symbol == "SEITINVITCUMU" and ev.company == "Sustainable Energy Infra Trust"
+    assert ev.status == "COMPLETED" and ev.data_as_of == "2026-09-24"
+    facts = {f["label"]: f["value"] for f in ev.facts}
+    assert facts["floor_price"] == "120" and facts["category"] == "GENERAL"
+
+
+def test_ofs_adapter_past_issue_event_key_is_stable_and_natural():
+    """No lookup needed for a completed record - the key comes straight from the source's own
+    symbol/date/category, never a sequence number this pipeline assigns."""
+    from market_events.sources.ofs import fetch_ofs
+    res = fetch_ofs("2026-09-28T19:00:00+05:30", nse=_ofs_payload(past_rows=[_OFS_PAST_ROW]))
+    assert res.events[0].event_key == "OFS:SEITINVITCUMU:2026-09-24-GENERAL"
+
+
+def test_ofs_adapter_old_past_issue_outside_recent_window_is_dropped():
+    from market_events.sources.ofs import fetch_ofs
+    old_row = dict(_OFS_PAST_ROW, offerDate="01-Jan-2026")
+    res = fetch_ofs("2026-10-06T19:00:00+05:30", nse=_ofs_payload(past_rows=[old_row]))
+    assert res.events == []
+
+
+def test_ofs_adapter_active_row_opens_today_then_closes_on_end_date():
+    from market_events.sources.ofs import fetch_ofs
+    nse = _ofs_payload(active_rows=[_OFS_ACTIVE_ROW])
+    on_open = fetch_ofs("2026-10-06T09:00:00+05:30", nse=nse)
+    assert on_open.events[0].data_as_of == "2026-10-06" and on_open.events[0].status == "OPEN"
+    on_close = fetch_ofs("2026-10-07T09:00:00+05:30", nse=nse)
+    assert on_close.events[0].data_as_of == "2026-10-07" and on_close.events[0].status == "CLOSED"
+
+
+def test_ofs_adapter_active_row_reschedule_reuses_event_key():
+    from market_events.models import OFS, SCHEMA_VERSION, SUCCESS, MarketEvent
+    from market_events.sources.ofs import fetch_ofs
+    prior = MarketEvent(schema_version=SCHEMA_VERSION, family=OFS, event_key="OFS:DEMOOFS:xyz1",
+                        symbol="DEMOOFS", company="Demo OFS Ltd", status="ANNOUNCED",
+                        sub_type=None, data_as_of="2026-10-05", source_name="nse_ofs_live",
+                        source_reference="x", first_retrieved_at="2026-10-01T10:00:00+05:30",
+                        status_capture=SUCCESS)
+
+    def lookup_fn(family, symbol):
+        return prior if symbol == "DEMOOFS" else None
+
+    res = fetch_ofs("2026-10-06T09:00:00+05:30",
+                    nse=_ofs_payload(active_rows=[_OFS_ACTIVE_ROW]), lookup_fn=lookup_fn)
+    assert res.events[0].event_key == "OFS:DEMOOFS:xyz1"
+
+
+def test_ofs_adapter_source_unavailable_on_network_exception():
+    from market_events.sources.ofs import fetch_ofs
+
+    class FailingNSE:
+        def get(self, path):
+            raise ConnectionError("blocked")
+
+    res = fetch_ofs("2026-10-06T09:00:00+05:30", nse=FailingNSE())
+    assert res.status == "SOURCE_UNAVAILABLE"
+
+
+def test_ofs_adapter_parse_error_on_schema_drift():
+    """Every active row missing the fields NSE's own frontend reads -> fails closed, never a
+    guessed mapping."""
+    from market_events.sources.ofs import fetch_ofs
+    res = fetch_ofs("2026-10-06T09:00:00+05:30",
+                    nse=_ofs_payload(active_rows=[{"unexpected": "shape"}]))
+    assert res.status == "PARSE_ERROR"
+
+
+def test_ofs_adapter_empty_active_and_past_is_healthy_success():
+    """Confirmed live shape: reachable, {"data": []} - never NOT_SUPPORTED_YET."""
+    from market_events.sources.ofs import fetch_ofs
+    res = fetch_ofs("2026-10-06T09:00:00+05:30", nse=_ofs_payload())
+    assert res.status == "SUCCESS"
+    assert res.events == []
+
+
+def test_ofs_source_defaults_to_review_required_rights():
+    from core.sources import SRC_NSE_OFS
+    from publication.rights import rights_for
+    assert rights_for(SRC_NSE_OFS).status.value == "REVIEW_REQUIRED"

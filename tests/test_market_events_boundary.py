@@ -145,3 +145,26 @@ def test_not_supported_yet_family_records_attempt_without_counting_as_failure(tm
     assert res["results"]["BUYBACK"]["status"] == "NOT_SUPPORTED_YET"
     attempts = latest_attempts(str(tmp_path))
     assert any(a.get("status") == "NOT_SUPPORTED_YET" for a in attempts)
+
+
+# --------------------------------------------------------------------------- OFS replay (P2B)
+def test_ofs_replay_never_calls_capture_fn_and_respects_cutoff(tmp_path):
+    """Same generic replay/point-in-time mechanism EARNINGS already proved above, demonstrated
+    explicitly for OFS - a family-agnostic guarantee, not a per-family reimplementation."""
+    from market_events.models import OFS, SCHEMA_VERSION, SUCCESS, MarketEvent
+    from market_events.store import write_revision
+
+    ev = MarketEvent(schema_version=SCHEMA_VERSION, family=OFS, event_key="OFS:DEMOOFS:x",
+                     symbol="DEMOOFS", company="Demo OFS Ltd", status="OPEN", sub_type=None,
+                     data_as_of="2026-10-05", source_name="nse_ofs_live", source_reference="x",
+                     first_retrieved_at="2026-10-05T23:00:00+05:30", status_capture=SUCCESS)
+    write_revision(str(tmp_path), ev)
+
+    from market_events.context import load_market_events
+    calls = []
+    ctx = load_market_events(str(tmp_path), cutoff=dt.datetime(2026, 10, 5, 7, 45, tzinfo=IST),
+                             live=False, on_or_before=dt.date(2026, 10, 5),
+                             families=("OFS",), capture_fn=lambda f: calls.append(f))
+    assert calls == []
+    assert ctx.events["OFS"] == []    # written AFTER the cutoff - never shown as available
+    assert ctx.status["OFS"] == "HISTORICAL_SNAPSHOT_UNAVAILABLE"

@@ -7,10 +7,9 @@ and the Private Desk's own, broader event calendar. One reusable
 acquisition→revision→replay→rights pipeline (`market_events/`), not seven independent hacks,
 mirroring `institutional_flows/`'s proven shape rather than duplicating it.
 
-**Status (P2A, 2026-10-06): EARNINGS is live from NSE's own board-meeting feed. IPO is live as
+**Status (P2B, 2026-10-06): EARNINGS and OFS are both live from NSE's own feeds. IPO is live as
 a read-only projection over the existing, already-live `ipo_watch` pipeline (never a second
-acquisition). OFS has no identified live source - see Known limitations. Every other family
-still returns `NOT_SUPPORTED_YET`.**
+acquisition). Every other family still returns `NOT_SUPPORTED_YET`.**
 
 ## Purpose
 
@@ -87,7 +86,7 @@ official source is unreachable or unverified, the family returns `SOURCE_UNAVAIL
 |---|---|---|
 | EARNINGS | NSE's board-meeting prior-intimation feed (`market_events/sources/earnings.py`) | **LIVE** - `/api/corporate-board-meetings?index=equities`, confirmed reachable and returning real data (verified 2026-10-06; a live pull classified 5 genuine results-qualifying board meetings, e.g. Asian Paints Limited, 29-Oct-2026) |
 | IPO | `ipo_watch`/`official_snapshots` (`market_events/sources/ipo_projection.py`) | **LIVE as a read-only projection** - never re-acquired; shown via the existing IPO WATCH scene in PRE/POST, and via this projection on the Private Desk's `/events`/dashboard/Data Quality only |
-| OFS | NSE corporate-announcements feed (`/api/corporate-announcements?index=equities`) | `NOT_SUPPORTED_YET` - **no identified live source**, see Known limitations |
+| OFS | NSE's own OFS mechanism feed (`market_events/sources/ofs.py`) | **LIVE** - `/api/live-ofs-active-issues` + `/api/live-ofs-past-issues`, confirmed reachable 2026-10-06; every row IS an OFS by construction (no text classification needed, unlike EARNINGS) |
 | GOVT_SECURITIES_AUCTION | RBI's semi-annual G-Sec/T-Bill borrowing calendar | `NOT_SUPPORTED_YET` (planned: hand-maintained controlled file, see Known limitations) |
 | BUYBACK | Same corp-filings API family as EARNINGS | `NOT_SUPPORTED_YET` - deferred to P2C |
 | OPEN_OFFER | NSE/BSE announcements + SEBI SAST filings (often unstructured PDFs) | `NOT_SUPPORTED_YET` - deferred to P2C |
@@ -96,12 +95,13 @@ official source is unreachable or unverified, the family returns `SOURCE_UNAVAIL
 Governing rule (already established via `official_snapshots.NOT_SUPPORTED`, and the project's
 "reliability over feature count" posture): **no live adapter is written against an endpoint
 that has not actually been verified reachable from this environment.** `market_events/sources/`
-holds `DEFAULT_FETCHERS`, one per family; EARNINGS now maps to a real adapter
-(`market_events.sources.earnings.fetch_earnings`), IPO's stub carries an honest reason
-("sourced via `ipo_watch` by design, never acquired by this engine" - not "unreachable", since
-it IS reachable, just intentionally out of this engine's scope), and every other family stays
-the generic `NOT_SUPPORTED_YET` stub carrying an explicit `not_supported_yet = True` marker (so
-Data Quality can tell "never attempted" apart from "has a real adapter").
+holds `DEFAULT_FETCHERS`, one per family; EARNINGS and OFS now map to real adapters
+(`market_events.sources.earnings.fetch_earnings`, `market_events.sources.ofs.fetch_ofs`), IPO's
+stub carries an honest reason ("sourced via `ipo_watch` by design, never acquired by this
+engine" - not "unreachable", since it IS reachable, just intentionally out of this engine's
+scope), and every other family stays the generic `NOT_SUPPORTED_YET` stub carrying an explicit
+`not_supported_yet = True` marker (so Data Quality can tell "never attempted" apart from "has a
+real adapter").
 
 `python validate_market_events_sources.py` is the manual, read-only connectivity diagnostic
 (mirrors `validate_pre_production.py --connectivity-only`) - one probe per family, never writes
@@ -147,15 +147,49 @@ RECENTLY ANNOUNCED buckets; the per-family `quality_rows()`/`family_section()` s
 `"VIEW_ONLY"`, not `NOT_SUPPORTED_YET` or `OK` (it was never meant to be "captured" by this
 engine at all).
 
-## OFS semantics
+## OFS semantics (`market_events/sources/ofs.py`)
 
-No live source has been identified for OFS this pass - see Known limitations for the exact,
-evidenced blocker. The family's model support (scope/rights/editorial priority, shared with
-IPO) is fully built and tested against fixtures; `DEFAULT_FETCHERS[OFS]` stays
-`NOT_SUPPORTED_YET` until a real source is found. If one is built later, it must never invent a
-floor price or close date, must use the same `needs_lookup` reconciliation as EARNINGS (a
-revised OFS floor price is a revision of the same event, not a new one), and must never use
-Chittorgarh/Groww/Moneycontrol or any other third-party OFS tracker as a production source.
+**Discovery (P2B, 2026-10-06):** NSE's dedicated OFS page (`/market-data/all-upcoming-issues-ofs`)
+turned out to be served by the exact same frontend controller as the IPO page
+(`upcoming-ipo.js` - confirmed by reading that page's own `<script>` tags), which reads this
+exact endpoint pair:
+
+* `/api/live-ofs-active-issues` - OFS currently open/scheduled. Confirmed reachable; genuinely
+  empty (`{"data": []}`) the day this was built - a healthy `SUCCESS`+`[]` result, not
+  `NOT_SUPPORTED_YET`. Field names (`symbol`, `series`, `ofsStartDate`/`startDate`,
+  `ofsEndDate`/`endDate`, `status`) are taken from the controller script's own field reads -
+  official evidence, never guessed - so a populated row missing them fails closed
+  (`PARSE_ERROR`), distinguished from a structurally-valid row that simply has no "today" fact
+  (a middle day of a multi-day window), which is silently skipped, never a drop.
+* `/api/live-ofs-past-issues` - OFS already completed. Confirmed reachable with 471 real
+  historical records (e.g. Sustainable Energy Infra Trust / SEITINVITCUMU, offer date
+  24-Sep-2026, floor price ₹120, allocated at ₹120). Only rows within `RECENT_WINDOW_DAYS = 7`
+  of "now" are imported as `MarketEvent`s (status `COMPLETED`) - older history is deliberately
+  not backfilled into the store every day.
+
+Every row from either endpoint **is** an OFS by construction - the source itself is NSE's own
+OFS listing, so there is no "reject a non-OFS row" classification step the way EARNINGS rejects
+a non-results board meeting.
+
+**Why the earlier `/api/corporate-announcements` search found nothing**: that is NSE's general
+corporate-disclosure feed (109 `desc` categories, confirmed via a 19,307-row, 5-week pull - no
+"Offer for Sale" category exists in it). OFS runs through this separate, dedicated mechanism
+feed instead - a different page, a different underlying API, never guessed, found only after
+reading the real OFS page's own script tags.
+
+**Single `data_as_of` per multi-dated event**: an active OFS has both an open and close date,
+but `MarketEvent` carries one `data_as_of`. `_classify_active()` resolves this exactly like
+`ipo_watch.todays_event()` resolves an IPO's four possible dated milestones: before the open
+date → `(open_date, ANNOUNCED)`; on the open date → `(open_date, OPEN)` (or `CLOSED` if it's a
+single-day OFS, open date == close date); on the close date → `(close_date, CLOSED)`; any other
+day → no event today (silently skipped, never a drop). Event identity for an active row uses
+the same `needs_lookup` reconciliation as EARNINGS (a revised floor price or date is a revision
+of the same event, never a new one); a completed row's `event_key` is built directly from the
+source's own `symbol`/`offerDate`/`category` (a genuine natural identifier - no lookup needed,
+since a completed record is terminal).
+
+OFS never uses Chittorgarh/Groww/Moneycontrol or any other third-party tracker - both endpoints
+are NSE's own.
 
 ## Revisions and change detection
 
@@ -221,10 +255,10 @@ EBITDA/PAT/margin/EPS/beat-miss parsing; that is explicitly out of scope for V1)
 TOMORROW / NEXT 7 DAYS / RECENTLY ANNOUNCED per family, with a family filter. The dashboard gets
 one compact panel (`dashboard_section()` - context only). The stock page's existing "Official
 events" card (already showing FNO_BAN/ASM/GSM/IPO from `official_snapshots`) is **extended**,
-not duplicated, with EARNINGS/BUYBACK/OPEN_OFFER/DELISTING rows for that symbol
-(`candidates.official_index()`). `GOVT_SECURITIES_AUCTION` is market-wide and is never attached
-to a stock page. Data Quality gets one row per family (status, record count, `NOT_SUPPORTED_YET`
-flag, recent capture attempts).
+not duplicated, with EARNINGS/BUYBACK/OPEN_OFFER/DELISTING/OFS rows for that symbol
+(`candidates.official_index()`, `market_events.STOCK_FAMILIES`). `GOVT_SECURITIES_AUCTION` is
+market-wide and is never attached to a stock page. Data Quality gets one row per family
+(status, record count, `NOT_SUPPORTED_YET` flag, recent capture attempts).
 
 **Nothing here is reachable from `services/attention.py`, `services/candidates.py`'s Radar
 building, `services/packet.py` (`PrivateCandidatePacket`), the Radar order, or Market Regime -
@@ -269,22 +303,13 @@ owner-confirmed).
   limitations"); this adapter's reachability from the actual production runner is **unverified**
   and may degrade to `SOURCE_UNAVAILABLE` there - that is a normal, handled outcome
   (`capture_market_events` is never fatal), not a design gap.
-* **OFS has no identified live source - exact blocker (verified 2026-10-06):**
-  `/api/corporate-announcements?index=equities` is reachable and returns real JSON, but a full
-  5-week pull (19,307 rows) of its own `desc` taxonomy - 109 distinct categories, including
-  `Buyback`/`Closure of Buy Back`/`Post Buyback Public Announcement` (BUYBACK) and
-  `Public Announcement-Open Offer` (OPEN_OFFER) - contains **no** "Offer for Sale"/"OFS"
-  category at all. Every dedicated OFS endpoint guess (`/api/ofs-today`, `/api/offer-for-sale`,
-  `/api/corporate-ofs`, `/api/ofs-data`, `/api/offer-for-sale-data`, `/api/ofs`,
-  `/api/ofs-all-current`) returned NSE's genuine "Resource not found" 404 (`HTTP_ERROR`, not a
-  block - confirmed by cross-checking against a known-real endpoint that also returns 200). The
-  real NSE OFS page (`nseindia.com/market-data/offer-for-sale`) is JS-rendered; its XHR path
-  could not be determined without browser DevTools, which were not available in this session.
-  **Conclusion: OFS is executed through a separate mechanism-notice process, not NSE's LODR
-  corporate-disclosure feed** - finding its real source needs either browser network inspection
-  of the live OFS page, or a different NSE/BSE API surface not yet identified. Per the task's
-  own success criteria, this is an accepted P2A outcome (EARNINGS+IPO going live is the hard
-  requirement).
+* **OFS is now live (P2B, 2026-10-06), resolving P2A's blocker.** P2A's search of
+  `/api/corporate-announcements?index=equities` (109 `desc` categories, 19,307 rows, no "Offer
+  for Sale" category) was a correct dead end - that is NSE's general corporate-disclosure feed,
+  and OFS turned out to run through a separate, dedicated mechanism page/API instead
+  (`/market-data/all-upcoming-issues-ofs`, served by the same frontend controller as the IPO
+  page), found by reading that page's own script tags rather than guessing further endpoint
+  names. See "OFS semantics" above for the full discovery path and adapter design.
 * **BUYBACK/OPEN_OFFER/DELISTING are explicitly deferred to P2C**, though note the
   corporate-announcements taxonomy above already confirms `Buyback` and
   `Public Announcement-Open Offer` categories exist and are reachable through the same feed -

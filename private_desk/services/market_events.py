@@ -9,9 +9,14 @@ from __future__ import annotations
 
 import datetime as dt
 
-from market_events.models import ALL_FAMILIES, BUYBACK, DELISTING, EARNINGS, IPO, OPEN_OFFER
+from market_events.models import ALL_FAMILIES, BUYBACK, DELISTING, EARNINGS, IPO, OFS, OPEN_OFFER
 
-STOCK_FAMILIES = (EARNINGS, BUYBACK, OPEN_OFFER, DELISTING)
+# OFS names a specific company's shares (unlike GOVT_SECURITIES_AUCTION, which is market-wide),
+# so - like EARNINGS/BUYBACK/OPEN_OFFER/DELISTING - it belongs on that symbol's stock page. IPO
+# is deliberately excluded here: it already has its OWN stock-page presence via
+# official_snapshots (candidates.official_index()'s OFFICIAL_KINDS), so including it here too
+# would show it twice.
+STOCK_FAMILIES = (EARNINGS, BUYBACK, OPEN_OFFER, DELISTING, OFS)
 
 
 def _ipo_market_events(repo, session: dt.date) -> list:

@@ -1,15 +1,14 @@
-"""Per-family fetchers. None of the 7 families has a live adapter in this pass: each one's
-official source (NSE/BSE corporate-filings API for EARNINGS/OFS/BUYBACK/OPEN_OFFER/DELISTING,
-RBI's auction calendar for GOVT_SECURITIES_AUCTION) has not been verified reachable from this
-environment, and "reliability over feature count" (docs/MARKET_EVENTS_ENGINE.md) means no
-adapter is written against an endpoint that was never actually probed. Every family therefore
-returns `NOT_SUPPORTED_YET` - a normal, non-failure state (mirrors `official_snapshots`'s own
-`NOT_SUPPORTED` for ESM) - until `validate_market_events_sources.py`'s connectivity probe
-clears a specific source for a real adapter.
+"""Per-family fetchers. EARNINGS (P2A) and OFS (P2B) have real, live adapters; IPO is a
+read-only projection over `ipo_watch` (never acquired here). GOVT_SECURITIES_AUCTION/BUYBACK/
+OPEN_OFFER/DELISTING still have no official source verified reachable from this environment,
+and "reliability over feature count" (docs/MARKET_EVENTS_ENGINE.md) means no adapter is written
+against an endpoint that was never actually probed - they return `NOT_SUPPORTED_YET`, a normal,
+non-failure state (mirrors `official_snapshots`'s own `NOT_SUPPORTED` for ESM), until
+`validate_market_events_sources.py`'s connectivity probe clears one of them for a real adapter.
 """
 from __future__ import annotations
 
-from ..models import ALL_FAMILIES, EARNINGS, IPO, FamilyFetchResult, NOT_SUPPORTED_YET
+from ..models import ALL_FAMILIES, EARNINGS, IPO, OFS, FamilyFetchResult, NOT_SUPPORTED_YET
 
 
 def _not_supported(family: str, reason: str):
@@ -39,5 +38,8 @@ from .earnings import fetch_earnings        # noqa: E402 - after DEFAULT_FETCHER
                                              # circular import (earnings.py imports core.sources,
                                              # which is safe, but keep the pattern consistent)
 DEFAULT_FETCHERS[EARNINGS] = fetch_earnings
+
+from .ofs import fetch_ofs                  # noqa: E402 - same reason as above
+DEFAULT_FETCHERS[OFS] = fetch_ofs
 
 __all__ = ["DEFAULT_FETCHERS"]

@@ -124,6 +124,8 @@ SRC_CDSL_FPI_DAILY = "cdsl_fpi_daily"             # CDSL's daily depository-repo
 SRC_NSDL_FPI_FORTNIGHTLY = "nsdl_fpi_fortnightly"  # NSDL's fortnightly sector-wise FPI flow
 # Market Events Engine V1 (P2A - live EARNINGS)
 SRC_NSE_BOARD_MEETINGS = "nse_corp_board_meetings"  # NSE's board-meeting prior intimations
+# Market Events Engine V1 (P2B - live OFS)
+SRC_NSE_OFS = "nse_ofs_live"                        # NSE's own Offer For Sale active/past feed
 
 _REGISTRY: dict[str, SourceMetadata] = {
     SRC_NSE: SourceMetadata(
@@ -294,6 +296,19 @@ _REGISTRY: dict[str, SourceMetadata] = {
               "per-filing ID across a reschedule - event identity is reconciled by "
               "market_events.service._lookup_open_event, not by any field here. Shape can "
               "change -> the adapter fails closed."),
+    SRC_NSE_OFS: SourceMetadata(
+        source_name=SRC_NSE_OFS, source_type=SourceType.PRIMARY,
+        source_family=SourceFamily.EXCHANGE, independence_group=GROUP_NSE,
+        retrieval_method="https GET www.nseindia.com/api/live-ofs-active-issues | "
+                         "/api/live-ofs-past-issues",
+        reference="https://www.nseindia.com/market-data/all-upcoming-issues-ofs",
+        market_timestamp_available=False, display_rights_status="UNREVIEWED",
+        notes="Undocumented website API behind NSE's own Offer For Sale page (confirmed via "
+              "that page's own frontend script, upcoming-ipo.js, which both pages share). "
+              "Every row IS an OFS by construction - no text classification needed, unlike "
+              "EARNINGS. Active-issues field shape taken from that script's own field reads, "
+              "not observed live (no OFS was active when this was built) - the adapter fails "
+              "closed on a row missing the fields that script expects."),
 }
 
 
@@ -355,6 +370,6 @@ __all__ = ["SourceMetadata", "SourceFamily", "source_metadata", "independence_gr
            "SRC_FED_CALENDAR", "SRC_NSE_CONSTITUENTS", "SRC_NSE_FO_BAN", "SRC_NSE_SURVEILLANCE",
            "SRC_NSE_IPO", "SRC_SEBI_OFFER_DOC", "SRC_MARKET_STRUCTURE", "SRC_NSE_FIIDII_API",
            "SRC_CDSL_FPI_DAILY", "SRC_NSDL_FPI_FORTNIGHTLY", "SRC_NSE_BOARD_MEETINGS",
-           "GROUP_NSE", "GROUP_NSEIX",
+           "SRC_NSE_OFS", "GROUP_NSE", "GROUP_NSEIX",
            "GROUP_RBI", "GROUP_FED", "GROUP_YAHOO", "GROUP_GEMINI", "GROUP_INTERNAL",
            "GROUP_DEMO", "GROUP_CDSL", "GROUP_NSDL", "GROUP_UNKNOWN", "NEWS_GROUP_PREFIX"]

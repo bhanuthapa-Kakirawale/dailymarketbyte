@@ -150,3 +150,27 @@ def test_plan_public_sections_market_events_section_excludes_ipo_even_when_intel
     families_shown = {c["tag"] for c in (out.market_events or {}).get("cards", [])}
     assert "IPO" not in families_shown
     assert "EARNINGS" in families_shown
+
+
+# --------------------------------------------------------------------------- OFS reaches the scene (P2B)
+def test_plan_public_sections_market_events_section_includes_ofs():
+    from market_events.models import OFS, SCHEMA_VERSION, SUCCESS, MarketEvent
+    from presentation.public_intelligence import PublicIntelligence, plan_public_sections
+
+    class FakeGate:
+        profile = type("P", (), {"value": "PRIVATE_ANALYTICS"})()
+
+        def admit(self, fact):
+            return True
+
+    ev = MarketEvent(schema_version=SCHEMA_VERSION, family=OFS, event_key="OFS:DEMOOFS:x",
+                     symbol="DEMOOFS", company="Demo OFS Ltd", status="OPEN", sub_type=None,
+                     data_as_of=DAY.isoformat(), source_name="nse_ofs_live",
+                     source_reference="https://x", facts=[{"label": "floor_price", "value": "250"}],
+                     status_capture=SUCCESS)
+    intel = PublicIntelligence()
+    intel.market_events = {OFS: [ev]}
+    intel.universe_symbols = {"DEMOOFS"}
+    out = plan_public_sections(FakeGate(), intel, DAY, "PRE", max_structure=0)
+    families_shown = {c["tag"] for c in (out.market_events or {}).get("cards", [])}
+    assert "OFS" in families_shown

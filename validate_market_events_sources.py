@@ -52,31 +52,37 @@ def _check_earnings(now_iso: str) -> dict:
 
 
 def _check_ofs(now_iso: str) -> dict:
-    """OFS has NO identified live source (see docs/MARKET_EVENTS_ENGINE.md Known Limitations):
-    a full 5-week pull of NSE's corporate-announcements `desc` taxonomy (109 categories,
-    19,307 rows, verified 2026-10-06) contains no "Offer for Sale"/"OFS" category, and every
-    dedicated OFS endpoint guess returned a genuine 404. This probe still runs (to catch a
-    future taxonomy change) but reports the family as NOT_SUPPORTED_YET, never invents a
-    classification."""
+    """OFS is LIVE as of P2B (2026-10-06): NSE's own Offer For Sale page
+    (`/market-data/all-upcoming-issues-ofs`) is served by the same frontend controller as the
+    IPO page, which calls `/api/live-ofs-active-issues` (confirmed reachable, genuinely empty
+    `{"data": []}` the day this was found) and `/api/live-ofs-past-issues` (confirmed reachable,
+    471 real historical records, e.g. Sustainable Energy Infra Trust / SEITINVITCUMU,
+    offerDate 24-Sep-2026). The earlier `/api/corporate-announcements` taxonomy search (109
+    categories, no OFS category) correctly found nothing, because OFS runs through this
+    separate dedicated feed, not the general corporate-disclosure one - see
+    docs/MARKET_EVENTS_ENGINE.md."""
     from operations.connectivity import classify_exception
     try:
         from market import NSE
         nse = NSE()
-        payload = nse.get("/api/corporate-announcements?index=equities")
+        active = nse.get("/api/live-ofs-active-issues")
+        past = nse.get("/api/live-ofs-past-issues")
     except Exception as exc:
         return {"check": "OFS", "status": "SOURCE_UNAVAILABLE",
                "connectivity": classify_exception(exc), "detail": f"{type(exc).__name__}: {exc}"}
-    if not isinstance(payload, list):
+    if not isinstance(active, dict) or "data" not in active:
         return {"check": "OFS", "status": "PARSE_ERROR", "connectivity": "REACHABLE",
-               "detail": "payload is not a list"}
-    import re
-    ofs_re = re.compile(r"offer\s+for\s+sale|\bofs\b", re.I)
-    matches = [r for r in payload if ofs_re.search(" ".join(str(v) for v in r.values()))]
-    return {"check": "OFS", "status": "NOT_SUPPORTED_YET", "connectivity": "REACHABLE",
-           "row_count": len(payload), "rows_matching_ofs_pattern": len(matches),
-           "detail": "corporate-announcements feed is reachable; no OFS category/pattern "
-                     "found this pull - no dedicated OFS endpoint has been located either "
-                     "(every guess returned a genuine 404). See docs/MARKET_EVENTS_ENGINE.md."}
+               "detail": "active-issues payload missing 'data' key"}
+    from market_events.sources.ofs import fetch_ofs
+    res = fetch_ofs(now_iso, nse=nse)
+    return {"check": "OFS", "status": "REACHABLE", "connectivity": "REACHABLE",
+           "active_row_count": len(active.get("data") or []),
+           "past_row_count": len(past.get("data") or []) if isinstance(past, dict) else 0,
+           "events_classified_within_recent_window": len(res.events),
+           "sample_active_field_keys": sorted((active.get("data") or [{}])[0].keys())
+           if active.get("data") else [],
+           "sample_past_field_keys": sorted((past.get("data") or [{}])[0].keys())
+           if isinstance(past, dict) and past.get("data") else []}
 
 
 def _check_ipo() -> dict:

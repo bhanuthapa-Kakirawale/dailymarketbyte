@@ -270,7 +270,7 @@ def real_sheet_and_sb(real):
                if sc.get("role") == "STORY"]
     sheet = post_market_sheet(plan, pres, stories, ev,
                               ["PULSE", "NIFTY", "SECTORS", "MOVERS", "RADAR", "AHEAD"], uni)
-    return sheet, build_storyboard(plan, pres, rp, rr, ev, uni, src)
+    return sheet, build_storyboard(plan, pres, rp, rr, ev, uni, src, profile="PRIVATE_ANALYTICS")
 
 
 def test_real_storyboard_opens_with_the_dynamic_hook(real_sheet_and_sb):
@@ -286,7 +286,7 @@ def test_real_storyboard_opens_with_the_dynamic_hook(real_sheet_and_sb):
 
 def test_legacy_hook_still_available(real):
     plan, pres, rp, rr, ev, uni, src = real
-    sb = build_storyboard(plan, pres, rp, rr, ev, uni, src, dynamic_hook=False)
+    sb = build_storyboard(plan, pres, rp, rr, ev, uni, src, dynamic_hook=False, profile="PRIVATE_ANALYTICS")
     assert sb.scenes[0].kind == "HOOK" and sb.hook_plan is None
 
 
@@ -294,6 +294,6 @@ def test_storyboard_passes_hook_ai_through_to_the_client(real):
     plan, pres, rp, rr, ev, uni, src = real
     calls = []
     sb = build_storyboard(plan, pres, rp, rr, ev, uni, src, hook_ai=True,
-                          hook_client=lambda p, s: calls.append(p) or None)
+                          hook_client=lambda p, s: calls.append(p) or None, profile="PRIVATE_ANALYTICS")
     assert len(calls) == 1 and sb.hook_plan["source"] == "DETERMINISTIC"
     assert "Gemini returned nothing" in sb.hook_plan["fallback_reason"]

@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Institutional Intelligence {{ session }}{% endblock %}
+{% block content %}
+<h1>Institutional Intelligence <span class="sub">session {{ session }} · NSE provisional · CDSL depository-reported · NSDL fortnightly sector - context only, no score, no ranking</span></h1>
+
+<section class="panel">
+  <h2>NSE <span class="dim lc">provisional same-day FII/FPI + DII cash-market flow · SOURCE: NSE</span></h2>
+  {% if d.nse.status == 'OK' %}
+  <dl class="facts">
+    <dt>Latest reported date</dt><dd class="mono">{{ d.nse.latest.report_key }} <span class="b {{ 'ok' if d.nse.freshness == 'FRESH' else 'warn' }}">{{ d.nse.freshness }}</span></dd>
+    <dt>FPI net investment</dt><dd>{{ d.nse.latest.fpi_net_investment | num(0) }} ₹ Cr</dd>
+    <dt>DII net investment</dt><dd>{{ d.nse.latest.dii_net_investment | num(0) }} ₹ Cr</dd>
+    <dt>FPI gross purchases / sales</dt><dd>{{ d.nse.latest.fpi_gross_purchases | num(0) }} / {{ d.nse.latest.fpi_gross_sales | num(0) }}</dd>
+    <dt>DII gross purchases / sales</dt><dd>{{ d.nse.latest.dii_gross_purchases | num(0) }} / {{ d.nse.latest.dii_gross_sales | num(0) }}</dd>
+    <dt>Represented period</dt><dd>{{ d.nse.latest.represented_period }}</dd>
+  </dl>
+  <h2 style="margin-top:8px">Last {{ d.nse.history | length }} reported sessions</h2>
+  <table><thead><tr><th>Date</th><th class="n">FPI net (₹ Cr)</th><th class="n">DII net (₹ Cr)</th></tr></thead><tbody>
+  {% for h in d.nse.history %}<tr><td class="mono">{{ h.report_key }}</td><td class="n">{{ h.fpi | num(0) }}</td><td class="n">{{ h.dii | num(0) }}</td></tr>{% endfor %}
+  </tbody></table>
+  {% else %}<p class="na">DATA UNAVAILABLE - no NSE institutional-flow snapshot stored for or before {{ session }}.</p>{% endif %}
+</section>
+
+<section class="panel">
+  <h2>CDSL <span class="dim lc">daily depository-reported FPI flow · SOURCE: CDSL · shown only as gross purchases / gross sales</span></h2>
+  {% if d.cdsl.status == 'OK' %}
+  <dl class="facts">
+    <dt>Report date</dt><dd class="mono">{{ d.cdsl.latest.report_date }} <span class="b {{ 'ok' if d.cdsl.freshness == 'FRESH' else 'warn' }}">{{ d.cdsl.freshness }}</span>{% if d.cdsl.latest.bootstrap %} <span class="b warn">BOOTSTRAP - first capture</span>{% endif %}</dd>
+    <dt>Represented period</dt><dd>basis <b>{{ d.cdsl.latest.represented_period_basis }}</b><br><span class="note">{{ d.cdsl.latest.represented_period_note or 'not stated by the source' }}</span></dd>
+  </dl>
+  <table class="sortable"><thead><tr><th class="sort">Category</th><th class="sort">Route</th><th class="sort n">Gross purchases (₹ Cr)</th><th class="sort n">Gross sales (₹ Cr)</th><th class="sort n">Net investment (₹ Cr)</th></tr></thead><tbody>
+  {% for r in d.cdsl.categories %}<tr><td>{{ r.category | replace('_', ' ') }}</td><td>{{ r.route | replace('_', ' ') }}</td>
+    <td class="n" data-v="{{ r.gross_purchases }}">{{ r.gross_purchases | num(1) }}</td>
+    <td class="n" data-v="{{ r.gross_sales }}">{{ r.gross_sales | num(1) }}</td>
+    <td class="n" data-v="{{ r.net_investment }}">{{ r.net_investment | num(1) }}</td></tr>{% endfor %}
+  </tbody></table>
+  {% else %}<p class="na">DATA UNAVAILABLE - no CDSL snapshot stored for or before {{ session }}.</p>{% endif %}
+</section>
+
+<section class="panel">
+  <h2>NSDL <span class="dim lc">fortnightly sector-wise FPI net investment · SOURCE: NSDL · AUC is exposure, not flow</span></h2>
+  {% if d.nsdl.status == 'OK' %}
+  <dl class="facts">
+    <dt>Fortnight</dt><dd>{{ d.nsdl.latest.period_note }} <span class="b {{ 'ok' if d.nsdl.freshness == 'FRESH' else 'warn' }}">{{ d.nsdl.freshness }}</span>{% if d.nsdl.latest.bootstrap %} <span class="b warn">BOOTSTRAP - first capture</span>{% endif %}</dd>
+    <dt>Previous fortnight on file</dt><dd class="mono">{{ d.nsdl.previous_period | na }}</dd>
+  </dl>
+  <table class="sortable"><thead><tr><th class="sort">Sector</th><th class="sort n">Current (₹ Cr)</th><th class="sort n">Previous (₹ Cr)</th><th class="sort n">Change (₹ Cr)</th><th>Direction</th><th class="n">AUC current (₹ Cr)</th></tr></thead><tbody>
+  {% for s in d.nsdl.sectors %}<tr><td>{{ s.sector }} <span class="dim">({{ s.nsdl_sector }})</span></td>
+    <td class="n" data-v="{{ s.current_cr }}">{{ s.current_cr | num(0) }}</td>
+    <td class="n" data-v="{{ s.previous_cr }}">{{ s.previous_cr | num(0) }}</td>
+    <td class="n" data-v="{{ s.change_cr }}">{{ s.change_cr | num(0) }}</td>
+    <td><span class="b {{ 'ok' if 'INFLOW' in s.direction else ('warn' if 'OUTFLOW' in s.direction else 'unv') }}">{{ s.direction | replace('_', ' ') }}</span></td>
+    <td class="n">{{ (d.nsdl.auc.get(s.nsdl_sector) or {}).get('current') | num(0) }}</td></tr>{% endfor %}
+  </tbody></table>
+  <div class="note">AUC (asset under custody) is a VALUE/exposure measure that moves with market prices; it is never treated as buying or selling here.</div>
+  {% else %}<p class="na">DATA UNAVAILABLE - no NSDL fortnightly snapshot stored for or before {{ session }}.</p>{% endif %}
+</section>
+{% endblock %}

@@ -145,6 +145,10 @@ class IntelligenceSnapshot:
     insights: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
     metrics: dict = field(default_factory=dict)
+    # Deterministic FII/DII materiality context (intelligence.flow_materiality) - NOT an
+    # insight: it never competes for `selected()` screen time and never feeds hook candidate
+    # selection, so adding it changes neither. {} when there is no current flow fact.
+    flow_context: dict = field(default_factory=dict)
 
     def displayable(self) -> list:
         return [i for i in self.insights if i.is_displayable]
@@ -189,6 +193,7 @@ class IntelligenceSnapshot:
             "selected_insight_ids": [i.insight_id for i in self.selected()],
             "warnings": list(self.warnings),
             "metrics": dict(self.metrics),
+            "flow_context": dict(self.flow_context),
         }
 
     def to_json(self, indent: int = 2) -> str:
@@ -206,7 +211,8 @@ class IntelligenceSnapshot:
             available_history=d.get("available_history", 0),
             insights=[IntelligenceInsight.from_dict(i) for i in d.get("insights", [])],
             warnings=list(d.get("warnings") or []),
-            metrics=dict(d.get("metrics") or {}))
+            metrics=dict(d.get("metrics") or {}),
+            flow_context=dict(d.get("flow_context") or {}))
 
     @classmethod
     def from_json(cls, text: str) -> IntelligenceSnapshot:

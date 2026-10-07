@@ -12,7 +12,8 @@ MarketReport + IntelligenceSnapshot
       ShortsPlan        - what is said, in what order, for how long
             |
             v
-        Scenes          - video.scenes_from_plan()
+        Scenes          - daily_video.build_storyboard() via products.post_unified
+                          (production); video.scenes_from_plan() is the LEGACY Short
             |
             v
        Renderer
@@ -373,3 +374,53 @@ colour, close-tag colour, "higher"/"lower") comes from the story's validated ses
 (`price_change_pct`). COROMANDEL was `ALIGNED_POSITIVE`, and it is shown red with "0.7% lower".
 Normal event stories are pixel-identical to Phase 2 (frame hashes compared before and after).
 
+
+## Public profile V2 (PUBLIC_UNREGISTERED, public intelligence V1)
+
+The publication profile (docs/PUBLICATION_POLICY.md) is applied BEFORE the storyboard, so the
+editorial rules above run only over admitted facts.
+
+**Unified POST (`daily_video.build_storyboard`, default profile PUBLIC_UNREGISTERED):**
+
+    DYNAMIC HOOK -> MARKET PULSE -> SECTOR STORY -> [optional context] -> EXCHANGE WATCH (opt.)
+                 -> IPO WATCH (opt.) -> UNDER THE SURFACE (0-2 scenes) -> CLOSING
+
+- Market Radar stock stories are private: each is classified `SECURITY / INTERNAL_ANALYTICS /
+  TECHNICAL_ANALYSIS` and refused; `omitted` records "publication profile ... stays PRIVATE".
+  The Radar closing line goes with them.
+- MOVERS is a security ranking and is refused publicly (`post_plan.reasons["MOVERS"]`).
+- Every remaining section is admitted fact-by-fact (an AI-only section is dropped) and carries
+  its SOURCE / DATA AS OF plate.
+- UNDER THE SURFACE, EXCHANGE WATCH and IPO WATCH come from `PublicIntelligence`
+  (docs/MARKET_STRUCTURE.md, EXCHANGE_WATCH.md, IPO_WATCH.md). Runtime ceiling 62 s: optional
+  sections are trimmed first (global, event, movers, flows, Nifty chart, IPO, exchange), then a
+  second structure scene - never a core section, never padded.
+- The Dynamic Hook's fact sheet is restricted by the same gate before candidates are built
+  (`publication.public_hooks.restrict_sheet`), and the Market Structure count is offered instead
+  ("Nifty moved just +0.12%. 18 NIFTY 200 stocks saw unusual volume.").
+
+**Legacy POST (`editorial.plan_short(profile=...)` rendered by `video.py`; no longer
+scheduled - production renders POST_UNIFIED since the cut-over):** no GAINERS/LOSERS scenes, no
+single-stock hook (`hook-mover`), no stock-level CONTEXT insight, no news/Gemini WATCH NEXT
+event (the F&O expiry rule stays); the ticker carries no stock; title/description/tags from
+`presentation/legacy_public.public_metadata` (no stock names, no "Top gainers"); FLOWS tags
+`NET BUYERS` / `NET SELLERS`.
+
+`PRIVATE_ANALYTICS` renders exactly what this document describes above (Radar stories, movers,
+Radar hook archetypes) for research, and is never uploaded.
+
+**Index de-duplication (final review).** One fact must not take three consecutive scenes. When
+the Dynamic Hook cites Nifty's move (`nifty.move` in the hook's fact ids) AND a NIFTY chart scene
+(a new structural event) repeats it with richer context, MARKET PULSE is dropped - unless the
+pulse carries a DISTINCT fact: an intraday reversal the chart does not state (a down day that
+closed near the day's high, an up day near the low). The hook is planned without the pulse
+first, so its summary can never promise a dropped scene; with no chart scene, or a hook that does
+not state the move, the pulse stays. Real 24 Sep: HOOK -> NIFTY CHART -> SECTORS -> FII/DII ->
+UNDER THE SURFACE x2 -> CLOSE (37.2 s, was 42.6 s).
+
+**Wording (final review).** Flows are net: "FIIs were net sellers; DIIs were net buyers", with
+"(provisional)" always visible (legacy scene title "FII / DII FLOWS · PROVISIONAL"); the hook's
+flow contrast says "were net sellers / buyers". Sector counts say "tracked": "All 3 tracked
+sector indices fell" (one line - the FELL LEAST / LEADER card names the leader) and "0 of 3
+tracked indices closed higher". Breadth may add an EXACT share next to the count ("179 / 200",
+label "... CLOSED LOWER · 89.5%") - never a rounded one, never instead of the count.

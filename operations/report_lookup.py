@@ -49,6 +49,25 @@ class ReportLookup:
                 "candidates": list(self.candidates)}
 
 
+def resolve_report_artifact(recorded: str | None, out_dir: str | None = None) -> str | None:
+    """Where a canonical report's JSON lives ON THIS RUNNER. History rows record the absolute
+    path of the runner that wrote them; a clean runner hydrated from the StateStore holds the
+    same immutable file under its own `<OUT_DIR>/reports/` - same file name, never searched
+    anywhere else. The caller still checks the content (report_id + session) before using it,
+    and the recorded row is never rewritten."""
+    if not recorded:
+        return None
+    if out_dir is None:
+        import config
+        out_dir = config.OUT_DIR
+    local = os.path.join(out_dir, "reports", os.path.basename(recorded.replace("\\", "/")))
+    # this runner's own copy first (a clean runner, or an isolated test run whose history was
+    # copied from production: it must read its copy, never the production file)
+    if os.path.exists(local):
+        return local
+    return recorded if os.path.exists(recorded) else None
+
+
 def find_canonical_report(session: dt.date, history=None, db_path: str | None = None) -> ReportLookup:
     """The canonical report for `session`. Pass an open `MarketHistory` or a `db_path`."""
     from core import MarketReport
@@ -79,7 +98,7 @@ def find_canonical_report(session: dt.date, history=None, db_path: str | None = 
                    "path": r.json_artifact_path} for r in rows]
     problems = []
     for r in rows:
-        path = r.json_artifact_path
+        path = resolve_report_artifact(r.json_artifact_path) or r.json_artifact_path
         if not path or not os.path.exists(path):
             problems.append((ARTIFACT_MISSING, r.report_id,
                              f"history records {r.report_id} but its JSON artifact is missing: {path!r}"))
@@ -104,5 +123,5 @@ def find_canonical_report(session: dt.date, history=None, db_path: str | None = 
                         reason="; ".join(p[2] for p in problems))
 
 
-__all__ = ["ReportLookup", "find_canonical_report", "FOUND", "MISSING", "ARTIFACT_MISSING",
+__all__ = ["ReportLookup", "find_canonical_report", "resolve_report_artifact", "FOUND", "MISSING", "ARTIFACT_MISSING",
            "UNREADABLE", "SESSION_MISMATCH", "HISTORY_UNAVAILABLE"]

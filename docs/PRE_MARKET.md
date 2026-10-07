@@ -50,7 +50,9 @@ an upload.
 | 4 | VIX (previous session) | optional | FRESH and \|change\| >= 8% |
 | 5 | SECTORS (previous session) | optional | leader-laggard spread >= 1.0 pt or any sector >= 1.5% |
 | 6 | EVENT (today) | core slot | a VERIFIED scheduled event today |
-| 7 | STOCK WATCH | optional | the previous session's published Radar stories exist (max 2) |
+| 6a | EXCHANGE WATCH | optional (public V2) | a validated official exchange event for today (F&O ban, ASM/GSM for NIFTY 200 constituents) - docs/EXCHANGE_WATCH.md |
+| 6b | IPO WATCH | optional (public V2) | an IPO with a dated event today (opens / closes / lists / allotment) - one card, or a PRIMARY MARKET board - docs/IPO_WATCH.md |
+| 7 | STOCK WATCH | optional, **PRIVATE_ANALYTICS only** | the previous session's published Radar stories exist (max 2) |
 | 8 | WATCH AT THE OPEN | core | always, 1-3 cards (only cards that carry a real fact) |
 | 9 | CLOSING | core | "That's your setup before the bell." + brand + one CTA |
 
@@ -231,6 +233,18 @@ fill time; a quiet morning may therefore have a single card and a ~24 s Short), 
 no stock-watch scene), flows (if no flows scene), GIFT, the lead overnight cue. A fact that
 already has its own scene is not repeated (a timed event is the exception). The subline says
 it plainly: "Reference points from Thursday and overnight, not trade signals".
+
+## Publication profile (public V2)
+
+`products.premarket.render_pre` applies `presentation.pre_public.apply_publication_profile`
+BEFORE planning (default PUBLIC_UNREGISTERED): the stock watch is named-security technical
+analysis and is removed (recorded in `omitted`; no "RADAR STOCK" watch card either), EXCHANGE /
+IPO WATCH are admitted from official events only (`brief.public_intelligence`, fetched on a live
+run, read from stored lists on a reconstruction), GIFT Nifty is withheld unless
+`operations.gift_policy` allowed publication (NSE IX rights RESTRICTED), and every factual scene
+shows SOURCE / DATA AS OF (FETCHED for live readings). Every PRE render writes
+`publication_audit.json`; a public BLOCK blocks the render. PRIVATE_ANALYTICS keeps the V1
+behaviour below.
 
 ## Stock watch
 

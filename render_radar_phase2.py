@@ -44,7 +44,7 @@ def main(argv=None):
     os.makedirs(args.out_dir, exist_ok=True)
 
     plan, pres, rp, rr, ev, uni, src = r.load_inputs(REPORT, os.path.join(OUT_DIR, "radar"), SESSION)
-    sb = build_storyboard(plan, pres, rp, rr, ev, uni, src)
+    sb = build_storyboard(plan, pres, rp, rr, ev, uni, src, profile="PRIVATE_ANALYTICS")
     scan = scan_publication(sb.public_text())
     comp = Composer(sb)
     record = {"total_duration": sb.total_duration, "content_safety": scan.status.value,

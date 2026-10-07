@@ -8,6 +8,8 @@ python-dotenv>=1.0
 imageio-ffmpeg>=0.5
 google-api-python-client>=2.100
 google-auth-oauthlib>=1.2
+# durable state (DMB_STATE_BACKEND=gcs only; imported lazily - tests use a fake client)
+google-cloud-storage>=2.10
 
 # Tests only (offline; no provider or network access required)
 pytest>=8.0

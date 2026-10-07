@@ -166,7 +166,7 @@ def pre_market_sheet(inp: PreMarketInputs) -> HookFactSheet:
 # PRE plan section -> the hook's section vocabulary (what the summary line may promise).
 PRE_SECTION_KEYS = {"OVERNIGHT": "GLOBAL", "SETUP": "PREV", "FLOWS": "FLOWS", "VIX": "VIX",
                     "SECTORS": "SECTORS", "EVENT": "EVENTS", "STOCK_WATCH": "STOCKS",
-                    "WATCH": "WATCH"}
+                    "WATCH": "WATCH", "EXCHANGE": "EXCHANGE", "IPO": "IPO"}
 
 
 def pre_market_inputs_from_brief(brief, plan) -> PreMarketInputs:

@@ -5,6 +5,7 @@ Synthetic placeholders only (STOCK-A ...). Offline.
 """
 from __future__ import annotations
 
+import functools
 import datetime as dt
 import inspect
 import json
@@ -18,6 +19,11 @@ from core.move_guard import validate_move
 from editorial import plan_short
 from editorial.models import SceneType
 from editorial.movers_gate import movers_coverage_verdict
+
+# These tests pin the editorial ENGINE (movers ranking, news events, stock insights), which
+# is PRIVATE_ANALYTICS content since the publication boundary; the public default is
+# covered by tests/test_public_publication.py.
+plan_short = functools.partial(plan_short, profile="PRIVATE_ANALYTICS")
 from hooks import plan_hook, post_market_sheet
 from hooks import diversity
 from hooks.candidates import build_candidates

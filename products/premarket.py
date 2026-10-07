@@ -160,7 +160,7 @@ def _gift_not_fetched(policy):
 
 def build_real_brief(pre_date: dt.date, as_of: dt.datetime, history_fn=None, gift_fn=None,
                      calendar=None, db_path: str | None = None, shadow: bool = False,
-                     gift_policy=None):
+                     gift_policy=None, intel_fn=None, institutional_fn=None):
     """(brief, acquisition) from REAL data. Raises PreMarketBlocked when the previous session
     cannot be described honestly. GIFT goes through the publication gate
     (`operations.gift_policy`): fetched only in shadow or once approved, displayed only once
@@ -202,11 +202,77 @@ def build_real_brief(pre_date: dt.date, as_of: dt.datetime, history_fn=None, gif
         brief.gift = None
         brief.gift_policy["withheld"] = True
         brief.notes.append(f"GIFT Nifty withheld by publication policy: {policy.reason}")
+    # Public intelligence (EXCHANGE / IPO WATCH): the official snapshots the REPORT job captured
+    # the evening of the previous session (the F&O ban file for THIS trade date, the surveillance
+    # and IPO lists as of that evening). A live run may capture a missing snapshot while the
+    # session's window is open (before 09:15); a reconstruction of a past morning reads only what
+    # was preserved - a current list is never relabelled as a past one.
+    live = abs((now_ist() - as_of).total_seconds()) <= 15 * 60
+    if intel_fn is None:
+        from presentation.public_intelligence import load_public_intelligence
+
+        def intel_fn(d, live_run):
+            return load_public_intelligence(None, d, config.OUT_DIR, fetch=live_run,
+                                            now_iso=dt.datetime.now(dt.timezone.utc).isoformat(),
+                                            snapshot_session=prev, replay=not live_run,
+                                            now=now_ist() if live_run else as_of,
+                                            capture_mode="PRE_FALLBACK", calendar=cal)
+    try:
+        brief.public_intelligence = intel_fn(pre_date, live)
+    except Exception as exc:          # optional sections: never block PRE
+        brief.notes.append(f"public intelligence unavailable: {type(exc).__name__}: {exc}")
     gen = getattr(report, "generated_at", None)
     if gen is not None and gen > as_of:
         brief.notes.append(f"RECONSTRUCTION: the previous-session report was generated {gen:%Y-%m-%d %H:%M} "
                            f"(after this cutoff); only its {prev} session facts are used")
+
+    # Institutional Flow Intelligence V1: CDSL/NSDL snapshots stored on or before this cutoff
+    # (replay never fetches; a live run may capture a missing one), plus the previous session's
+    # already-derived NSE flow materiality (intelligence.load_snapshot - never recomputed here).
+    if institutional_fn is None:
+        from institutional_flows.context import load_institutional
+
+        def institutional_fn(live_run):
+            capture_fn = None
+            if live_run:
+                def capture_fn(source):
+                    from institutional_flows.service import InstitutionalFlowService
+                    res = InstitutionalFlowService(config.OUT_DIR).capture(
+                        now_ist(), "PRE_FALLBACK", sources=(source,))
+                    r = res["results"].get(source)
+                    if isinstance(r, dict) and r.get("latest"):
+                        r = r["latest"]
+                    if not isinstance(r, dict) or not r.get("written"):
+                        return None
+                    from institutional_flows.store import load_revision
+                    return load_revision(r["path"])
+
+            return load_institutional(config.OUT_DIR, cutoff=as_of, live=live_run,
+                                      on_or_before=pre_date, capture_fn=capture_fn)
+
+    try:
+        ctx = institutional_fn(live)
+        brief.institutional = _institutional_brief_dict(ctx)
+    except Exception as exc:
+        brief.notes.append(f"institutional flows unavailable: {type(exc).__name__}: {exc}")
+    try:
+        from intelligence import load_snapshot
+        snap = load_snapshot(config.OUT_DIR, prev)
+        brief.institutional_nse_context = dict(snap.flow_context) if snap else {}
+    except Exception as exc:
+        brief.notes.append(f"NSE flow materiality unavailable: {type(exc).__name__}: {exc}")
     return brief, acq
+
+
+def _institutional_brief_dict(ctx) -> dict:
+    """`InstitutionalContext` -> the plain, JSON-safe dict shape `presentation.pre_plan`'s
+    FLOWS candidates read (`brief.institutional`)."""
+    return {
+        "cdsl": {"status": ctx.cdsl_status, "snapshot": ctx.cdsl.to_dict() if ctx.cdsl else None},
+        "nsdl": {"status": ctx.nsdl_status,
+                "latest": ctx.nsdl_latest.to_dict() if ctx.nsdl_latest else None,
+                "previous": ctx.nsdl_previous.to_dict() if ctx.nsdl_previous else None},
+    }
 
 
 # --------------------------------------------------------------------------- render + QA
@@ -238,11 +304,16 @@ def render_pre(brief, out_dir: str, watermark: str | None = None, frames_only: b
     from daily_video.pre_storyboard import build_pre_storyboard
     from presentation.pre_provenance import pre_provenance_audit
     from qa.video_qa import probe_media
+    from operations.run_context import guard_write
 
+    guard_write(out_dir, "PRE output")
     os.makedirs(out_dir, exist_ok=True)
     tag = brief.pre_date.isoformat()
+    # publication boundary BEFORE planning: a blocked fact never becomes a section or a hook
+    from presentation.pre_public import apply_publication_profile
+    gate = apply_publication_profile(brief)
     plan = plan_pre_sections(brief)
-    sb = build_pre_storyboard(brief, plan, hook_ai=hook_ai, hook_client=hook_client)
+    sb = build_pre_storyboard(brief, plan, hook_ai=hook_ai, hook_client=hook_client, gate=gate)
     public = sb.public_text()
     scan = scan_publication(public)
     language = pre_language_issues(public)
@@ -277,6 +348,21 @@ def render_pre(brief, out_dir: str, watermark: str | None = None, frames_only: b
     if scan.status is not SafetyStatus.SAFE or language:
         result["blocked"] = "content/language gate: " + "; ".join(
             list(scan.blocked_fields or []) + language)
+        dump(f"pre_result_{tag}.json", result)
+        return result
+    # publication audit (PRE never uploads, but every public render gets one)
+    from daily_video.public_storyboard import audit_storyboard
+    from publication import write_publication_audit
+    pub_audit = audit_storyboard(sb, "PRE", synthetic=brief.synthetic)
+    result["publication_audit"] = {"final": pub_audit["final"],
+                                   "failed_checks": pub_audit["failed_checks"],
+                                   "profile": sb.publication_profile,
+                                   "path": write_publication_audit(pub_audit, out_dir)}
+    from publication.audit import content_checks_passed
+    # PRE never uploads: a rights-only BLOCK (REVIEW_REQUIRED sources under the default BLOCK
+    # policy) is recorded in the audit, but a CONTENT failure blocks the render
+    if sb.publication_profile == "PUBLIC_UNREGISTERED" and not content_checks_passed(pub_audit):
+        result["blocked"] = "publication audit: " + ", ".join(pub_audit["failed_checks"])
         dump(f"pre_result_{tag}.json", result)
         return result
     if not provenance["ok"]:

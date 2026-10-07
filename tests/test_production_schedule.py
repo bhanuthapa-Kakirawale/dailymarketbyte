@@ -65,10 +65,17 @@ def _radar_stub(calls=None):
     return fn
 
 
+def _official_stub(session, out_dir, now):
+    """Official snapshots captured fine (their own behaviour: tests/test_official_snapshots)."""
+    return {"official_snapshot_status": "SUCCESS", "ipo_snapshot_status": "NO_DATA",
+            "exchange_snapshot_status": "SUCCESS", "capture": "ATTEMPTED", "kinds": {}}
+
+
 def _report_job(**kw):
     from products.report_job import run_report_job
     kw.setdefault("now", EVENING)
     kw.setdefault("radar_fn", _radar_stub())
+    kw.setdefault("official_fn", _official_stub)
     return run_report_job(kw.pop("session_date", None), **kw)
 
 
@@ -226,7 +233,8 @@ def test_post_video_failure_never_invalidates_the_stored_report(offline_pipeline
     def _crash(*a, **k):
         raise OSError("ffmpeg died")
 
-    monkeypatch.setattr(main.video, "render", _crash)
+    from products import post_unified
+    monkeypatch.setattr(post_unified, "render_post", _crash)
     with pytest.raises(OSError):
         main.run(_Args())
     post = _runs(tmp_path, job_type="POST_MARKET")[0]

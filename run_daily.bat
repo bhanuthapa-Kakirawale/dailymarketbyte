@@ -1,6 +1,8 @@
 @echo off
-REM Called by Windows Task Scheduler at 8:00 AM. Logs go to output\run.log
+REM LEGACY entry point (was: Task Scheduler at 8:00 AM with --upload). During the local manual
+REM trial it NEVER uploads: it runs the morning POST script (render + QA + audit only).
+REM Uploading is a separate, explicit owner decision: python main.py --upload
+REM (refused anyway while PUBLIC_REVIEW_REQUIRED_POLICY=BLOCK). See docs\USER_GUIDE.md.
 cd /d %~dp0
-if exist .venv\Scripts\activate.bat call .venv\Scripts\activate.bat
-if not exist output mkdir output
-python main.py --upload >> output\run.log 2>&1
+call scripts\run_morning_post.bat
+exit /b %ERRORLEVEL%

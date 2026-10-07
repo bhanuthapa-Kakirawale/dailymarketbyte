@@ -27,7 +27,9 @@ NEXT SESSION D+1
   07:40 IST        POST job     python main.py --upload               (daily_byte.yml)
                      canonical report for D exists? -> reuse it (REUSED_CANONICAL)
                      else build it with the same code path (BUILT_INLINE, recorded)
-                     render -> data/content/video QA -> upload
+                     render -> data/content/video/readability QA
+                     -> publication audit (PUBLIC_UNREGISTERED) -> upload (refused without a
+                        PASS audit for this exact file - docs/PUBLICATION_POLICY.md)
                      run record: job_type=POST_MARKET
 ```
 
@@ -121,11 +123,40 @@ may not become canonical. Demo reports are exempt (`is_demo=1`, excluded from ev
   cooldown start. Demo never publishes.
 - POST run records carry `details.radar`: selected count/symbols, rendered/published
   count/symbols, confirmation status + timestamp, artifact path, QA verdicts.
-- **Current production state:** the scheduled POST (`main.run`) still renders the legacy
-  `video.py` Short, which has **no Radar section** - so nothing is published and PRE's stock
-  watch is omitted. The unified Radar Short (`render_daily_market_byte.py`) confirms publication
-  only with `--confirm-publication` (off by default so previews never advance history). The POST
-  cut-over to the unified renderer must call `confirm_radar_publication` after its QA gates.
+- **Current production state (POST cut-over):** the scheduled POST
+  (`daily_byte.yml` -> `python main.py [--upload]` -> `products.route` -> `main.run`) renders
+  **POST_UNIFIED** through `products/post_unified.py` - the same planner
+  (`plan_for_post`), storyboard (`build_post_storyboard` -> `daily_video.build_storyboard` ->
+  `presentation.post_plan` + `presentation.public_intelligence`), publication gate, displayed
+  claims, provenance, freeze-frame + video QA (silent, `expect_audio=False`) and
+  `publication_audit.json` that the review renderer (`render_daily_market_byte.py`,
+  `render_public_intelligence_v1.py`) uses. Every run writes
+  `output/post/<tag>/production_manifest.json` (product, entry point, report source, scenes,
+  duration, optional-section codes, audit verdict, upload status). The legacy `video.py` Short
+  is kept in the tree but is LEGACY / NON-PRODUCTION: no mode or flag reaches it.
+  Under PUBLIC_UNREGISTERED no Radar story is public, so the POST still publishes none
+  (`_record_radar(..., storyboard=sb)` records the rendered set - empty) and PRE's stock watch
+  stays omitted; `render_daily_market_byte.py --confirm-publication` (PRIVATE render) remains
+  the only confirming path.
+- **Rights:** `PUBLIC_REVIEW_REQUIRED_POLICY=BLOCK` (default) - the scheduled POST renders,
+  passes every content check and records its audit, but `--upload` is REFUSED at
+  PUBLICATION_AUDIT (`publication_rights`) until the owner reviews NSE / Yahoo rights or sets
+  `ATTRIBUTED_EOD`. Artifacts are kept.
+- **Replay / production simulation:** `python main.py --session-date YYYY-MM-DD` re-renders a
+  stored canonical report (`REUSED_CANONICAL`, never rebuilt) through the production path, reads
+  only stored official lists, writes under `output/post/replay_<date>/` (QA record included, so
+  the production run's own QA record is never overwritten), and refuses `--upload`.
+- **Durable state:** the REPORT job persists the canonical report, the Market Structure
+  snapshot and the official daily snapshots to the StateStore (docs/STATE_STORE.md); POST and
+  PRE hydrate them on a clean runner and read exactly what was persisted (manifest `inputs`:
+  `PERSISTED_SNAPSHOT` with file + checksum). A replay never acquires: a snapshot that was not
+  preserved is `HISTORICAL_SNAPSHOT_UNAVAILABLE`.
+- **Institutional Flow Intelligence V1** (docs/INSTITUTIONAL_FLOW_INTELLIGENCE.md):
+  `products.report_job.capture_institutional` runs after official-snapshot capture, acquiring
+  NSE/CDSL/NSDL institutional-flow snapshots - strictly additive, never fatal and never able to
+  change the job's SUCCESS/DEGRADED/BLOCKED status. PRE may also capture a missing CDSL/NSDL
+  snapshot on a live run. Persisted the same way as official snapshots
+  (`state.sync` namespace `institutional_flows`); a replay never fetches.
 - `python -m operations.stray_cleanup` removed the two known test-contamination REPORT_BUILD
   rows (backup + audit in `output/pre_shadow_readiness/`); `MarketHistory.remove_contaminated_runs`
   is a manual tool - the pipeline never deletes run history (ast-guarded).
@@ -201,15 +232,54 @@ A template and the per-morning checklist are in
   year's NSE holiday list is missing. The check is read-only. Fix a warning with
   `python verify_official_events.py --stamp`.
 
+## Official daily snapshots (Acquisition -> Durable state -> Publication)
+
+The REPORT job captures, for session D, the complete validated state of every implemented
+official list - whether or not anything on it is ever shown (`official_snapshots/`,
+`OfficialDailySnapshotService.ensure`):
+
+    output/official_snapshots/<D>/official_snapshot_manifest.json
+        ipo_snapshot.json  fno_ban_snapshot.json  asm_snapshot.json  gsm_snapshot.json
+        (ESM: recorded NOT_SUPPORTED in the manifest - no adapter, never queried)
+
+Each snapshot records session_date, source_date (the list's own date - the F&O ban file is for
+the NEXT trade date), source_name / reference, retrieved_at, status (SUCCESS / NO_DATA /
+SOURCE_UNAVAILABLE / PARSE_ERROR / VALIDATION_FAILED), connectivity_status (REACHABLE / BLOCKED /
+TIMEOUT / HTTP_ERROR / NOT_ATTEMPTED), record_count, checksum, schema_version, capture_mode.
+
+- **Capture window:** only while D is the current session (latest final session, before the
+  next session's 09:15 open). A past session is never captured from today's pages.
+- **Immutable:** revisions are create-only. A validated revision is final: no later
+  acquisition replaces it. Only a failed kind is re-attempted (the 21:30 retry, or a POST / PRE
+  morning fallback recorded as `CAPTURED_THIS_RUN`), and the attempt is appended as `.r2`.
+  A checksum mismatch makes a revision unusable.
+- **Failure policy:** a snapshot failure DEGRADES the REPORT job. The canonical report stays
+  canonical, and PRE / POST omit the section with the precise code.
+- **Run record:** `official_snapshot_status`, `ipo_snapshot_status`, `exchange_snapshot_status`,
+  `fno_status` / `asm_status` / `gsm_status` / `esm_status`, `persisted_to_state_store`,
+  `state_store_backend`, `snapshot_manifest_path`.
+
+Exchange Watch derives CHANGES from the stored snapshots: the current list vs the previous
+trading session's validated snapshot. IPO Watch derives its dated events from the stored issue
+lists. Omission codes separate "the request failed" (`SOURCE_UNAVAILABLE`), "answered but
+unparsable" (`PARSE_ERROR`), "parsed but invalid" (`VALIDATION_FAILED`), "never captured"
+(`SNAPSHOT_NOT_CAPTURED`), "never preserved for this past session"
+(`HISTORICAL_SNAPSHOT_UNAVAILABLE`), "read fine, nothing qualifies" (`NO_ELIGIBLE_EVENT` /
+`NO_ELIGIBLE_IPO_EVENT`), "no change since the previous session" (`NO_NEW_EVENT`),
+`RIGHTS_BLOCKED` and `EDITORIAL_CAP`. Each section's audit entry keeps
+`connectivity_status`, `snapshot_status` and `editorial_status` apart.
+
 ## GitHub Actions state
 
-Runners are ephemeral. The REPORT job's output must survive until the next morning. The
-REPORT and PRE-shadow workflows therefore restore and save `output/{data,reports,radar,
-intelligence,report_jobs}` through `actions/cache`, under the key prefix `daily-byte-state-`.
-They are serialised by one `concurrency` group, so a save can never race another job's save.
-The cache is not archival storage: GitHub evicts an entry after 7 days without access, and every
-weekday run touches it. The existing `daily_byte.yml` (POST) is deliberately left unchanged
-during the shadow period. It still builds its report inline each morning on a fresh runner.
+Runners are ephemeral; the durable store is the StateStore (docs/STATE_STORE.md). With the
+repository variable `DMB_STATE_BACKEND=gcs`:
+- the REPORT, PRE-shadow and POST workflows authenticate by Workload Identity Federation;
+- they hydrate from and persist to Google Cloud Storage in-process;
+- they skip `actions/cache`.
 
-The cut-over after the shadow week is to add the same restore/save steps and `concurrency`
-group to `daily_byte.yml`. POST then reuses the evening report.
+Without it (the local backend), `actions/cache` restores and saves `output/{data,reports,radar,
+intelligence,report_jobs,market_structure,official_snapshots,publication}` as a best-effort,
+**non-canonical** fallback. GitHub evicts an entry after 7 days without access.
+
+All three workflows, POST included, share one `concurrency` group, so a save never races another
+job's save. POST therefore reuses the evening report (`REUSED_CANONICAL`) and its snapshots.

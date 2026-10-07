@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% block title %}Data Quality{% endblock %}
+{% block content %}
+<h1>Data Quality <span class="sub">session {{ session | d if session else NA }}</span></h1>
+<div class="grid g2">
+<section class="panel">
+  <h2>Source freshness <span class="dim" style="text-transform:none;letter-spacing:0">vs latest completed session {{ q.freshness.latest_completed | d }}</span></h2>
+  <table><thead><tr><th>Source</th><th>Session</th><th>As of</th><th>Status</th><th>Detail</th></tr></thead><tbody>
+  {% for s in q.freshness.sources %}<tr><td>{{ s.label }}</td><td class="mono">{{ s.session | d if s.session else NA }}</td><td class="mono">{{ s.as_of | na }}</td>
+    <td><span class="b {{ 'ok' if s.status == 'FRESH' else ('bad' if s.status == 'MISSING' else 'warn') }}">{{ s.status }}</span></td><td class="wrap note">{{ s.detail }}</td></tr>{% endfor %}
+  </tbody></table>
+</section>
+
+<section class="panel">
+  <h2>Databases <span class="dim" style="text-transform:none;letter-spacing:0">opened read-only (immutable when no WAL is pending)</span></h2>
+  <table><thead><tr><th>File</th><th>Status</th><th class="n">Size</th><th>Modified</th><th>WAL</th><th class="n">Schema</th><th>Tables (rows)</th></tr></thead><tbody>
+  {% for db in q.databases %}<tr><td class="mono">{{ db.file }}</td><td><span class="b {{ 'ok' if db.status == 'OK' else 'bad' }}">{{ db.status }}</span>{% if db.error %} <span class="note">{{ db.error }}</span>{% endif %}</td>
+    <td class="n">{{ ((db.size_bytes or 0) / 1024) | round(0) | int }} KB</td><td class="mono">{{ db.modified | na }}</td><td>{{ 'pending' if db.wal_pending else 'none' }}</td><td class="n">{{ db.user_version | na }}</td>
+    <td class="wrap note">{% for t, n in (db.tables or {}).items() %}{{ t }} {{ n }}{% if not loop.last %} · {% endif %}{% endfor %}</td></tr>{% endfor %}
+  </tbody></table>
+</section>
+
+<section class="panel">
+  <h2>Radar</h2>
+  {% set a = q.radar_artifact %}
+  {% if a %}
+  <dl class="facts">
+    <dt>Pipeline status</dt><dd><span class="b {{ 'ok' if a.pipeline_status == 'SUCCESS' else 'warn' }}">{{ a.pipeline_status }}</span> generated {{ a.generated_at }}</dd>
+    <dt>Universe usable</dt><dd>{{ a.universe_usable }} / {{ a.universe_requested }}</dd>
+    <dt>Candidates / stories</dt><dd>{{ a.composite_candidate_count }} / {{ a.editorial_selection_count }}</dd>
+    <dt>Cache coverage</dt><dd>{% for k, v in a.coverage.items() %}{{ k }} {{ v }}{% if not loop.last %} · {% endif %}{% endfor %}</dd>
+    <dt>Issues</dt><dd>{% for k, v in a.issue_counts.items() %}{{ k }} {{ v }} {% endfor %}</dd>
+  </dl>
+  {% for i in a.issues %}<div class="note">[{{ i.severity }}] {{ i.code }} - {{ i.message | truncate(160) }}</div>{% endfor %}
+  {% else %}<p class="na">No daily Radar artifact for this session (candidate history only).</p>{% endif %}
+  <h2 style="margin-top:8px">Candidate-history run markers</h2>
+  <table><thead><tr><th>Session</th><th>Status</th><th class="n">Candidates</th><th>Processed</th><th>Calc</th></tr></thead><tbody>
+  {% for r in q.radar_runs %}<tr><td class="mono">{{ r.session_date }}</td><td><span class="b {{ 'ok' if r.status == 'COMPLETE' else 'bad' }}">{{ r.status }}</span></td><td class="n">{{ r.candidate_count }}</td><td class="mono">{{ r.processed_at[:19] }}</td><td>{{ r.calculation_version }}</td></tr>{% endfor %}
+  </tbody></table>
+</section>
+
+<section class="panel">
+  <h2>Detector replay reconciliation</h2>
+  {% set rp = q.replay %}
+  {% if rp %}
+  <dl class="facts">
+    <dt>Status</dt><dd><span class="b {{ 'ok' if rp.status == 'OK' else 'warn' }}">{{ rp.status }}</span> {{ rp.reason or '' }}</dd>
+    <dt>Evaluated as of</dt><dd>{{ rp.as_of | na }}</dd>
+    <dt>Universe</dt><dd>{{ rp.usable_symbols | na }} usable / {{ rp.universe_size | na }} (constituents from {{ rp.universe_source_session | na }})</dd>
+    <dt>Reconciliation</dt><dd>{% for k, v in rp.reconciliation.items() %}<span class="b {{ 'ok' if k == 'MATCHED' else 'warn' }}">{{ k }} {{ v }}</span>{% endfor %}</dd>
+    <dt>Not matched</dt><dd>{{ rp.not_matched | join(', ') or 'none' }}</dd>
+    <dt>Skipped symbols</dt><dd>{% for k, v in rp.skipped_symbols.items() %}{{ k }} ({{ v }}) {% endfor %}{% if not rp.skipped_symbols %}none{% endif %}</dd>
+  </dl>
+  <div class="note">The desk recomputes detector values with the Radar's own functions from stored OHLCV (no fetch) and shows them only for candidates whose reason codes reproduce exactly.</div>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <h2>OHLCV coverage</h2>
+  {% set o = q.ohlcv %}
+  {% if o.error %}<p class="na">DATA UNAVAILABLE - {{ o.error }}</p>{% else %}
+  <dl class="facts">
+    <dt>Rows / symbols</dt><dd>{{ o.row_count }} / {{ o.symbols }}</dd>
+    <dt>Quality status</dt><dd>{% for k, v in o.quality_counts.items() %}{{ k }} {{ v }} {% endfor %}</dd>
+    <dt>Benchmark latest</dt><dd>{{ o.benchmark_latest | d }}</dd>
+    <dt>Last retrieved</dt><dd>{{ o.max_retrieved_at | na }}</dd>
+    <dt>Universe symbols missing</dt><dd>{{ o.missing | join(', ') or 'none' }} ({{ o.missing | length }} of {{ o.universe_size }})</dd>
+    <dt>Universe symbols stale</dt><dd>{% for s in o.stale %}{{ s.symbol }} ({{ s.latest }}) {% endfor %}{% if not o.stale %}none{% endif %}</dd>
+  </dl>{% endif %}
+</section>
+
+<section class="panel">
+  <h2>Market Structure coverage</h2>
+  {% if q.market_structure %}
+  <table><thead><tr><th>Metric</th><th class="n">Count</th><th class="n">Covered</th><th class="n">Universe</th><th class="n">Coverage</th><th>Status</th></tr></thead><tbody>
+  {% for k, mm in q.market_structure.items() %}<tr><td>{{ k }}</td><td class="n">{{ mm.numerator }}</td><td class="n">{{ mm.denominator }}</td><td class="n">{{ mm.universe_size }}</td><td class="n">{{ mm.coverage_pct }}%</td><td>{{ mm.status }}</td></tr>{% endfor %}
+  </tbody></table>
+  {% else %}<p class="na">DATA UNAVAILABLE - no Market Structure artifact for this session.</p>{% endif %}
+</section>
+
+<section class="panel">
+  <h2>Official snapshots</h2>
+  {% if q.official %}
+  <table><thead><tr><th>List</th><th>Status</th><th>Validated</th><th class="n">Records</th><th>List date</th><th>Retrieved</th></tr></thead><tbody>
+  {% for k, e in q.official.items() %}<tr><td>{{ k }}</td><td><span class="b {{ 'ok' if e.status in ('SUCCESS', 'NO_DATA') else ('cont' if e.status == 'NOT_SUPPORTED' else 'bad') }}">{{ e.status }}</span></td><td>{{ e.validated }}</td><td class="n">{{ e.record_count | na }}</td><td class="mono">{{ e.source_date | na }}</td><td class="mono">{{ (e.retrieved_at or '')[:19] }}</td></tr>{% endfor %}
+  </tbody></table>
+  {% else %}<p class="na">DATA UNAVAILABLE - no official snapshot manifest for this session.</p>{% endif %}
+</section>
+
+<section class="panel">
+  <h2>Market regime classifier <span class="dim lc">private context · derived, rebuildable</span></h2>
+  {% set rq = q.regime %}
+  {% if rq and rq.status != 'NO_SESSION' %}
+  <dl class="facts">
+    <dt>Status</dt><dd><span class="b {{ 'ok' if rq.status == 'OK' else 'warn' }}">{{ rq.status }}</span>{% if rq.stale %} regime session {{ rq.regime_session }} is older than the latest completed session {{ rq.latest_completed }}{% endif %}</dd>
+    <dt>Classifier version</dt><dd>{{ rq.calculation_version }} ({{ rq.schema_version }}) · {{ rq.model_status }}</dd>
+    <dt>Latest regime</dt><dd>{{ rq.regime }} · session {{ rq.regime_session }}</dd>
+    <dt>Latest universe quality</dt><dd>{{ rq.universe_quality }}{% if rq.universe_quality != 'POINT_IN_TIME' %} <span class="note">{{ rq.universe_note }}</span>{% endif %}</dd>
+    <dt>Point-in-time validation from</dt><dd><b>{{ rq.point_in_time_from | d }}</b> <span class="note">first session with its own stored NIFTY 200 list; earlier sessions are APPROXIMATE (back-dated universe, exploratory only)</span></dd>
+    <dt>Phase-2 research eligible</dt><dd>{{ 'yes' if rq.research_eligible else 'no' }}{% if rq.research_ineligible_reasons %} <span class="note">({{ rq.research_ineligible_reasons | join(', ') }})</span>{% endif %}</dd>
+    <dt>Required inputs</dt><dd style="white-space:normal;font-family:var(--sans)">{{ rq.required }}</dd>
+    <dt>Available dimensions</dt><dd>{{ rq.available | join(', ') or 'none' }}</dd>
+    <dt>Unavailable dimensions</dt><dd>{{ rq.unavailable | join(', ') or 'none' }}</dd>
+    <dt>Membership</dt><dd>{{ rq.membership.label | na }} · {{ rq.membership.members | na }} members · list of {{ rq.membership.membership_from | na }}{% if rq.membership.membership_backdated %} <span class="b warn">BACK-DATED</span>{% endif %}</dd>
+    <dt>Recent window</dt><dd>{{ rq.window }} sessions · {% for k, v in rq.window_counts.items() %}{{ k }} {{ v }}{% if not loop.last %} · {% endif %}{% endfor %}</dd>
+    <dt>Universe coverage (window)</dt><dd>{% for k, v in rq.window_universe_coverage.items() %}{{ k | replace('_', ' ') }} {{ v }}{% if not loop.last %} · {% endif %}{% endfor %}</dd>
+    <dt>Volume thresholds</dt><dd>65% / 45% · {{ rq.volume_threshold_status }}</dd>
+    {% set v = rq.validation %}
+    <dt>Historical validation</dt><dd>{% if v.status == 'NOT_BUILT' %}<span class="b warn">NOT BUILT</span> run <span class="mono">{{ v.hint }}</span>{% else %}<span class="b {{ 'ok' if v.status == 'CURRENT' else 'warn' }}">{{ v.status }}</span> {{ v.calculation_version }} · to {{ v.end_session }} · built {{ (v.generated_at or '')[:16] }}{% endif %}</dd>
+    {% if v.status != 'NOT_BUILT' %}
+    <dt>Universe coverage (history)</dt><dd>{{ v.sessions }} reconstructed · {% for k, n in v.universe_quality_counts.items() %}{{ k | replace('_', ' ') }} {{ n }}{% if not loop.last %} · {% endif %}{% endfor %} · {{ v.insufficient }} insufficient</dd>
+    <dt>Primary validation</dt><dd>POINT-IN-TIME only: {{ v.pit_classifiable }} classifiable sessions · {% for k, n in (v.pit_counts or {}).items() if n %}{{ k }} {{ n }} {% endfor %}{% if not v.pit_meaningful %}<span class="b warn">TOO FEW (&lt; {{ v.min_sessions }}) - NOT STATISTICALLY MEANINGFUL</span>{% endif %}</dd>
+    <dt>Research-eligible sessions</dt><dd>{{ v.research_eligible }}</dd>
+    {% endif %}
+    <dt>Stored snapshot files</dt><dd>{{ rq.stored_files | join(', ') or 'none yet' }}</dd>
+  </dl>
+  <div class="note">The classifier reads the OHLCV store, the Market Structure constituent lists and the canonical reports read-only; its snapshots live under private_desk/regime/ and are rebuilt whenever the inputs or the calculation version change.</div>
+  {% else %}<p class="na">DATA UNAVAILABLE - no Radar session to classify.</p>{% endif %}
+</section>
+
+<section class="panel">
+  <h2>Institutional flow <span class="dim lc">NSE / CDSL / NSDL - immutable stored snapshots, no fetch on page load</span></h2>
+  {% set inst = q.institutional %}
+  {% if inst.nse %}
+  <dl class="facts">
+    <dt>NSE latest</dt><dd>{% if inst.nse.latest %}{{ inst.nse.latest.report_key }} <span class="b {{ 'ok' if inst.nse.freshness == 'FRESH' else 'warn' }}">{{ inst.nse.freshness }}</span>{% else %}<span class="na">UNAVAILABLE</span>{% endif %}</dd>
+    <dt>CDSL latest</dt><dd>{% if inst.cdsl.latest %}report date {{ inst.cdsl.latest.report_date }} <span class="b {{ 'ok' if inst.cdsl.freshness == 'FRESH' else 'warn' }}">{{ inst.cdsl.freshness }}</span>{% if inst.cdsl.latest.bootstrap %} <span class="b warn">BOOTSTRAP</span>{% endif %}{% else %}<span class="na">UNAVAILABLE</span>{% endif %}</dd>
+    <dt>NSDL latest / previous</dt><dd>{% if inst.nsdl.latest %}{{ inst.nsdl.latest.period_note }} <span class="b {{ 'ok' if inst.nsdl.freshness == 'FRESH' else 'warn' }}">{{ inst.nsdl.freshness }}</span> / {{ inst.nsdl.previous_period | na }}{% else %}<span class="na">UNAVAILABLE</span>{% endif %}</dd>
+    {% if inst.sector_mapping %}<dt>NSDL sector mapping</dt><dd>{{ inst.sector_mapping.mapped }} mapped / {{ inst.sector_mapping.unmapped }} unmapped{% if inst.sector_mapping.unmapped_labels %} <span class="note">({{ inst.sector_mapping.unmapped_labels | join(', ') }})</span>{% endif %}</dd>{% endif %}
+  </dl>
+  <h2 style="margin-top:8px">Recent capture attempts</h2>
+  <table><thead><tr><th>When</th><th>Source</th><th>Status</th></tr></thead><tbody>
+  {% for a in inst.attempts %}{% set st = a.status or (a.latest or {}).get('status') or (a.discovery or {}).get('status') %}{% set ts = a.retrieved_at or (a.latest or {}).get('retrieved_at') %}
+  <tr><td class="mono">{{ (ts or '')[:19] | na }}</td><td>{{ a.source }}</td><td><span class="b {{ 'ok' if st in ('SUCCESS', 'UNCHANGED', 'NEW_REPORT') else 'warn' }}">{{ st | na }}</span></td></tr>{% endfor %}
+  {% if not inst.attempts %}<tr><td colspan="3" class="na">No capture attempts recorded yet.</td></tr>{% endif %}
+  </tbody></table>
+  {% else %}<p class="na">DATA UNAVAILABLE - no session selected.</p>{% endif %}
+</section>
+
+<section class="panel">
+  <h2>Market events <span class="dim lc">immutable stored revisions per family, no fetch on page load</span></h2>
+  {% set me = q.market_events %}
+  {% if me.families %}
+  <table><thead><tr><th>Family</th><th>Status</th><th class="n">Records</th><th>Note</th></tr></thead><tbody>
+  {% for fam, v in me.families.items() %}
+  <tr><td>{{ fam | replace('_', ' ') }}</td>
+      <td><span class="b {{ 'ok' if v.status in ('OK', 'VIEW_ONLY') else 'warn' }}">{{ v.status }}</span></td>
+      <td class="n">{{ v.count }}</td>
+      <td>{% if v.not_supported_yet %}<span class="note">NOT_SUPPORTED_YET - no verified-reachable source this pass</span>{% endif %}</td></tr>
+  {% endfor %}
+  </tbody></table>
+  <h2 style="margin-top:8px">Recent capture attempts</h2>
+  <table><thead><tr><th>When</th><th>Family</th><th>Status</th></tr></thead><tbody>
+  {% for a in me.attempts %}
+  <tr><td class="mono">{{ (a.retrieved_at or '')[:19] | na }}</td><td>{{ a.family }}</td>
+      <td><span class="b {{ 'ok' if a.status in ('SUCCESS', 'UNCHANGED', 'NEW_EVENT', 'REVISED') else 'warn' }}">{{ a.status | na }}</span></td></tr>
+  {% endfor %}
+  {% if not me.attempts %}<tr><td colspan="3" class="na">No capture attempts recorded yet.</td></tr>{% endif %}
+  </tbody></table>
+  {% else %}<p class="na">DATA UNAVAILABLE - no session selected.</p>{% endif %}
+</section>
+
+<section class="panel">
+  <h2>Canonical report & recent DMB runs <span class="dim" style="text-transform:none;letter-spacing:0">(read-only view)</span></h2>
+  <p>Report for session: <span class="b {{ 'ok' if q.report.status == 'FOUND' else 'warn' }}">{{ q.report.status }}</span> {{ q.report.report_id | na }}</p>
+  <table><thead><tr><th>Started</th><th>Job</th><th>Target</th><th>Source session</th><th>Status</th></tr></thead><tbody>
+  {% for r in q.runs %}<tr><td class="mono">{{ r.started_at[:19] }}</td><td>{{ r.job_type or r.mode }}</td><td class="mono">{{ r.target_date | na }}</td><td class="mono">{{ r.source_session_date | na }}</td><td>{{ r.run_status | na }}</td></tr>{% endfor %}
+  </tbody></table>
+</section>
+</div>
+{% endblock %}

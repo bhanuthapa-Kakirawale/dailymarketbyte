@@ -184,6 +184,8 @@ class MarketHistory:
     """Queryable history across runs. Open one, use it, close it (or use as a context manager)."""
 
     def __init__(self, db_path: str, timeout: float = 30.0):
+        from operations.run_context import guard_write
+        guard_write(db_path, "database")         # a test run never opens production history
         self.db_path = db_path
         directory = os.path.dirname(os.path.abspath(db_path))
         if directory:

@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Market Events {{ session }}{% endblock %}
+{% block content %}
+<h1>Market Events <span class="sub">session {{ session }} · official calendar/lifecycle events - context only, no score, no ranking</span></h1>
+
+<form method="get" class="note" style="margin-bottom:10px">
+  <input type="hidden" name="session" value="{{ session }}">
+  Filter: <select name="family" onchange="this.form.submit()">
+    <option value="">All families</option>
+    {% for fam in d.keys() %}<option value="{{ fam }}" {{ 'selected' if family == fam }}>{{ fam | replace('_', ' ') }}</option>{% endfor %}
+  </select>
+</form>
+
+{% for fam, sec in d.items() %}
+{% if not family or family == fam %}
+<section class="panel">
+  <h2>{{ fam | replace('_', ' ') }} <span class="dim lc">{% if sec.status in ('OK', 'VIEW_ONLY') %}{{ sec.count }} event(s){% if sec.status == 'VIEW_ONLY' %} · projected from {{ sec.source }}, never acquired by this engine{% endif %}{% else %}{{ sec.status }}{% endif %}</span></h2>
+  {% if sec.status not in ('OK', 'VIEW_ONLY') %}
+  <p class="na">DATA UNAVAILABLE - no official source for this family has been verified reachable this pass (NOT_SUPPORTED_YET). See docs/MARKET_EVENTS_ENGINE.md.</p>
+  {% else %}
+  {% for bucket, label in (('today','TODAY'), ('tomorrow','TOMORROW'), ('next_7_days','NEXT 7 DAYS'), ('recently_announced','RECENTLY ANNOUNCED')) %}
+  <h2 style="margin-top:8px">{{ label }}</h2>
+  {% if sec[bucket] %}
+  <table><thead><tr><th>Company / instrument</th><th>Symbol</th><th>Status</th><th>Date</th><th>Source</th></tr></thead><tbody>
+  {% for ev in sec[bucket] %}
+  <tr><td>{{ ev.company }}</td><td class="mono">{{ ev.symbol | na }}</td>
+      <td><span class="b unv">{{ ev.status }}</span></td>
+      <td class="mono">{{ ev.data_as_of | na }}</td>
+      <td>{{ ev.source_name }}{% if ev.source_reference %} <span class="rule">{{ ev.source_reference }}</span>{% endif %}</td></tr>
+  {% endfor %}
+  </tbody></table>
+  {% else %}<p class="na">None.</p>{% endif %}
+  {% endfor %}
+  {% endif %}
+</section>
+{% endif %}
+{% endfor %}
+{% endblock %}

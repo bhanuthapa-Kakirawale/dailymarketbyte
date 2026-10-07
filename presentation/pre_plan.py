@@ -57,13 +57,20 @@ STOCK_WATCH_MAX = 2
 WATCH_MAX = 3
 OPTIONAL_BUDGET = 2
 OPTIONAL_PRIORITY = ("STOCK_WATCH", "FLOWS", "VIX", "SECTORS")
-SECTION_ORDER = ("OVERNIGHT", "SETUP", "FLOWS", "VIX", "SECTORS", "EVENT", "STOCK_WATCH", "WATCH")
+SECTION_ORDER = ("OVERNIGHT", "SETUP", "FLOWS", "VIX", "SECTORS", "EVENT", "EXCHANGE", "IPO",
+                 "MARKET_EVENTS", "STOCK_WATCH", "WATCH")
+# Public intelligence sections (PUBLIC V2): outside the previous-session optional budget, but the
+# first to go under the runtime ceiling after it. MARKET_EVENTS (Market Events Engine V1) joins
+# the same group - never a second, parallel budget.
+PUBLIC_OPTIONAL = ("IPO", "EXCHANGE", "MARKET_EVENTS")
 MAX_RUNTIME = 65.0
 
 # Seconds per scene - set by how much there is to read, never stretched to fill a budget.
 DUR = {"OVERNIGHT": 5.0, "OVERNIGHT_PER_CUE": 0.6, "GIFT": 0.8, "SETUP_PULSE": 5.6,
        "SETUP_CHART": 6.2, "VIX": 4.8, "FLOWS": 5.4, "SECTORS": 5.6, "EVENT": 5.0,
        "STOCKS_BASE": 4.2, "STOCKS_PER": 1.9, "WATCH_BASE": 3.2, "WATCH_PER": 2.3,
+       "EXCHANGE_BASE": 3.6, "EXCHANGE_PER": 1.7, "IPO_CARD": 6.4, "IPO_BOARD_BASE": 3.8,
+       "IPO_BOARD_PER": 1.0, "MARKET_EVENTS_BASE": 3.6, "MARKET_EVENTS_PER": 1.7,
        "CLOSING": 2.6}
 
 
@@ -105,6 +112,22 @@ class PreMarketBrief:
     # GIFT publication gate verdict (operations.gift_policy): fetched / publication_allowed /
     # withheld / reason. A withheld reading is NOT in `gift` - no consumer can show it.
     gift_policy: dict = field(default_factory=dict)
+    # publication boundary (PUBLIC V2): the profile, the official-event inputs, and the admitted
+    # EXCHANGE / IPO WATCH models (presentation.public_intelligence) - set by
+    # `apply_publication_profile` before planning
+    publication_profile: str = "PUBLIC_UNREGISTERED"
+    public_intelligence: object | None = None
+    exchange_watch: dict | None = None
+    ipo_watch: dict | None = None
+    market_events: dict | None = None
+    public_audit: dict = field(default_factory=dict)
+    public_omitted: list = field(default_factory=list)
+    # Institutional Flow Intelligence V1 (institutional_flows.context.load_institutional):
+    # {"cdsl": {"status", "snapshot"}, "nsdl": {"status", "latest", "previous"}}, each snapshot
+    # already an InstitutionalFlowSnapshot.to_dict() or None. Previous-session NSE materiality
+    # (large/streak/reversal) is computed separately into `institutional_nse_context`.
+    institutional: dict | None = None
+    institutional_nse_context: dict = field(default_factory=dict)
 
     @property
     def prev_weekday(self) -> str:
@@ -130,6 +153,11 @@ class PreMarketBrief:
             "universe": self.universe, "sources": self.sources, "notes": self.notes,
             "acquisition_log": self.acquisition_log, "radar_audit": self.radar_audit,
             "fact_provenance": self.fact_provenance, "gift_policy": self.gift_policy,
+            "publication_profile": self.publication_profile,
+            "exchange_watch": self.exchange_watch, "ipo_watch": self.ipo_watch,
+            "market_events": self.market_events,
+            "institutional": self.institutional,
+            "institutional_nse_context": self.institutional_nse_context,
         }
 
 
@@ -307,6 +335,16 @@ class FlowsModel:
     headline: str
     subline: str
     bars: list
+    # Institutional Flow Intelligence V1: which candidate won (NSE / CDSL / NSDL_SECTOR),
+    # the provenance line to show (overrides the default NSE "SOURCE: NSE" when set), the
+    # fact ids / source names behind the bars (for publication/scene_claims.py), and the
+    # one-line reason this candidate was chosen - all optional so a plain NSE FlowsModel
+    # (what every pre-existing caller/test builds) still constructs unchanged.
+    kind: str = "NSE"
+    provenance: dict | None = None
+    fact_ids: list = field(default_factory=list)
+    sources: list = field(default_factory=list)
+    why: str = ""
 
 
 @dataclass
@@ -366,6 +404,9 @@ class PreSectionPlan:
     sectors: dict | None = None
     stock_watch: StockWatchModel | None = None
     watch: list = field(default_factory=list)       # [WatchItemModel]
+    exchange: dict | None = None                    # EXCHANGE WATCH model (public V2)
+    ipo: dict | None = None                         # IPO WATCH model (public V2)
+    market_events: dict | None = None               # MARKET EVENTS model (Market Events Engine V1)
     watch_headline: str = "What to watch at the open"
     watch_subline: str = "Reference points, not trade signals"
     closing_line: str = "That's your setup before the bell."
@@ -581,7 +622,10 @@ def _vix(brief, reasons):
     return model, big
 
 
-def _flows(brief, reasons):
+def _flows_nse_legacy(brief, reasons):
+    """Candidate C (fixed-threshold form): the previous session's NSE cash-market bars, by the
+    original fixed thresholds. Used only when there is not yet enough institutional-flow
+    history to judge materiality (`flow_materiality.INSUFFICIENT_HISTORY` on both sides)."""
     fd = brief.flows
     if not fd or fd.get("fii") is None or fd.get("dii") is None:
         reasons["FLOWS"] = "omitted: no validated FII/DII flows for the previous session - not fabricated"
@@ -599,13 +643,156 @@ def _flows(brief, reasons):
             {"name": "DII", "value": _crore(dii), "tag": "NET BUYERS" if dii >= 0 else "NET SELLERS",
              "numeric": dii, "positive": dii >= 0}]
     model = FlowsModel(headline=headline, subline=f"Net cash-market flows on {wd} (provisional)",
-                       bars=bars)
+                       bars=bars, kind="NSE")
     ok = big or contrast
-    reasons["FLOWS"] = ((f"included: FII {_crore(fii)}, DII {_crore(dii)} on {wd} - "
+    reasons["FLOWS"] = ((f"INSUFFICIENT_HISTORY: included on the legacy rule - FII {_crore(fii)}, "
+                         f"DII {_crore(dii)} on {wd} - "
                          + ("large" if big else "opposite sides, each >= Rs 1,000 cr"))
-                        if ok else f"omitted: FII {_crore(fii)}, DII {_crore(dii)} - neither large "
+                        if ok else f"INSUFFICIENT_HISTORY: omitted on the legacy rule - "
+                                   f"FII {_crore(fii)}, DII {_crore(dii)} - neither large "
                                    f"(>= Rs {fmt_in(FLOW_BIG_CRORE, 0)} cr) nor a clear contrast")
     return model, ok
+
+
+def _flows_nse_context(brief):
+    """Candidate C (materiality form): a genuine multi-session NSE story - a streak milestone
+    or a reversal - never a bare single-day magnitude alone, because POST already carried that
+    the evening before and PRE must not blindly repeat it."""
+    fd = brief.flows
+    if not fd or fd.get("fii") is None or fd.get("dii") is None:
+        return None, ""
+    ctx_by_subject = brief.institutional_nse_context or {}
+    story = next((ctx for ctx in ctx_by_subject.values()
+                 if (ctx.get("streak_state") == "DIRECTION_CONTINUES" and ctx.get("streak_milestone"))
+                 or ctx.get("streak_state") == "DIRECTION_REVERSES"), None)
+    if story is None:
+        return None, ""
+    fii, dii = float(fd["fii"]), float(fd["dii"])
+    wd = brief.prev_weekday
+    subject, value = story["subject"], story["current_value"]
+    direction = "buyers" if value >= 0 else "sellers"
+    if story["streak_state"] == "DIRECTION_REVERSES":
+        headline = (f"{subject}s were net {direction} on {wd}, reversing a "
+                   f"{story['prior_run_length']}-session run")
+        why = f"{subject} reverses a {story['prior_run_length']}-session run"
+    else:
+        headline = (f"{subject}s have been net {direction} for {story['streak_length']} "
+                   f"consecutive reported sessions")
+        why = f"{subject} streak reaches {story['streak_length']} recorded sessions"
+    bars = [{"name": "FII", "value": _crore(fii), "tag": "NET BUYERS" if fii >= 0 else "NET SELLERS",
+             "numeric": fii, "positive": fii >= 0},
+            {"name": "DII", "value": _crore(dii), "tag": "NET BUYERS" if dii >= 0 else "NET SELLERS",
+             "numeric": dii, "positive": dii >= 0}]
+    model = FlowsModel(headline=headline, subline=f"Net cash-market flows on {wd} (provisional)",
+                       bars=bars, kind="NSE", fact_ids=list(fd.get("fact_ids") or []),
+                       sources=["nse_website"], why=why)
+    return model, why
+
+
+def _flows_cdsl(brief):
+    """Candidate A: a CDSL depository-reported report that is new for THIS edition - its own
+    reporting date falls between the previous session and today, and it is not the very first
+    CDSL report this pipeline ever captured (a bootstrap report carries no "new today" meaning)."""
+    inst = brief.institutional or {}
+    cdsl = (inst.get("cdsl") or {}).get("snapshot")
+    if not cdsl or cdsl.get("status") != "SUCCESS" or cdsl.get("bootstrap"):
+        return None, ""
+    try:
+        report_date = dt.date.fromisoformat(cdsl.get("report_date") or "")
+    except ValueError:
+        return None, ""
+    if not (brief.previous_session <= report_date < brief.pre_date):
+        return None, ""
+    equity = {f["route"]: f["value"] for f in cdsl.get("facts", [])
+             if f.get("category") == "equity" and f.get("metric") == "net_investment"
+             and f.get("unit") == "INR_CRORE"}
+    stock_ex, primary = equity.get("stock_exchange"), equity.get("primary_market_others")
+    if stock_ex is None or primary is None:
+        return None, ""
+    total = stock_ex + primary
+    direction = "buyers" if total >= 0 else "sellers"
+    headline = f"FPIs were net {direction} of equity in the latest depository-reported figures"
+    bars = [{"name": "STOCK EXCHANGE", "value": _crore(stock_ex),
+            "tag": "NET BUYERS" if stock_ex >= 0 else "NET SELLERS", "numeric": stock_ex,
+            "positive": stock_ex >= 0},
+           {"name": "PRIMARY & OTHERS", "value": _crore(primary),
+            "tag": "NET BUYERS" if primary >= 0 else "NET SELLERS", "numeric": primary,
+            "positive": primary >= 0}]
+    from .provenance_label import fmt_date
+    provenance = {"source": "SOURCE: CDSL", "as_of": f"REPORT DATE: {fmt_date(report_date)}"}
+    model = FlowsModel(headline=headline, subline="Depository-reported FPI equity flow "
+                                                   "(not final)", bars=bars, kind="CDSL",
+                       provenance=provenance,
+                       fact_ids=[f"institutional:CDSL:{cdsl['report_key']}:equity:stock_exchange",
+                                f"institutional:CDSL:{cdsl['report_key']}:equity:primary_market_others"],
+                       sources=["cdsl_fpi_daily"],
+                       why=f"new CDSL report dated {fmt_date(report_date)}")
+    return model, model.why
+
+
+def _flows_nsdl_sector(brief):
+    """Candidate B: a NSDL fortnightly sector report new for this edition (its fortnight ends
+    within the last few days) and not the first one this pipeline ever captured."""
+    from institutional_flows.models import InstitutionalFlowSnapshot
+    from institutional_flows.sector_flow import select_public_bars, sector_flows
+    inst = brief.institutional or {}
+    latest = (inst.get("nsdl") or {}).get("latest")
+    if not latest or latest.get("status") != "SUCCESS" or latest.get("bootstrap"):
+        return None, ""
+    try:
+        fortnight_end = dt.date.fromisoformat(latest.get("report_key") or "")
+    except ValueError:
+        return None, ""
+    if (brief.pre_date - fortnight_end).days > 5:
+        return None, ""
+    snap = InstitutionalFlowSnapshot.from_dict(latest)
+    bars_models = select_public_bars(sector_flows(snap))
+    if not bars_models:
+        return None, ""
+    bars = [{"name": b.display_sector.upper(), "value": _crore(b.current_cr),
+            "tag": "NET INFLOW" if b.current_cr >= 0 else "NET OUTFLOW",
+            "numeric": b.current_cr, "positive": b.current_cr >= 0} for b in bars_models[:4]]
+    period = snap.represented_period
+    period_text = period.source_note.removeprefix("Net Investment ").strip() or \
+        fortnight_end.isoformat()
+    from .provenance_label import fmt_date
+    provenance = {"source": "SOURCE: NSDL", "as_of": f"FORTNIGHT: {period_text}"}
+    model = FlowsModel(headline="New fortnightly data: FPI equity flow by sector",
+                       subline=f"Net FPI equity investment, {period_text}", bars=bars,
+                       kind="NSDL_SECTOR", provenance=provenance,
+                       fact_ids=[f"institutional:NSDL:{snap.report_key}:{b.nsdl_sector}"
+                                for b in bars_models[:4]],
+                       sources=["nsdl_fpi_fortnightly"],
+                       why=f"new NSDL fortnightly sector report for {period_text}")
+    return model, model.why
+
+
+def _flows(brief, reasons):
+    """ONE flows scene at most, tried in priority order: a new CDSL report, then a new NSDL
+    sector report, then a genuinely new NSE multi-session story - PRE never just repeats
+    yesterday evening's plain NSE number. Below 10 prior eligible NSE sessions (no history yet
+    to judge materiality against) the original fixed-threshold NSE rule still applies."""
+    for candidate, label in ((_flows_cdsl(brief), "CDSL"), (_flows_nsdl_sector(brief), "NSDL")):
+        model, why = candidate
+        if model is not None:
+            reasons["FLOWS"] = f"included: {why}"
+            return model, True
+    ctx_by_subject = brief.institutional_nse_context or {}
+    has_history = ctx_by_subject and all(
+        ctx.get("magnitude_state") != "INSUFFICIENT_HISTORY" for ctx in ctx_by_subject.values())
+    if not has_history:
+        return _flows_nse_legacy(brief, reasons)
+    model, why = _flows_nse_context(brief)
+    if model is not None:
+        reasons["FLOWS"] = f"included: {why}"
+        return model, True
+    fd = brief.flows
+    if not fd or fd.get("fii") is None or fd.get("dii") is None:
+        reasons["FLOWS"] = "omitted: no validated FII/DII flows for the previous session - not fabricated"
+    else:
+        reasons["FLOWS"] = ("omitted: no new CDSL/NSDL report and no NSE streak milestone or "
+                            "reversal - PRE does not repeat POST's plain number")
+    return None, False
 
 
 def _event(brief, reasons, omitted):
@@ -648,14 +835,14 @@ def _sectors(brief, reasons):
     down = sum(1 for s in secs if s["pct"] < 0)
     lead_tag, lag_tag = "LEADER", "LAGGARD"
     if down == n:
-        headline = f"All {n} sector indices fell on {wd}; {rows[0]['name']} fell least"
+        headline = f"All {n} tracked sector indices fell on {wd}"
         lead_tag, lag_tag = "FELL LEAST", "FELL MOST"
     elif up == n:
-        headline = f"All {n} sector indices rose on {wd}; {rows[0]['name']} led"
+        headline = f"All {n} tracked sector indices rose on {wd}"
         lag_tag = "ROSE LEAST"
     else:
         headline = f"{rows[0]['name']} led, {rows[-1]['name']} lagged on {wd}"
-    model = {"headline": headline, "tone": f"{up} of {n} sector indices closed higher",
+    model = {"headline": headline, "tone": f"{up} of {n} tracked indices closed higher",
              "rows": rows, "leader_tag": lead_tag, "laggard_tag": lag_tag,
              "strip_title": "ALL SECTORS, STRONGEST FIRST"}
     spread = secs[0]["pct"] - secs[-1]["pct"]
@@ -718,9 +905,9 @@ def _watch(brief, show, setup, overnight, vix_m, flows_m, event, sectors_m, stoc
     if not show["SECTORS"] and pick_s is not None and abs(pick_s["pct"]) >= SECTOR_WATCH_MIN_PCT:
         lead, lag, pick = lead_s, lag_s, pick_s
         if pick is lag:
-            note = ("Fell most of %d sector indices" % len(secs)) if lead["pct"] < 0 else "Weakest sector index"
+            note = ("Fell most of %d tracked sector indices" % len(secs)) if lead["pct"] < 0 else "Weakest sector index"
         else:
-            note = ("Rose most of %d sector indices" % len(secs)) if lag["pct"] > 0 else "Strongest sector index"
+            note = ("Rose most of %d tracked sector indices" % len(secs)) if lag["pct"] > 0 else "Strongest sector index"
         cands.append(WatchItemModel("SECTOR", "SECTOR", f"{pick['name']} {_pct(pick['pct'])} on {wd}",
                                     note, pick["pct"] >= 0))
     if not show["STOCK_WATCH"] and brief.stock_facts:
@@ -731,9 +918,12 @@ def _watch(brief, show, setup, overnight, vix_m, flows_m, event, sectors_m, stoc
     if not show["FLOWS"] and fd and fd.get("fii") is not None and fd.get("dii") is not None \
             and max(abs(fd["fii"]), abs(fd["dii"])) >= FLOW_CONTRAST_CRORE:
         fii, dii = float(fd["fii"]), float(fd["dii"])
-        cands.append(WatchItemModel("FLOWS", "FII / DII", f"FIIs net {'bought' if fii >= 0 else 'sold'} "
+        # "net buyers/sellers", never "bought/sold" - the same wording POST uses
+        # (test_public_corrections.py pins this for POST; PRE now matches it).
+        cands.append(WatchItemModel("FLOWS", "FII / DII",
+                                    f"FIIs net {'buyers' if fii >= 0 else 'sellers'}, "
                                     f"{RS}{fmt_in(abs(fii), 0)} cr",
-                                    f"On {wd}; DIIs net {'bought' if dii >= 0 else 'sold'} "
+                                    f"On {wd}; DIIs net {'buyers' if dii >= 0 else 'sellers'}, "
                                     f"{RS}{fmt_in(abs(dii), 0)} cr", fii >= 0))
     if overnight is not None and overnight.gift is not None:
         g = overnight.gift
@@ -770,9 +960,20 @@ class PreEditorialPlanner:
         event = _event(brief, reasons, omitted)
         sectors_m, sectors_ok = _sectors(brief, reasons)
         stocks_m = _stocks(brief, reasons)
+        exchange_m, ipo_m = brief.exchange_watch, brief.ipo_watch
+        market_events_m = brief.market_events
+        reasons["EXCHANGE"] = (f"included: {len(exchange_m['cards'])} official exchange event(s)"
+                               if exchange_m else "omitted: no validated official exchange event "
+                                                  "for today")
+        reasons["IPO"] = ("included: dated IPO event(s) today" if ipo_m else
+                          "omitted: no official IPO event dated today")
+        reasons["MARKET_EVENTS"] = ("included: market event(s) today" if market_events_m else
+                                    "omitted: no official market event dated today")
 
         show = {"OVERNIGHT": overnight is not None, "SETUP": True, "VIX": vix_ok,
                 "FLOWS": flows_ok, "SECTORS": sectors_ok, "EVENT": event is not None,
+                "EXCHANGE": exchange_m is not None, "IPO": ipo_m is not None,
+                "MARKET_EVENTS": market_events_m is not None,
                 "STOCK_WATCH": stocks_m is not None, "WATCH": True}
         qualified = [k for k in OPTIONAL_PRIORITY if show[k]]
         for k in qualified[OPTIONAL_BUDGET:]:
@@ -789,7 +990,8 @@ class PreEditorialPlanner:
         labels = {"OVERNIGHT": "OVERNIGHT", "SETUP": setup.chip, "VIX": f"INDIA VIX · {wd3}",
                   "FLOWS": f"FII / DII · {wd3}", "SECTORS": f"SECTORS · {wd3}",
                   "EVENT": "TODAY'S CALENDAR", "STOCK_WATCH": f"STOCK WATCH · {wd3}",
-                  "WATCH": "WATCH AT THE OPEN"}
+                  "EXCHANGE": "EXCHANGE WATCH", "IPO": "IPO WATCH",
+                  "MARKET_EVENTS": "MARKET EVENTS", "WATCH": "WATCH AT THE OPEN"}
         durations = {
             "OVERNIGHT": round(DUR["OVERNIGHT"] + DUR["OVERNIGHT_PER_CUE"] * max(0, len(overnight.cues) - 1)
                                + (DUR["GIFT"] if overnight.gift else 0.0), 2) if overnight else 0.0,
@@ -800,10 +1002,18 @@ class PreEditorialPlanner:
             "STOCK_WATCH": round(DUR["STOCKS_BASE"] + DUR["STOCKS_PER"] * len(stocks_m.items), 2)
             if stocks_m else 0.0,
             "WATCH": round(DUR["WATCH_BASE"] + DUR["WATCH_PER"] * len(watch), 2),
+            "EXCHANGE": round(DUR["EXCHANGE_BASE"] + DUR["EXCHANGE_PER"] * len(exchange_m["cards"]), 2)
+            if exchange_m else 0.0,
+            "IPO": (DUR["IPO_CARD"] if ipo_m["layout"] == "CARD" else
+                    round(DUR["IPO_BOARD_BASE"] + DUR["IPO_BOARD_PER"] * len(ipo_m["rows"]), 2))
+            if ipo_m else 0.0,
+            "MARKET_EVENTS": round(DUR["MARKET_EVENTS_BASE"]
+                                   + DUR["MARKET_EVENTS_PER"] * len(market_events_m["cards"]), 2)
+            if market_events_m else 0.0,
         }
         order = [k for k in SECTION_ORDER if show[k]]
         # hard ceiling: drop optional sections, lowest priority first, never core ones
-        for k in reversed(OPTIONAL_PRIORITY):
+        for k in tuple(reversed(OPTIONAL_PRIORITY)) + PUBLIC_OPTIONAL:
             if sum(durations[o] for o in order) + DUR["CLOSING"] + 5.0 <= MAX_RUNTIME:
                 break
             if k in order:
@@ -822,6 +1032,9 @@ class PreEditorialPlanner:
             vix=vix_m if show["VIX"] else None, flows=flows_m if show["FLOWS"] else None,
             event=event, sectors=sectors_m if show["SECTORS"] else None,
             stock_watch=stocks_m if show["STOCK_WATCH"] else None, watch=watch,
+            exchange=exchange_m if show["EXCHANGE"] else None,
+            ipo=ipo_m if show["IPO"] else None,
+            market_events=market_events_m if show["MARKET_EVENTS"] else None,
             watch_subline=("Reference points from " + brief.prev_weekday +
                            (" and overnight" if overnight else "") + ", not trade signals"),
             omitted=omitted, synthetic=brief.synthetic)

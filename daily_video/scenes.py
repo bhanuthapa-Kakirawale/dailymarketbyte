@@ -97,6 +97,11 @@ class Scene:
         ctx = Ctx(layer, recorder)
         self.paint(ctx, t)
         ctx.flush()
+        prov = (getattr(self.spec, "texts", None) or {}).get("provenance")
+        if isinstance(prov, dict):
+            # SOURCE / DATA AS OF: one shared component, on the scene's own layer
+            from .provenance_bar import draw_provenance
+            draw_provenance(ctx, prov, phase(t, 0.25, 0.35))
         return layer
 
     def paint(self, ctx, t):

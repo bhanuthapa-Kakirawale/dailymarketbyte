@@ -1,0 +1,9 @@
+# Private Trading Intelligence Desk (local only; NOT needed by the DMB pipeline or GitHub Actions)
+# pip install -r requirements-desk.txt
+fastapi>=0.110
+uvicorn>=0.29
+jinja2>=3.1
+# plotly: only its bundled plotly.min.js is served (offline charts, no CDN)
+plotly>=5.20
+# tests only (FastAPI TestClient)
+httpx>=0.27

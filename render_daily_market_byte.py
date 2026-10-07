@@ -13,15 +13,14 @@ import json
 import os
 import sys
 
-import editorial
 import intelligence
 from config import OUT_DIR
 from core import MarketReport
-from core.content_safety import SafetyStatus, classify_text, scan_publication
-from daily_video import Composer, build_storyboard
+from core.content_safety import SafetyStatus, scan_publication
+from daily_video import Composer
 from daily_video.typography import font_report
 from presentation import ReportPresentation
-from radar.visual_evidence import build_visual_evidence_for_presentation
+from products import post_unified as PU
 from storage import MarketHistory, default_db_path
 
 FREEZE_NAMES = {"HOOK": "hook", "DYNAMIC_HOOK": "hook", "PULSE": "market_overview", "NIFTY": "nifty", "FLOWS": "fii_dii",
@@ -29,25 +28,26 @@ FREEZE_NAMES = {"HOOK": "hook", "DYNAMIC_HOOK": "hook", "PULSE": "market_overvie
                 "AHEAD": "look_ahead", "CLOSING": "closing"}
 
 
-def load_inputs(report_path, radar_dir, session: str):
+def load_report_and_plan(report_path, profile=None):
+    """(report, plan) through the SAME planner the scheduled POST uses
+    (products.post_unified.plan_for_post)."""
     report = MarketReport.from_json(open(report_path, encoding="utf-8").read())
     history = MarketHistory(default_db_path(OUT_DIR))
     try:
         snapshot = intelligence.build_snapshot(report, history)
     finally:
         history.close()
-    plan = editorial.plan_short(report, snapshot, now=report.generated_at,
-                                is_safe=lambda s: classify_text(s).status is not SafetyStatus.BLOCKED)
+    return report, PU.plan_for_post(report, snapshot, now=report.generated_at, profile=profile)
+
+
+def load_inputs(report_path, radar_dir, session: str):
+    """Compatibility tuple for the historical phase renderers; built from the shared
+    products.post_unified functions (no planner / Radar loading of its own)."""
+    report, plan = load_report_and_plan(report_path)
     pres = ReportPresentation(report)
-    pres_path = os.path.join(radar_dir, "presentation", f"radar_presentation_{session}.json")
-    result_path = os.path.join(radar_dir, f"daily_radar_{session}.json")
-    radar_pres = json.load(open(pres_path, encoding="utf-8")) if os.path.exists(pres_path) else None
-    radar_result = json.load(open(result_path, encoding="utf-8")) if os.path.exists(result_path) else None
-    evidence = (build_visual_evidence_for_presentation(radar_pres, radar_result)
-                if radar_pres and radar_result else {})
+    radar_pres, radar_result, evidence, paths = PU.load_radar_inputs(radar_dir, session)
     universe = (report.metadata or {}).get("universe") or "Nifty 100"
-    sources = {"market_report": report_path, "radar_presentation": pres_path,
-               "radar_result": result_path, "ohlcv_store": default_db_path(OUT_DIR)}
+    sources = {"market_report": report_path, **paths, "ohlcv_store": default_db_path(OUT_DIR)}
     return plan, pres, radar_pres, radar_result, evidence, universe, sources
 
 
@@ -71,20 +71,34 @@ def main(argv=None):
                     "daily_market_byte_redesign_<session>.mp4)")
     ap.add_argument("--no-hook-ai", action="store_true",
                     help="open with the deterministic hook; never call Gemini")
+    ap.add_argument("--profile", choices=("PUBLIC_UNREGISTERED", "PRIVATE_ANALYTICS"),
+                    default=None, help="publication profile (default PUBLIC_UNREGISTERED: no Radar "
+                                       "stock story, Market Structure / Exchange / IPO Watch instead)")
+    ap.add_argument("--fetch-public", action="store_true",
+                    help="fetch today's official exchange lists (F&O ban, ASM/GSM) and NSE IPO "
+                         "lists; otherwise only stored artifacts are read")
     ap.add_argument("--confirm-publication", action="store_true",
                     help="after a successful render + QA, mark the Radar stories this MP4 shows "
                          "as PUBLISHED (products.radar_publication). Off by default: previews "
                          "and validation renders must never advance publication history")
     args = ap.parse_args(argv)
 
-    report = MarketReport.from_json(open(args.report, encoding="utf-8").read())
+    from publication import resolve_profile
+    profile = resolve_profile(args.profile)
+    report, plan = load_report_and_plan(args.report, profile=profile)
     session = (report.session_date or report.report_date).isoformat()
-    plan, pres, radar_pres, radar_result, evidence, universe, sources = load_inputs(
-        args.report, args.radar_dir, session)
     # Gemini chooses among approved hook candidates when a key is configured; any failure
     # falls back to the deterministic hook inside the engine.
-    sb = build_storyboard(plan, pres, radar_pres, radar_result, evidence, universe, sources,
-                          hook_ai=not args.no_hook_ai)
+    from operations.sessions import next_session
+    from presentation.public_intelligence import load_public_intelligence
+    list_date = next_session(report.session_date) or report.report_date
+    intel = load_public_intelligence(report.session_date, list_date, OUT_DIR,
+                                     fetch=args.fetch_public,
+                                     now_iso=dt.datetime.now(dt.timezone.utc).isoformat())
+    sb, pres = PU.build_post_storyboard(
+        report, plan, profile=profile, intelligence=intel, hook_ai=not args.no_hook_ai,
+        radar_dir=args.radar_dir,
+        sources={"market_report": args.report, "ohlcv_store": default_db_path(OUT_DIR)})
     if sb.hook_plan:
         hp = sb.hook_plan
         print(f"hook: {hp['archetype']} via {hp['source']}"
@@ -104,6 +118,8 @@ def main(argv=None):
                   encoding="utf-8") as fh:
             json.dump(sb.hook_plan, fh, indent=2, ensure_ascii=False, default=str)
 
+    from daily_video.public_storyboard import audit_storyboard
+    from publication import write_publication_audit
     comp = Composer(sb)
     names = freeze_names(sb)
     progressive = {}
@@ -117,14 +133,24 @@ def main(argv=None):
         if not e["qa"]["passed"]:
             print("  ", e["scene"], e["qa"]["issues"])
     if args.frames_only:
+        audit = audit_storyboard(sb, "POST_UNIFIED")
+        write_publication_audit(audit, args.out_dir)
+        print(f"publication audit ({sb.publication_profile}): {audit['final']}"
+              + (f" - failed {audit['failed_checks']}" if audit["failed_checks"] else ""))
         return 0
 
     out = args.out or os.path.join(OUT_DIR, f"daily_market_byte_redesign_{session}.mp4")
     result = comp.render(out)
+    audit = audit_storyboard(sb, "POST_UNIFIED", video_path=out if result.get("ok") else None)
+    audit_path = write_publication_audit(audit, args.out_dir)
+    print(f"publication audit ({sb.publication_profile}): {audit['final']}"
+          + (f" - failed {audit['failed_checks']}" if audit["failed_checks"] else ""))
     manifest = {"render": result, "session_date": session, "total_duration": sb.total_duration,
                 "scene_count": len(sb.scenes), "sections": sb.sections(), "sources": sources,
                 "omitted": sb.omitted, "fonts": font_report(), "hook_plan": sb.hook_plan,
-                "content_safety": scan.status.value,
+                "content_safety": scan.status.value, "publication_profile": sb.publication_profile,
+                "publication_audit": {"final": audit["final"], "path": audit_path,
+                                      "failed_checks": audit["failed_checks"]},
                 "rendered_at": dt.datetime.now(dt.timezone.utc).isoformat()}
     if args.confirm_publication:
         # RADAR_PUBLISHED: only the stories this completed artifact shows, only after QA.

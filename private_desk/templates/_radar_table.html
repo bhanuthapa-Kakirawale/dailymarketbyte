@@ -1,0 +1,74 @@
+{% import "_macros.html" as m %}
+{% set compact = compact | default(false) %}
+{% set sectors_present = views | map(attribute='sector') | select | unique | sort %}
+{% set att_labels = att_labels | default(none) %}
+{% if not compact %}<div class="filters" data-table="{{ table_id }}">
+  <input type="text" data-search placeholder="symbol / company" size="16">
+  <select data-sector><option value="">all sectors</option>{% for s in sectors_present %}<option>{{ s }}</option>{% endfor %}</select>
+  {% for tok, label in [('NEW','NEW'), ('CHANGED','STATE CHANGE'), ('REAPPEARED','REAPPEARED'), ('CONSECUTIVE','CONTINUING (consecutive)'), ('CONTINUATION','UNCHANGED'),
+       ('HIGH_INTEREST','HIGH INTEREST'), ('VOLUME','UNUSUAL VOLUME'), ('RANGE_UP','RANGE BREAK UP'), ('RANGE_DOWN','RANGE BREAK DOWN'),
+       ('SMA_CROSS','SMA CROSS'), ('NEW_STRUCTURE','NEW STRUCTURE EVENT'), ('NEW_VOLUME','NEW UNUSUAL VOLUME'), ('REL_POS','REL. STRENGTH +'), ('REL_NEG','REL. STRENGTH -'), ('STRUCTURE','STRUCTURE FAMILY'),
+       ('RELATIVE_PERFORMANCE','RELATIVE FAMILY'), ('SELECTED','STORY SELECTED'), ('OFFICIAL','OFFICIAL LIST')] %}
+  <span class="chip" data-tok="{{ tok }}">{{ label }}</span>
+  {% endfor %}
+  <span class="note" data-count></span>
+</div>{% endif %}
+<div class="tablewrap">
+<table class="sortable" id="{{ table_id }}">
+<thead><tr>
+  <th class="sort">Symbol</th>{% if att_labels %}<th title="the documented attention-set rule that placed it here">In attention set because</th>{% endif %}<th>Why this stock?</th>{% if not compact %}<th class="sort">Company</th>{% endif %}<th class="sort">Sector</th>
+  <th class="sort" title="{{ rules.CANDIDATE_RULE }}">Attention</th><th>Families</th>
+  <th class="sort" title="{{ rules.NOVELTY_RULE }}">Radar novelty</th>
+  <th class="sort" title="{{ rules.APPEARANCE_RULE }}">Appearance</th>
+  {% if not compact %}<th class="sort n" title="trading sessions since prior recorded appearance">Since prior</th>{% endif %}
+  <th class="sort n">Day %</th><th class="sort n" title="session volume / prior-20-session mean">RVOL</th>
+  <th class="sort" title="▲/▼ = close above prior high / below prior low; ↗/↘ = SMA cross">Structure</th>
+  {% if not compact %}<th class="sort n">vs NIFTY 5D</th>{% endif %}<th class="sort n">vs NIFTY 20D</th>
+  {% if not compact %}<th class="sort">Rel. persistence</th><th class="sort">Story</th><th>Official</th>{% endif %}
+  {% if not compact %}<th class="sort" title="detector values reproduced from stored data and reconciled with the recorded run">Evidence</th>{% endif %}
+</tr></thead>
+<tbody>
+{% for v in views %}
+{% set toks = [] %}
+{% if v.novelty_type == 'NEW_CANDIDATE' %}{% set _ = toks.append('NEW') %}{% endif %}
+{% if v.novelty_type == 'CONTINUATION' %}{% set _ = toks.append('CONTINUATION') %}{% endif %}
+{% if v.novelty_type and v.novelty_type not in ('NEW_CANDIDATE', 'CONTINUATION') %}{% set _ = toks.append('CHANGED') %}{% endif %}
+{% if v.new_technical_events or (v.novelty_type == 'NEW_CANDIDATE' and v.structure) %}{% set _ = toks.append('NEW_STRUCTURE') %}{% endif %}
+{% if 'VOLUME' in v.new_families or (v.novelty_type == 'NEW_CANDIDATE' and v.unusual_volume) %}{% set _ = toks.append('NEW_VOLUME') %}{% endif %}
+{% set _ = toks.append(v.appearance or '') %}
+{% set _ = toks.append(v.attention_level or '') %}
+{% for f in v.families %}{% set _ = toks.append(f) %}{% endfor %}
+{% if 'BREAK_ABOVE' in v.structure %}{% set _ = toks.append('RANGE_UP') %}{% endif %}
+{% if 'BREAK_BELOW' in v.structure %}{% set _ = toks.append('RANGE_DOWN') %}{% endif %}
+{% if 'CROSS_' in v.structure %}{% set _ = toks.append('SMA_CROSS') %}{% endif %}
+{% if 'RELATIVE_PERSISTENT_POSITIVE' in v.reason_codes %}{% set _ = toks.append('REL_POS') %}{% endif %}
+{% if 'RELATIVE_PERSISTENT_NEGATIVE' in v.reason_codes %}{% set _ = toks.append('REL_NEG') %}{% endif %}
+{% if v.selected %}{% set _ = toks.append('SELECTED') %}{% endif %}
+{% if v.official %}{% set _ = toks.append('OFFICIAL') %}{% endif %}
+<tr class="{{ 'sel' if v.selected }}" data-tokens="{{ toks | join(' ') }}" data-symbol="{{ v.symbol }}" data-company="{{ v.company or '' }}" data-sector="{{ v.sector or '' }}">
+  <td><a href="/stock/{{ v.symbol }}?session={{ v.session }}" title="{{ v.company or '' }}"><b>{{ v.symbol }}</b></a>{% if compact %}{% if v.selected %} <span class="b sel" title="{{ v.selection_reason }}">S</span>{% endif %}{% if v.official %} {{ m.official(v.official) }}{% endif %}{% endif %}</td>
+  {% if att_labels %}<td class="wrap att">{% for l in att_labels.get(v.symbol, []) %}<span class="b att">{{ l }}</span>{% endfor %}</td>{% endif %}
+  <td><details class="whyrow"><summary>{% if v.replay_status == 'MATCHED' %}&#10003; {{ v.reason_codes | length }} reasons{% else %}? {{ v.reason_codes | length }} reasons · values unavailable{% endif %}</summary>{{ m.why(v.why, v.session) }}
+    <div class="note">{{ v.novelty_reason }}</div></details></td>
+  {% if not compact %}<td>{{ (v.company or '') | truncate(26, True, '…') if v.company else NA }}</td>{% endif %}
+  <td>{{ v.sector | na }}</td>
+  <td data-v="{{ 0 if v.attention_level == 'HIGH_INTEREST' else 1 }}">{{ m.attention(v.attention_level) }}</td>
+  <td>{{ m.families(v.families) }}</td>
+  <td>{{ m.novelty(v.novelty_type) }}</td>
+  <td>{{ m.appearance(v.appearance) }}</td>
+  {% if not compact %}<td class="n" data-v="{{ v.sessions_since_prior if v.sessions_since_prior is not none else '' }}">{{ v.sessions_since_prior if v.sessions_since_prior is not none else '—' }}</td>{% endif %}
+  <td class="n" data-v="{{ v.price_change_pct if v.price_change_pct is not none else '' }}">{{ v.price_change_pct | pct }}</td>
+  <td class="n" data-v="{{ v.relative_volume if v.relative_volume is not none else '' }}">{{ v.relative_volume | x(2) }}{% if v.volume_level %} <span class="dim">{{ v.volume_level }}</span>{% endif %}</td>
+  <td title="{{ v.structure | replace('_', ' ') }}">{{ v.structure | structure }}</td>
+  {% if not compact %}<td class="n" data-v="{{ v.rel_5d_pp if v.rel_5d_pp is not none else '' }}">{{ v.rel_5d_pp | pp }}</td>{% endif %}
+  <td class="n" data-v="{{ v.rel_20d_pp if v.rel_20d_pp is not none else '' }}">{{ v.rel_20d_pp | pp }}</td>
+  {% if not compact %}<td>{{ v.persistence | label }}</td>
+  <td>{% if v.selected %}<span class="b sel" title="{{ v.selection_reason }}">SELECTED</span>{% else %}—{% endif %}</td>
+  <td>{{ m.official(v.official) if v.official else '—' }}</td>{% endif %}
+  {% if not compact %}<td>{{ m.replay(v.replay_status) }}</td>{% endif %}
+</tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+{% if not views %}<p class="note">No Radar candidates recorded for this session.</p>{% endif %}

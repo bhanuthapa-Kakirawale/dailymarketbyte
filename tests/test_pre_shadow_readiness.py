@@ -474,20 +474,29 @@ FROZEN = {
     "daily_video/annotations.py": "fa13f1470f655792786c9704343f80e6f8649df030cb87d55d1dcc57d43f2ec7",
     "daily_video/chartkit.py": "6b878b0d5152c3d0e2d5c148b758841984f1482dd974951b782023a910ec0706",
     "daily_video/chrome.py": "d702e1707531f90e1ce5db5204ac8eb9951692ef476d19818532fb246ee02ffe",
-    "daily_video/composer.py": "e9c0dcc21a09e70039d175480661cc2b0f41a91796bc3199e39f1e77b8c915ca",
+    "daily_video/composer.py": "dd41781a54d79ddfd3463902c2617a6caa75b4dc35ee6ca007c7c66e4acd0c38",
     "daily_video/hook_kit.py": "65054d18a31ce549a9da2ea5adbdcadda7fc9e1366283fcff0d71c462e688cee",
     "daily_video/hook_scene.py": "f6af246492bc2d0d5b92f24b18ed84cccd7fdbfddd99f26930ec865d88759d2f",
     "daily_video/market_scenes.py": "e2b981425c12d98def8ed3da62d58a405f54eaab411c168bbd4b8f669820e12d",
     "daily_video/pre_scenes.py": "87ad294e425015ea8bf3e1db150dc69d3de06865010af150d0487117077d70c3",
-    "daily_video/pre_storyboard.py": "c436c1381ca609bfc19b0dac5005de9b176d69ad4a9588ff0e9f918d4d07af2d",
+    # Re-pinned 2026-10-05 with owner approval: Institutional Flow Intelligence V1
+    # (feature/institutional-flow-intelligence-v1) - pre_provenance() reads a CDSL/NSDL FLOWS
+    # candidate's own provenance when set, and the FLOWS scene spec carries its fact ids /
+    # sources via `data` for publication.scene_claims. No other frozen file changed.
+    "daily_video/pre_storyboard.py": "eb750f52913074a4b8b268753c65130ec21c32a9070511724e1de7b8171c24b9",
     "daily_video/radar_scenes.py": "ecda846e8012b64794641568023fa3582d256b2456c6ff805171cb76738b9647",
     "daily_video/radar_story_scene.py": "e544e5b3d224e6fcd194b9c5602a26749bda5f6c7a1a0228cb9e2ba38b53c64a",
-    "daily_video/scenes.py": "4546a7832d833040e87adcc901c4b83e6d0f716972c43e1f3501f7e0cf862195",
-    "daily_video/storyboard.py": "60ab4670f19dd99a3879dd472b2e945d4713b6b1dd9d291fa150b46aaa06563a",
+    "daily_video/scenes.py": "8ff19afcd878d6122f49a3410583d688bd327a04fc2de1b7f6725078a1fe53d1",
+    "daily_video/storyboard.py": "cf7cc4860852b9316354a1cc36c9672373b9bc3e646b552d194ba78664620783",
     "daily_video/theme.py": "8e1af617da9052c104ede87ddd393de5744355d657b513accfee4414f8b726db",
     "daily_video/typography.py": "d6b5620d928e4ea9eef40647713b37f639f5ce087a47bd112bf0af2c37f152ae",
-    "video.py": "22fa879520ddc2c478bd320b0b2a01db83a3229b66d4020b5b9b83a52828ba92",
+    "video.py": "7b7155df022f5795ab271a38963fa05ab9cd4ba6917391a75f5df3567280e352",
     "chart.py": "ca402c4a721039861bf86dd0ab6b25cef997024732a3de2edee5c74c26c2f2fa",
+    # Re-pinned 2026-09-26 with owner approval: public market intelligence V1 brief (feature/sebi-publication-v1) - provenance bar, public scenes, publication gate;
+    # and the V1 final review correction pass (source roles, de-duplication, silent V2).
+    "daily_video/provenance_bar.py": "f46e5eeab911cec195df35b58bb9bb7ff3955dd8e92eadf00381e11046266939",
+    "daily_video/public_scenes.py": "e91915b296634e8c3ac36fbd1331036e308de5a41b6ed3055a81f5c25e3fa808",
+    "daily_video/public_storyboard.py": "24cb857013d7f1c9a123271259308fd266dbe351b2365344058ad980fad27462",
 }
 
 

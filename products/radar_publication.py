@@ -33,6 +33,7 @@ LEDGER_ERROR = "LEDGER_ERROR"
 CONFIRMED, ALREADY_CONFIRMED = "CONFIRMED", "ALREADY_CONFIRMED"
 
 # The legacy production POST (`main.run` -> `video.scenes_from_plan`) has no Radar section.
+# historical note (pre cut-over): kept for old run records that reference it
 LEGACY_RENDERER_NOTE = ("the production POST renderer (main.run -> video.scenes_from_plan) has "
                         "no Radar section - no Radar story is shown, so none is published")
 

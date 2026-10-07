@@ -193,13 +193,13 @@ def test_intelligence_never_acquires_market_data():
     import inspect
 
     import intelligence
-    from intelligence import engine, flows, history, market_context, movers as movers_mod
-    from intelligence import models, sectors, volatility
+    from intelligence import engine, flow_materiality, flows, history, market_context
+    from intelligence import models, movers as movers_mod, sectors, volatility
 
     forbidden = ("yfinance", "requests", "ask_gemini", "google_news", "urllib",
                  "providers", "market.get_", "news.ai_pass")
-    for module in (intelligence, engine, flows, history, market_context, movers_mod,
-                   models, sectors, volatility):
+    for module in (intelligence, engine, flow_materiality, flows, history, market_context,
+                   movers_mod, models, sectors, volatility):
         source = inspect.getsource(module)
         for term in forbidden:
             assert term not in source, f"{module.__name__} must not reference {term}"

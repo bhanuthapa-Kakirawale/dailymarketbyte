@@ -1,0 +1,23 @@
+{
+  "_schema": "IPO offer-document facts, entered by hand from the document filed with SEBI (sebi.gov.in) or the exchange. Loaded by ipo_watch.sources.load_offer_documents, which REJECTS an entry that is incomplete, cites a non-official host, or has any figure without its page_reference. Never enter grey-market premium, ratings, valuations or expected listing prices - the model has no field for them.",
+  "_entry_example": {
+    "company_name": "EXAMPLE COMPANY LTD",
+    "symbol": "EXAMPLE",
+    "document_type": "RHP",
+    "document_date": "2026-09-18",
+    "source_url": "https://www.sebi.gov.in/filings/public-issues/...",
+    "issue_structure": [
+      {"key": "fresh_issue_crore", "value_crore": 700.0, "page_reference": "RHP p. 2 (Cover page)"},
+      {"key": "ofs_crore", "value_crore": 500.0, "page_reference": "RHP p. 2 (Cover page)"},
+      {"key": "lot_size", "value": 55, "page_reference": "RHP p. 3"}
+    ],
+    "objects_of_issue": ["Repayment of borrowings", "Capital expenditure", "General corporate purposes"],
+    "financials": [
+      {"label": "Revenue from operations", "period": "FY26", "value_crore": 1234.5, "page_reference": "RHP p. 312"}
+    ],
+    "risk_facts": [
+      {"category": "CUSTOMER_CONCENTRATION", "text": "Top three customers were 48% of revenue in FY26.", "page_reference": "RHP p. 41"}
+    ]
+  },
+  "entries": []
+}

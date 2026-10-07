@@ -560,8 +560,15 @@ def test_provenance_audit_covers_every_pre_fact_and_blocks_ai(tmp_path):
     bad = dataclasses.replace(brief, gift=ai)
     assert not pre_provenance_audit(bad, plan_pre_sections(bad))["ok"]
     from products.premarket import render_pre
-    res = render_pre(bad, str(tmp_path / "r"), frames_only=True)
+    # PRIVATE_ANALYTICS lets the reading reach the provenance gate, which refuses it ...
+    res = render_pre(dataclasses.replace(bad, publication_profile="PRIVATE_ANALYTICS"),
+                     str(tmp_path / "r"), frames_only=True)
     assert res["blocked"].startswith("provenance gate") and not res["ok"]
+    # ... and PUBLIC_UNREGISTERED withholds GIFT before it (NSE IX rights RESTRICTED, policy
+    # closed), so it can never be displayed at all
+    pub = render_pre(dataclasses.replace(bad, publication_profile="PUBLIC_UNREGISTERED"),
+                     str(tmp_path / "p"), frames_only=True)
+    assert pub["gift_displayed"] is False
 
 
 def test_no_acquisition_path_reaches_a_model():

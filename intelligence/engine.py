@@ -19,7 +19,7 @@ import datetime as dt
 import json
 import os
 
-from . import flows, market_context, movers, sectors, volatility
+from . import flow_materiality, flows, market_context, movers, sectors, volatility
 from .history import DEFAULT_WINDOW_SESSIONS, HistoricalWindow, HistoryUnavailable
 from .models import IntelligenceSnapshot
 
@@ -77,6 +77,16 @@ def build_snapshot(report, history, now: dt.datetime | None = None,
         except Exception as exc:
             snapshot.warnings.append(f"{name}: skipped after {type(exc).__name__}: {exc}")
 
+    # flow_context is deterministic FII/DII materiality (large/streak/reversal), NOT an insight:
+    # it never enters `snapshot.insights` and so never competes for `selected()` screen time or
+    # hook candidate selection - a caller that wants it reads `snapshot.flow_context` directly.
+    try:
+        snapshot.flow_context = flow_materiality.analyse(report, window)
+    except HistoryUnavailable as exc:
+        snapshot.warnings.append(f"flow_materiality: historical database unreadable: {exc}")
+    except Exception as exc:
+        snapshot.warnings.append(f"flow_materiality: skipped after {type(exc).__name__}: {exc}")
+
     snapshot.warnings.extend(w for w in window.warnings if w not in snapshot.warnings)
     snapshot.metrics = {
         "available_sessions": snapshot.available_history,
@@ -97,6 +107,20 @@ def save_snapshot(snapshot: IntelligenceSnapshot, out_dir: str, demo: bool = Fal
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(snapshot.to_json())
     return path
+
+
+def load_snapshot(out_dir: str, session_date: dt.date, demo: bool = False) -> IntelligenceSnapshot | None:
+    """Read back the derived artifact `save_snapshot` wrote for `session_date`, or None if it
+    was never built / is unreadable. Never recomputes - a consumer (PRE) that wants this
+    session's context reads what the REPORT job already derived, rather than opening its own
+    second connection to canonical history."""
+    suffix = "_DEMO" if demo else ""
+    path = os.path.join(out_dir, ARTIFACT_DIR, f"intelligence_{session_date:%Y-%m-%d}{suffix}.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return IntelligenceSnapshot.from_json(fh.read())
+    except (OSError, ValueError):
+        return None
 
 
 def describe(snapshot: IntelligenceSnapshot) -> str:

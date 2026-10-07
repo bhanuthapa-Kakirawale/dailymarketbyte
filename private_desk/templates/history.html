@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Radar History{% endblock %}
+{% block content %}
+{% set f = h.filter %}
+<h1>Radar History <span class="sub">{{ h.start | d }} → {{ h.end | d }} · {{ (h.window_sessions or []) | length }} sessions · {{ h.rows | length }} appearances</span></h1>
+<form class="filters" method="get">
+  <label class="note">from <input type="date" name="start" value="{{ h.start or '' }}"></label>
+  <label class="note">to <input type="date" name="end" value="{{ h.end or '' }}"></label>
+  <input type="text" name="symbol" value="{{ f.symbol }}" placeholder="symbol" size="10">
+  <select name="sector"><option value="">all sectors</option>{% for s in h.sectors or [] %}<option {{ 'selected' if s == f.sector }}>{{ s }}</option>{% endfor %}</select>
+  <select name="attention"><option value="">any attention</option>{% for a in ['HIGH_INTEREST', 'NOTABLE'] %}<option {{ 'selected' if a == f.attention }}>{{ a }}</option>{% endfor %}</select>
+  <select name="family"><option value="">any family</option>{% for a in ['VOLUME', 'STRUCTURE', 'RELATIVE_PERFORMANCE'] %}<option {{ 'selected' if a == f.family }}>{{ a }}</option>{% endfor %}</select>
+  <select name="reason"><option value="">any detector</option>{% for a in reason_codes %}<option {{ 'selected' if a == f.reason }}>{{ a }}</option>{% endfor %}</select>
+  <select name="novelty"><option value="">any novelty</option>{% for a in ['NEW_CANDIDATE', 'NEW_EVIDENCE_FAMILY', 'NEW_TECHNICAL_EVENT', 'PERSISTENCE_TRANSITION', 'DIRECTION_TRANSITION', 'ATTENTION_ESCALATION', 'MULTIPLE_CHANGES', 'CONTINUATION'] %}<option {{ 'selected' if a == f.novelty }}>{{ a }}</option>{% endfor %}</select>
+  <select name="appearance"><option value="">any appearance</option>{% for a in ['FIRST_RECORDED', 'CONSECUTIVE', 'REAPPEARED'] %}<option {{ 'selected' if a == f.appearance }}>{{ a }}</option>{% endfor %}</select>
+  <button type="submit">Apply</button> <a class="btn" href="/history">Reset</a>
+</form>
+<p class="note">Counts how often a stock APPEARED as a Radar candidate. No forward returns or hit rates are computed in Phase 1. Recorded history starts {{ (h.sessions or [None])[0] | d }}.</p>
+<div class="grid g-main">
+<section class="panel">
+  <h2>Appearances</h2>
+  <div class="tablewrap"><table class="sortable">
+    <thead><tr><th class="sort">Date</th><th class="sort">Symbol</th><th class="sort">Sector</th><th class="sort">Attention</th><th>Families</th><th class="sort">Novelty</th><th class="sort">Appearance</th><th>Detectors</th><th class="sort n">Day %</th><th>Story</th></tr></thead>
+    <tbody>{% for r in h.rows %}
+    <tr><td class="mono">{{ r.session }}</td><td><a href="/stock/{{ r.symbol }}?session={{ r.session }}"><b>{{ r.symbol }}</b></a></td><td>{{ r.sector | na }}</td>
+      <td>{{ m.attention(r.attention_level) }}</td><td>{{ m.families(r.families) }}</td><td>{{ m.novelty(r.novelty_type) }}</td><td>{{ m.appearance(r.appearance, r.sessions_since_prior) }}</td>
+      <td class="wrap" style="font-size:11px">{{ r.reason_codes | join(', ') | replace('_', ' ') }}</td>
+      <td class="n" data-v="{{ r.price_change_pct if r.price_change_pct is not none else '' }}">{{ r.price_change_pct | pct }}</td><td>{{ '<span class="b sel">SELECTED</span>' | safe if r.selected else '—' }}</td></tr>
+    {% endfor %}</tbody></table></div>
+  {% if not h.rows %}<p class="note">No appearances match.</p>{% endif %}
+</section>
+<section class="panel">
+  <h2>Frequency in window</h2>
+  <div class="tablewrap"><table class="sortable">
+    <thead><tr><th class="sort">Symbol</th><th class="sort">Sector</th><th class="sort n">Appearances</th><th class="sort">First</th><th class="sort">Last</th><th class="sort n">Stories</th></tr></thead>
+    <tbody>{% for s in h.summary %}<tr><td><a href="/stock/{{ s.symbol }}?session={{ s.last }}">{{ s.symbol }}</a></td><td>{{ s.sector | na }}</td><td class="n" data-v="{{ s.count }}">{{ s.count }}</td><td class="mono">{{ s.first }}</td><td class="mono">{{ s.last }}</td><td class="n" data-v="{{ s.selected }}">{{ s.selected }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+</section>
+</div>
+{% endblock %}

@@ -22,11 +22,12 @@ from .validation import check_text
 ORDER = {a: i for i, a in enumerate(Archetype)}
 SUMMARY_LEAD = {HookMode.POST_MARKET: "Inside:", HookMode.PRE_MARKET: "Before the bell:",
                 HookMode.CUSTOM_SINGLE_STOCK: "Inside:"}
-SECTION_ORDER = ("PULSE", "NIFTY", "FLOWS", "SECTORS", "MOVERS", "RADAR", "AHEAD", "GLOBAL",
+SECTION_ORDER = ("PULSE", "NIFTY", "FLOWS", "SECTORS", "MOVERS", "RADAR", "EXCHANGE", "IPO",
+                 "STRUCTURE", "AHEAD", "GLOBAL",
                  "GIFT", "EVENTS", "PREV", "TECHNICAL", "VOLUME", "RELATIVE", "FUNDAMENTALS")
 # Which sections each archetype's summary mentions first - the ones that pay off its hook.
 SUMMARY_PRIORITY = {
-    Archetype.QUIET_MARKET_HIDDEN_ACTION: ("RADAR", "SECTORS", "MOVERS", "NIFTY"),
+    Archetype.QUIET_MARKET_HIDDEN_ACTION: ("RADAR", "STRUCTURE", "SECTORS", "MOVERS", "NIFTY"),
     Archetype.BIG_MOVE: ("NIFTY", "SECTORS", "MOVERS", "FLOWS", "PREV", "GLOBAL", "TECHNICAL",
                          "VOLUME", "FUNDAMENTALS"),
     Archetype.CONTRAST: ("SECTORS", "FLOWS", "MOVERS", "RADAR", "TECHNICAL", "FUNDAMENTALS",
@@ -86,6 +87,9 @@ def _section_phrase(sec: str, sheet: HookFactSheet) -> str | None:
         "VOLUME": "volume",
         "RELATIVE": "the Nifty comparison",
         "FUNDAMENTALS": f"{int(fund.value)} fundamental figures" if fund else "the fundamentals",
+        "STRUCTURE": "what moved under the surface",
+        "EXCHANGE": "exchange updates",
+        "IPO": "IPO facts",
     }.get(sec)
 
 
@@ -239,6 +243,24 @@ def _post(sheet):
                   f"at least 3x as much.")
         out.append(c)
 
+    # QUIET MARKET, ACTIVITY UNDERNEATH - the public (Market Structure) form: a count over a
+    # named universe, never a stock name (publication.public_hooks.add_structure_facts)
+    st = sheet.fact("structure.unusual")
+    if nifty and "quiet" in nifty.claims and st and st.value >= 5:
+        n, U = int(st.value), st.entity
+        c = _cand(sheet, "post-quiet-structure", Archetype.QUIET_MARKET_HIDDEN_ACTION,
+                  0.60 + 0.10 * min(n, 20) / 20,
+                  ["nifty.move", "structure.unusual"],
+                  {HeroVisual.HEADLINE_NUMBER: {
+                      "label": f"{U} · UNUSUAL VOLUME",
+                      "value": str(sheet.metadata.get("structure_denominator", n)),
+                      "positive": None, "sub": "", "context": f"NIFTY 50 {nifty.display}"}},
+                  pick_beats(sheet, ["NIFTY_CLOSE", ("SECTOR_CONTRAST", "SECTOR_LEADER", "FLOWS")]),
+                  [f"Nifty moved just {nifty.display}. {n} {U} stocks saw unusual volume.",
+                   f"{n} {U} stocks saw unusual volume."],
+                  f"Nifty moved only {nifty.display} (quiet); {st.statement}")
+        out.append(c)
+
     # BIG MOVE
     if nifty and "big" in nifty.claims:
         rank = sheet.fact("nifty.rank20")
@@ -250,7 +272,7 @@ def _post(sheet):
         if up and total and total.value >= 2 and up.value in (0, total.value) and \
                 (up.value == 0) == (nifty.value < 0):
             lines.append(f"Nifty {_verb(nifty.value)} {_abs_display(nifty.display)}. "
-                         f"All {int(total.value)} sector indices {_verb(nifty.value)} too.")
+                         f"All {int(total.value)} tracked sector indices {_verb(nifty.value)} too.")
         lines.append(f"Nifty {_verb(nifty.value)} {_abs_display(nifty.display)} in one session.")
         close = sheet.fact("nifty.close")
         ctx = sheet.fact("nifty.context")
@@ -298,7 +320,7 @@ def _post(sheet):
     flows = [f for f in sheet.facts_of_kind("FLOW") if "opposite" in f.claims]
     if len(flows) == 2:
         a, b = flows
-        verb = lambda f: "bought" if f.value >= 0 else "sold"
+        verb = lambda f: "net buyers" if f.value >= 0 else "net sellers"
         tile = lambda f: {"title": f"{f.entity}s", "name": f"{f.entity}s {verb(f)}",
                           "value": f.display, "numeric": f.value, "positive": f.value >= 0,
                           "note": "Net, cash market"}
@@ -311,8 +333,9 @@ def _post(sheet):
                                       f"RADAR_EVENT:{top_radar}" if top_radar else None,
                                       "RADAR_SWEEP")],
                              exclude=("FLOWS",)),
-                  [f"{a.entity}s {verb(a)} {_abs_display(a.display)}. "
-                   f"{b.entity}s {verb(b)} {_abs_display(b.display)}."],
+                  [f"{a.entity}s were {verb(a)}: {_abs_display(a.display)}. "
+                   f"{b.entity}s were {verb(b)}.",
+                   f"{a.entity}s were {verb(a)}; {b.entity}s were {verb(b)}."],
                   f"{a.entity}s and {b.entity}s moved money in opposite directions.")
         out.append(c)
 

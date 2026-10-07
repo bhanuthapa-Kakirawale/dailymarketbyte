@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Market regime {{ session }}{% endblock %}
+{% block banners %}
+{% set g = rg.snapshot %}
+{% if rg.stale and not (fresh.latest_completed and session < fresh.latest_completed and session != (sessions | last)) %}<div class="banner warn">Regime is for {{ g.session_date }}, older than the latest completed session {{ rg.latest_completed }}.</div>{% endif %}
+{% endblock %}
+{% block content %}
+{% set g = rg.snapshot %}
+<h1>Market regime <span class="sub">session {{ g.session_date }} · {{ g.calculation_version }} · deterministic rules, no model, no score</span></h1>
+<div class="grid g-main">
+<div class="stack">
+  <section class="panel">
+    <h2>Current classification</h2>
+    <dl class="facts">
+      <dt>Regime</dt><dd>{{ m.rlabel(g.regime) }} <span class="dim">reason {{ g.reason_code }}</span></dd>
+      <dt>This session's evidence alone</dt><dd>{{ g.candidate_regime }}</dd>
+      <dt>Previous session's evidence</dt><dd>{{ g.previous_candidate | na }}</dd>
+      <dt>Rule applied</dt><dd style="white-space:normal;font-family:var(--sans)">{{ g.rule_applied }}</dd>
+      <dt>Universe</dt><dd>{{ (g.universe or {}).label | na }} · {{ (g.universe or {}).members | na }} members · constituent list of {{ (g.universe or {}).universe_source_date or (g.universe or {}).membership_from | na }} {{ m.uq(g, true) }}</dd>
+      {% if g.universe_quality != 'POINT_IN_TIME' %}<dt>Universe note</dt><dd class="note" style="white-space:normal;font-family:var(--sans)">{{ (g.universe or {}).universe_note }} This is metadata about the historical reconstruction; it is not part of the regime evidence.</dd>{% endif %}
+    </dl>
+    <div class="whybox"><h2>Why this regime</h2><div>{{ g.explanation }}</div></div>
+    <div class="grid g2" style="margin-top:8px">
+      <div><h2>Supporting evidence</h2><ul class="rg-ev">{% for e in g.supporting_evidence %}<li>{{ e }}</li>{% else %}<li class="dim">none</li>{% endfor %}</ul></div>
+      <div><h2>Conflicting evidence</h2><ul class="rg-ev">{% for e in g.conflicting_evidence %}<li>{{ e }}</li>{% else %}<li class="dim">none</li>{% endfor %}</ul></div>
+    </div>
+    {% if g.missing_dimensions %}<div class="rg-miss">Unavailable dimensions: {{ g.missing_dimensions | join(', ') }}</div>{% endif %}
+  </section>
+
+  <section class="panel">
+    <h2>Dimension details <span class="dim lc">every number below is what the rule read · data as of {{ g.session_date }}</span></h2>
+    {% for x in g.dimensions %}
+    <div class="whybox rg-dim">
+      <h2>{{ x.name }} <span>{{ m.rstate(x.state) }} <span class="dim lc">{{ x.role | lower }}</span></span></h2>
+      <div>{{ x.explanation }}</div>
+      <div class="note mono rg-facts">{% for k, v in x.facts.items() if k not in ('rows', 'days') %}{{ k | replace('_', ' ') }}: {{ v if v is not none else 'n/a' }}{% if not loop.last %} · {% endif %}{% endfor %}</div>
+      {% if x.facts.rows %}<table class="rg-sub"><thead><tr><th>Sector</th><th class="n">Members</th><th class="n">Covered</th><th class="n">Median 20-session %</th><th>Counted</th></tr></thead><tbody>
+        {% for row in x.facts.rows %}<tr><td>{{ row.sector }}</td><td class="n">{{ row.members }}</td><td class="n">{{ row.covered }}</td><td class="n">{{ row.median_return_20d_pct | pct }}</td><td>{{ 'yes' if row.counted else 'no' }}</td></tr>{% endfor %}</tbody></table>{% endif %}
+      {% if x.facts.days %}<table class="rg-sub"><thead><tr><th>Session</th><th class="n">Unusual</th><th class="n">On advancers</th><th class="n">On decliners</th><th class="n">Covered</th></tr></thead><tbody>
+        {% for row in x.facts.days %}<tr><td class="mono">{{ row.session }}</td><td class="n">{{ row.unusual }}</td><td class="n">{{ row.up }}</td><td class="n">{{ row.down }}</td><td class="n">{{ row.covered }} / {{ row.members }}</td></tr>{% endfor %}</tbody></table>{% endif %}
+      <div class="note rg-rule">Rule: {{ x.rule }}</div>
+      <div class="note dim">Source: {{ x.source }}</div>
+    </div>
+    {% endfor %}
+  </section>
+</div>
+
+<div class="stack">
+  <section class="panel">
+    <h2>Recent regime history <span class="dim lc">{{ rg.history | length }} sessions, newest first</span></h2>
+    <div class="rg-filter"><label><input type="checkbox" id="pitonly" onchange="document.getElementById('rghist').classList.toggle('pit-only', this.checked)"> point-in-time universe only</label>
+      · <span class="dim">* = this session's own evidence read differently (confirmation rule; hover) · Univ = universe quality: PIT = point-in-time membership, APPROX = back-dated constituent list (prices still session-bounded)</span></div>
+    <div class="tablewrap" style="max-height:none"><table class="rg-hist" id="rghist"><thead><tr><th>Session</th><th title="universe quality">Univ</th><th>Regime</th><th>Trend</th><th>Brdth</th><th>Sect</th><th>Volm</th><th title="Volatility">Vlty</th></tr></thead><tbody>
+    {% for h in rg.history %}{% set st = {} %}{% for x in h.dimensions %}{% set _ = st.update({x.key: x.state}) %}{% endfor %}
+      <tr class="{{ '' if h.universe_quality == 'POINT_IN_TIME' else 'uq-row-approx' }}"><td class="mono"><a href="/regime?session={{ h.session_date }}">{{ h.session_date }}</a></td>
+        <td>{% if h.universe_quality == 'POINT_IN_TIME' %}<span class="uq uq-pit" title="{{ (h.universe or {}).universe_note }}">PIT</span>{% elif h.universe_quality == 'BACKDATED_UNIVERSE' %}<span class="uq uq-bd" title="Historical constituent membership for this session was unavailable; the earliest stored universe was used. Prices remain session-bounded.">APPROX</span>{% else %}<span class="uq uq-unk" title="{{ (h.universe or {}).universe_note }}">UNKN</span>{% endif %}</td>
+        <td>{{ m.rlabel(h.regime) }}{% if h.candidate_regime != h.regime %}<span class="rg-ev-mark" title="This session's own evidence read {{ h.candidate_regime }}; the confirmation rule kept the regime {{ h.regime }} until a second session agrees.">*</span>{% endif %}</td>
+        {% for k in ('TREND', 'BREADTH', 'SECTORS', 'VOLUME', 'VOLATILITY') %}<td>{{ m.rstate(st.get(k) or 'UNAVAILABLE', true) }}</td>{% endfor %}</tr>
+    {% endfor %}</tbody></table></div>
+  </section>
+
+  <section class="panel">
+    <h2>Regime rules (V1) <span class="dim lc">{{ model_status }}</span></h2>
+    <dl class="facts rg-rules">
+      {% for k, v in regime_rules.items() %}<dt>{{ m.rlabel(k) }}</dt><dd>{{ v }}</dd>{% endfor %}
+      <dt>Confirmation</dt><dd>{{ confirmation_rule }}</dd>
+    </dl>
+    <div class="note" style="margin-top:6px">Thresholds are conventional round numbers checked against the stored history (~6 months) - provisional while history accumulates (volume 65% / 45%: V1_PROVISIONAL). Historical validation uses point-in-time universe sessions only; APPROX sessions are exploratory. Volatility can only block BULLISH; relative strength and institutional flow are context and never decide. The regime never changes Radar candidates, their order or the attention set.</div>
+  </section>
+</div>
+</div>
+{% endblock %}

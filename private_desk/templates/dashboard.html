@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Dashboard {{ session }}{% endblock %}
+{% block banners %}
+{% set c = d.context %}
+{% if not c.market_structure or not c.report or not c.official %}
+<div class="banner warn">Session {{ session }} alignment:
+  {% if not c.report %}canonical report {{ c.report_status }}; {% endif %}
+  {% if not c.market_structure %}no Market Structure artifact; {% endif %}
+  {% if not c.official %}no official-event snapshot; {% endif %}
+  those panels show UNAVAILABLE rather than another session's data.</div>
+{% endif %}
+{% if d.replay.status != 'OK' %}<div class="banner warn">Detector replay unavailable for {{ session }}: {{ d.replay.reason }} - candidate reasons are shown, evidence values are not.</div>{% endif %}
+{% endblock %}
+{% block content %}
+{% set total = d.views | length %}{% set shown = d.attention | length %}{% set cs = d.change_summary %}
+<h1>What deserves attention first? <span class="sub">Session {{ session }} · {{ shown }} attention candidates from {{ total }} Radar candidates ·
+  <a href="/radar?session={{ session }}" class="viewall">View all {{ total }} in Radar →</a></span></h1>
+
+<section class="panel">
+  <h2>Market context <span class="dim lc">regime from deterministic rules over stored data · facts from exactly this session</span></h2>
+  {% set n = d.report.nifty or {} %}{% set r = d.regime %}
+  <div class="ctx">
+  {{ m.regime_card(d.market_regime, session) }}
+  <div>
+  <div class="kv kv-ctx">
+    <div><div class="k">NIFTY 50</div><div class="v">{{ n.close | num }}</div><div class="s">{{ n.change_pct | pct }} · {{ n.close_status or d.report.status }}</div></div>
+    <div><div class="k">NIFTY range</div><div class="v sm">{{ n.low | num }} – {{ n.high | num }}</div><div class="s">open {{ n.open | num }}</div></div>
+    <div><div class="k">Bank NIFTY</div><div class="v">{{ d.report.bank_nifty_change_pct | pct }}</div></div>
+    <div><div class="k">India VIX</div><div class="v">{{ d.report.india_vix | num }}</div><div class="s">{{ d.report.vix_status | na }}</div></div>
+    <div><div class="k">Adv / Dec · NIFTY 200</div><div class="v">{{ r.advances | na }} / {{ r.declines | na }}</div><div class="s">unch {{ r.unchanged | na }} of {{ r.breadth_denominator | na }}</div>{{ m.breadthbar(r.advances, r.declines, r.breadth_denominator) }}</div>
+    <div><div class="k">Unusual volume</div><div class="v">{{ r.unusual_volume | na }} / {{ r.unusual_volume_den | na }}</div><div class="s" title="{{ rules.MS_UNUSUAL_VOLUME_RULE }}">RVOL ≥ 2x</div></div>
+    <div><div class="k">Range events</div><div class="v"><span class="pos">{{ r.range_up | na }}↑</span> <span class="neg">{{ r.range_down | na }}↓</span></div><div class="s">beyond prior 20/50 high/low</div></div>
+    <div><div class="k">Sectors adv / dec</div><div class="v">{{ r.sectors_more_adv | na }} / {{ r.sectors_more_dec | na }}</div><div class="s">of {{ r.sector_count | na }} sectors</div></div>
+    <div><div class="k">FII / DII ₹ Cr</div><div class="v sm">{{ d.report.fii_net_cr | num(0) }} / {{ d.report.dii_net_cr | num(0) }}</div><div class="s">{{ d.report.fii_status | na }}</div></div>
+  </div>
+  {% if d.insights %}<div class="note" style="margin-top:5px">{% for i in d.insights[:3] %}· {{ i.statement }} <span class="dim">(n={{ i.sample_size }})</span> {% endfor %}</div>{% endif %}
+  </div>
+  </div>
+</section>
+
+<section class="panel changed">
+  <h2>What changed today <span class="dim lc">{{ total }} candidates = {{ cs.new }} new + {{ cs.changed }} state change + {{ cs.unchanged }} unchanged · from the Radar's own novelty and recorded history</span></h2>
+  <div class="csum">
+    {% for row in cs.rows %}
+    {% if row.chip %}<a class="cs-tile{{ ' zero' if not row.count }}" href="/radar?session={{ session }}#filter={{ row.chip }}" title="{{ row.rule }} - open the matching Radar candidates">
+    {% else %}<a class="cs-tile{{ ' zero' if not row.count }}" href="#all-changes" title="{{ row.rule }}">{% endif %}
+      <span class="cs-n">{{ row.count }}</span><span class="cs-l">{{ row.label }}</span></a>
+    {% endfor %}
+  </div>
+  {% if d.change_items %}
+  <div class="citems">
+    {% for c in d.change_items %}
+    <a class="citem" href="/stock/{{ c.symbol }}?session={{ session }}">
+      <div class="ci-h"><b class="mono">{{ c.symbol }}</b> <span class="ci-d">{{ c.day_pct | pct }}</span></div>
+      <div class="ci-k">{% for k in c.kinds %}<span class="b {{ 'new' if k == 'NEW' else ('re' if k == 'REAPPEARED' else 'chg') }}">{{ k }}</span>{% endfor %}</div>
+      {% for line in c.lines %}<div class="ci-l">{{ line }}</div>{% endfor %}
+    </a>
+    {% endfor %}
+  </div>
+  {% endif %}
+  <details id="all-changes" class="allchg"><summary>All changes by type ({{ total }} candidates, {{ (d.changes.NO_LONGER_CANDIDATE or []) | length }} no longer candidates)</summary>
+    <div class="changes">
+    {% for key, (label, rule) in change_labels.items() %}{% set items = d.changes.get(key, []) %}{% if items %}
+      <div class="panel" style="padding:5px 8px"><h2 title="{{ rule }}"><span>{{ label }}</span><span class="mono">{{ items | length }}</span></h2>
+        <div class="syms">{% for v in items %}<a href="/stock/{{ v.symbol }}?session={{ session }}">{{ v.symbol }}</a>{% endfor %}</div>
+        <div class="note">{{ rule }}</div></div>
+    {% endif %}{% endfor %}
+    </div>
+  </details>
+</section>
+
+<div class="grid g-dash">
+  <section class="panel">
+    <h2>Today's attention set <span class="dim lc">· showing {{ shown }} attention candidates from {{ total }} Radar candidates · requires owner review, not a recommendation</span>
+      <a href="/radar?session={{ session }}" class="viewall" style="float:right;text-transform:none;letter-spacing:0">View all {{ total }} in Radar →</a></h2>
+    {% set att_labels = {} %}{% for a in d.attention %}{% set _ = att_labels.update({a.view.symbol: a.labels}) %}{% endfor %}
+    {% with views=d.attention | map(attribute='view') | list, table_id='attention', compact=true, att_labels=att_labels %}{% include "_radar_table.html" %}{% endwith %}
+    <div class="note" style="margin-top:6px">Selection rule (deterministic, existing Radar facts only): 1 story selected by the Radar's editorial selector → 2 all three evidence families → 3 volume + structure → 4 new to the Radar (first recorded, then longest absence); tie-break = existing Radar order. Up to {{ attention_max }}; a quiet day is filled to {{ attention_min }} with other state changes. No score is computed.</div>
+  </section>
+
+  <section class="panel">
+    <h2>Sector pulse <span class="dim lc">NIFTY 200 · NSE Industry sectors</span></h2>
+    {% if d.sectors %}
+    <table class="sortable">
+      <thead><tr><th class="sort">Sector</th><th>Breadth</th><th class="sort n">Adv</th><th class="sort n">Dec</th><th class="sort n" title="median 1D % of covered constituents (desk-derived)">Med %</th><th class="sort n">UV</th><th class="sort n">Radar</th></tr></thead>
+      <tbody>{% for s in d.sectors %}
+      <tr><td><a href="/sectors?session={{ session }}#{{ s.sector }}">{{ s.sector }}</a> <span class="dim">{{ s.constituents }}</span></td>
+        <td>{{ m.breadthbar(s.advances, s.declines, s.breadth_covered) }}</td>
+        <td class="n" data-v="{{ s.advances }}">{{ s.advances | na }}</td><td class="n" data-v="{{ s.declines }}">{{ s.declines | na }}</td>
+        <td class="n" data-v="{{ s.median_change_pct if s.median_change_pct is not none else '' }}">{{ s.median_change_pct | pct }}</td>
+        <td class="n" data-v="{{ s.unusual_volume }}">{{ s.unusual_volume | na }}</td><td class="n" data-v="{{ s.radar_candidates }}">{{ s.radar_candidates }}</td></tr>
+      {% endfor %}</tbody>
+    </table>
+    {% else %}<p class="na">DATA UNAVAILABLE - {{ d.ms.reason }}</p>{% endif %}
+  </section>
+</div>
+
+<section class="panel">
+  <h2>Institutional flow <span class="dim lc">NSE provisional · CDSL depository-reported · NSDL fortnightly sector - context only</span>
+    <a href="/institutional?session={{ session }}" class="viewall" style="float:right;text-transform:none;letter-spacing:0">Full detail →</a></h2>
+  {% set inst = d.institutional %}
+  <div class="grid g3">
+    <div>
+      <div class="dim lc">NSE · latest provisional session</div>
+      {% if inst.nse.latest %}
+      <div class="kv kv-ctx"><div><div class="k">FPI net</div><div class="v sm">{{ inst.nse.latest.fpi_net_investment | num(0) }}</div></div>
+        <div><div class="k">DII net</div><div class="v sm">{{ inst.nse.latest.dii_net_investment | num(0) }}</div></div></div>
+      <div class="note">{{ inst.nse.latest.report_key }} · <span class="b {{ 'ok' if inst.nse.freshness == 'FRESH' else 'warn' }}">{{ inst.nse.freshness }}</span></div>
+      {% else %}<p class="na">DATA UNAVAILABLE</p>{% endif %}
+    </div>
+    <div>
+      <div class="dim lc">CDSL · latest depository report</div>
+      {% if inst.cdsl.latest %}
+      <div class="note">Report date {{ inst.cdsl.latest.report_date }} · <span class="b {{ 'ok' if inst.cdsl.freshness == 'FRESH' else 'warn' }}">{{ inst.cdsl.freshness }}</span></div>
+      <div class="note">{{ inst.cdsl.categories | length }} category/route row(s) - gross purchases / gross sales</div>
+      {% else %}<p class="na">DATA UNAVAILABLE</p>{% endif %}
+    </div>
+    <div>
+      <div class="dim lc">NSDL · latest fortnightly sector report</div>
+      {% if inst.nsdl.latest %}
+      <div class="note">{{ inst.nsdl.latest.period_note }} · <span class="b {{ 'ok' if inst.nsdl.freshness == 'FRESH' else 'warn' }}">{{ inst.nsdl.freshness }}</span></div>
+      <div class="note">{{ inst.nsdl.sectors | length }} sector(s) net investment</div>
+      {% else %}<p class="na">DATA UNAVAILABLE</p>{% endif %}
+    </div>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Market events <span class="dim lc">earnings · IPO · OFS · govt auctions · buyback · open offer · delisting - context only</span>
+    <a href="/events?session={{ session }}" class="viewall" style="float:right;text-transform:none;letter-spacing:0">Full detail →</a></h2>
+  {% set me = d.market_events %}
+  {% if me.any_today %}
+  <p>{{ me.any_today }} event(s) today: {% for fam, n in me.today_counts.items() %}{{ n }} {{ fam | replace('_', ' ') | lower }}{% if not loop.last %}, {% endif %}{% endfor %}</p>
+  {% else %}<p class="na">No market events recorded for today.</p>{% endif %}
+</section>
+{% endblock %}

@@ -162,6 +162,9 @@ SECTION_PROMISES = {
     "PREV": ("previous session", "last session"),
     "RELATIVE": ("vs nifty", "relative"),
     "WATCH": ("watch",),
+    "STRUCTURE": ("under the surface", "surface", "breadth", "unusual volume"),
+    "EXCHANGE": ("exchange",),
+    "IPO": ("ipo", "primary market"),
 }
 # Sector names that count as entities wherever they appear (even when not in the sheet), so
 # a line cannot name a sector the facts never mentioned.

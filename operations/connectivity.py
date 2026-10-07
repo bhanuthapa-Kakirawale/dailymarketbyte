@@ -60,6 +60,22 @@ def _probe(name: str, url: str, fn, required: bool) -> dict:
             "required": required, "elapsed_ms": round((time.time() - t0) * 1000)}
 
 
+NOT_ATTEMPTED = "NOT_ATTEMPTED"     # the request was never made (not a failure of the source)
+
+
+def classify_exception(exc: BaseException) -> str:
+    """Connectivity verdict for an exception raised while READING a source: an HTTP status the
+    server sent (BLOCKED / HTTP_ERROR), a timeout, a refused/reset connection (BLOCKED) - or
+    REACHABLE when the server answered but the body could not be decoded (a parse problem, not
+    a connectivity one)."""
+    code = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(code, int):
+        return _http_status(code) or REACHABLE
+    if isinstance(exc, ValueError):                 # json / payload decode: the source answered
+        return REACHABLE
+    return _classify_exception(exc)
+
+
 def _http_status(code: int) -> str | None:
     if code == 200:
         return None
@@ -185,5 +201,6 @@ def write_diagnostic(result: dict, path: str) -> str:
     return path
 
 
-__all__ = ["run_diagnostic", "write_diagnostic", "REACHABLE", "BLOCKED", "TIMEOUT",
-           "PARSE_ERROR", "HTTP_ERROR", "NO_DATA", "DIAGNOSTIC_VERSION"]
+__all__ = ["run_diagnostic", "write_diagnostic", "classify_exception", "REACHABLE", "BLOCKED",
+           "TIMEOUT", "PARSE_ERROR", "HTTP_ERROR", "NO_DATA", "NOT_ATTEMPTED",
+           "DIAGNOSTIC_VERSION"]

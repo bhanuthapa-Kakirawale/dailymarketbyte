@@ -89,7 +89,7 @@ def main(argv=None):
     os.makedirs(od, exist_ok=True)
 
     plan, pres, rp, rr, ev, uni, src = r.load_inputs(REPORT, os.path.join(OUT_DIR, "radar"), SESSION)
-    sb = build_storyboard(plan, pres, rp, rr, ev, uni, src)
+    sb = build_storyboard(plan, pres, rp, rr, ev, uni, src, profile="PRIVATE_ANALYTICS")
     comp = Composer(sb)
     scan = scan_publication(sb.public_text())
 

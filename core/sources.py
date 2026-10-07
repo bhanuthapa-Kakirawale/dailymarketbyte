@@ -128,6 +128,10 @@ SRC_NSE_BOARD_MEETINGS = "nse_corp_board_meetings"  # NSE's board-meeting prior 
 SRC_NSE_OFS = "nse_ofs_live"                        # NSE's own Offer For Sale active/past feed
 # Market Events Engine V1 (P2C - live BUYBACK)
 SRC_NSE_CORPORATE_ACTIONS = "nse_corporate_actions"  # NSE's structured corporate-actions feed
+# Market Events Engine V1 (P2D - live OPEN_OFFER)
+SRC_NSE_SAST_ANNOUNCEMENTS = "nse_sast_open_offer_announcements"  # NSE's corporate-announcements
+                                                                    # feed, desc == "Public
+                                                                    # Announcement-Open Offer"
 
 _REGISTRY: dict[str, SourceMetadata] = {
     SRC_NSE: SourceMetadata(
@@ -325,6 +329,21 @@ _REGISTRY: dict[str, SourceMetadata] = {
               "daily-buyback disclosure feed for an explicit 'currently open' signal. Used for "
               "BUYBACK (P2C); route/price/quantity are read only when a filing's own text "
               "states them explicitly, never inferred."),
+    SRC_NSE_SAST_ANNOUNCEMENTS: SourceMetadata(
+        source_name=SRC_NSE_SAST_ANNOUNCEMENTS, source_type=SourceType.PRIMARY,
+        source_family=SourceFamily.EXCHANGE, independence_group=GROUP_NSE,
+        retrieval_method="https GET www.nseindia.com/api/corporate-announcements?index=equities"
+                         "&from_date=...&to_date=...",
+        reference="https://www.nseindia.com/companies-listing/corporate-filings-announcements",
+        market_timestamp_available=False, display_rights_status="UNREVIEWED",
+        notes="NSE's general corporate-disclosure feed (the SAME feed BUYBACK already reads as "
+              "its secondary source), filtered to the exact category `desc == \"Public "
+              "Announcement-Open Offer\"` - an explicit, NSE-assigned classification, not "
+              "inferred from acquisition/shareholding language. Used for OPEN_OFFER (P2D). "
+              "Every open-offer lifecycle filing (PA/DPS/corrigendum/offer-opening/post-offer "
+              "advertisement) shares this one `desc` value, so lifecycle stage is read from "
+              "the filing's own stated regulation/text (e.g. Regulation 18(7) = offer opening, "
+              "18(12) = post-offer advertisement), never inferred from price or holding %."),
 }
 
 
@@ -386,6 +405,7 @@ __all__ = ["SourceMetadata", "SourceFamily", "source_metadata", "independence_gr
            "SRC_FED_CALENDAR", "SRC_NSE_CONSTITUENTS", "SRC_NSE_FO_BAN", "SRC_NSE_SURVEILLANCE",
            "SRC_NSE_IPO", "SRC_SEBI_OFFER_DOC", "SRC_MARKET_STRUCTURE", "SRC_NSE_FIIDII_API",
            "SRC_CDSL_FPI_DAILY", "SRC_NSDL_FPI_FORTNIGHTLY", "SRC_NSE_BOARD_MEETINGS",
-           "SRC_NSE_OFS", "SRC_NSE_CORPORATE_ACTIONS", "GROUP_NSE", "GROUP_NSEIX",
+           "SRC_NSE_OFS", "SRC_NSE_CORPORATE_ACTIONS", "SRC_NSE_SAST_ANNOUNCEMENTS",
+           "GROUP_NSE", "GROUP_NSEIX",
            "GROUP_RBI", "GROUP_FED", "GROUP_YAHOO", "GROUP_GEMINI", "GROUP_INTERNAL",
            "GROUP_DEMO", "GROUP_CDSL", "GROUP_NSDL", "GROUP_UNKNOWN", "NEWS_GROUP_PREFIX"]

@@ -89,15 +89,16 @@ official source is unreachable or unverified, the family returns `SOURCE_UNAVAIL
 | OFS | NSE's own OFS mechanism feed (`market_events/sources/ofs.py`) | **LIVE** - `/api/live-ofs-active-issues` + `/api/live-ofs-past-issues`, confirmed reachable 2026-10-06; every row IS an OFS by construction (no text classification needed, unlike EARNINGS) |
 | BUYBACK | NSE's structured corporate-actions feed + corporate-announcements + daily-buyback disclosure (`market_events/sources/buyback.py`) | **LIVE** - `/api/corporates-corporateActions?index=equities` (`subject == "Buy Back"`, an exact categorical match) is PRIMARY, confirmed reachable 2026-10-07; cross-referenced with `/api/corporate-announcements` and `/api/corporates-daily-buyback?` for lifecycle status and route/price/quantity when explicitly stated |
 | GOVT_SECURITIES_AUCTION | RBI's semi-annual G-Sec/T-Bill borrowing calendar | `NOT_SUPPORTED_YET` (planned: hand-maintained controlled file, see Known limitations) |
-| OPEN_OFFER | NSE/BSE announcements + SEBI SAST filings (often unstructured PDFs) | `NOT_SUPPORTED_YET` - deferred |
-| DELISTING | NSE/BSE delisting announcements | `NOT_SUPPORTED_YET` - deferred |
+| OPEN_OFFER | NSE's corporate-announcements feed, `desc == "Public Announcement-Open Offer"` (`market_events/sources/open_offer.py`) | **LIVE** - confirmed reachable 2026-10-07; an exact categorical match, same feed BUYBACK already reads as its secondary source. Price/shares/%/dates are not in the feed's own text and stay absent - see "OPEN_OFFER semantics" above |
+| DELISTING | NSE/BSE delisting announcements | `NOT_SUPPORTED_YET` - deferred (same `desc` taxonomy already shows `"Delisting"`/`"Voluntary Delisting"` categories - a head start, not yet built) |
 
 Governing rule (already established via `official_snapshots.NOT_SUPPORTED`, and the project's
 "reliability over feature count" posture): **no live adapter is written against an endpoint
 that has not actually been verified reachable from this environment.** `market_events/sources/`
-holds `DEFAULT_FETCHERS`, one per family; EARNINGS, OFS and BUYBACK now map to real adapters
-(`market_events.sources.earnings.fetch_earnings`, `market_events.sources.ofs.fetch_ofs`,
-`market_events.sources.buyback.fetch_buyback`), IPO's stub carries an honest reason ("sourced
+holds `DEFAULT_FETCHERS`, one per family; EARNINGS, OFS, BUYBACK and OPEN_OFFER now map to real
+adapters (`market_events.sources.earnings.fetch_earnings`, `market_events.sources.ofs.fetch_ofs`,
+`market_events.sources.buyback.fetch_buyback`, `market_events.sources.open_offer.fetch_open_offer`),
+IPO's stub carries an honest reason ("sourced
 via `ipo_watch` by design, never acquired by this engine" - not "unreachable", since it IS
 reachable, just intentionally out of this engine's scope), and every other family stays the
 generic `NOT_SUPPORTED_YET` stub carrying an explicit `not_supported_yet = True` marker (so Data
@@ -234,6 +235,66 @@ no live example was seen this pass, so it is fixture-tested only.
 BUYBACK never uses Chittorgarh/Groww/Moneycontrol or any other third-party tracker - all three
 endpoints are NSE's own.
 
+## OPEN_OFFER semantics (`market_events/sources/open_offer.py`)
+
+**Discovery (P2D, 2026-10-07):** real navigation first ruled out a dedicated path - NSE's
+"Corporate Filings - Offer Documents" page (`/companies-listing/corporate-filings-offer-documents`)
+and its own JS controller (`offer-document.js`) turned out to be about IPO/FPO prospectuses
+(abridged-prospectus lookups), not takeover open offers; NSE's structured
+`corporates-corporateActions` feed (BUYBACK's PRIMARY source) was probed with a full-year window
+and carries **zero** open-offer rows - an open offer is acquirer-driven under SEBI (SAST)
+Regulations, 2011, never a company corporate action. SEBI's own site
+(`sebi.gov.in/sebi_data/commondocs/...`) hosts only the underlying PDFs (Public
+Announcement/Detailed Public Statement/Letter of Offer), no JSON/API. The one genuine official,
+machine-readable source turned out to be the SAME general corporate-announcements feed BUYBACK
+already reads as its secondary source (`/api/corporate-announcements?index=equities`), filtered
+to the exact category `desc == "Public Announcement-Open Offer"` - confirmed live with a 90-day
+window (2026-07-09 → 2026-10-07): 9 real rows across 7 distinct target companies, e.g. G-TEC
+JAINX EDUCATION LIMITED (`GTECJAINX`, Public Announcement 29-Sep-2026 then Detailed Public
+Statement 30-Sep-2026 - the SAME cycle) and Shankara Building Products Limited (`SHANKARA`,
+Public Announcement 15-Jul-2026 then an offer-opening announcement/corrigendum under Regulation
+18(7) on 04-Sep-2026 - the SAME cycle, 51 days later).
+
+Every open-offer lifecycle filing - PA, DPS, draft/final Letter of Offer, corrigendum, the
+offer-opening announcement, the post-offer advertisement, a withdrawal - shares this ONE `desc`
+value (unlike BUYBACK's 4-value lifecycle set), so lifecycle stage is read from the filing's own
+stated text/regulation, never a separate categorical field:
+
+* `regulation 18(7)` / "offer opening" → `OPEN` (Regulation 18(7) of SEBI (SAST) Regulations,
+  2011 is literally the offer-opening-announcement regulation - explicit, not inferred)
+* `regulation 18(12)` / "post offer advertisement" → `COMPLETED` (Regulation 18(12) is literally
+  the post-offer-advertisement regulation; real example: Niraj Cement Structurals Limited,
+  20-Aug-2026)
+* "withdrawal"/"lapsed" → `WITHDRAWN` (fixture-tested only; no live example seen this pass)
+* anything else (PA/DPS/draft or final Letter of Offer/an unflagged corrigendum) → `ANNOUNCED`
+
+**Acquirer** is read ONLY from the explicit phrase `"made by <name>, the acquirer"` - the real
+BLISSGVS/Anupam Rasayan Limited addendum states it this way; a filing naming only its submitting
+intermediary/manager (the common case) leaves `acquirer` absent, never guessed from that list.
+**Offer price, shares tendered, percentage sought, and open/close tendering dates are not present
+in any of the 9 real rows'** one-line `attchmntText` - those numbers live in the linked PDF
+(`attchmntFile`), which this engine does not parse (the same "feed's own stated text only" limit
+EARNINGS/OFS/BUYBACK already have for anything beyond their own structured fields). Those fields
+stay `null`/absent, honestly, rather than fabricated or scraped from a PDF.
+
+**Event identity reuses EARNINGS/OFS/BUYBACK's `needs_lookup`/`lookup_fn` contract with zero new
+shared code**: a symbol's latest non-terminal open-offer event is reused across multiple filings
+of one cycle (GTECJAINX, SHANKARA above); once a cycle reaches `COMPLETED`/`WITHDRAWN`
+(terminal), the existing `TERMINAL_STATUSES` filter in `_lookup_open_event` already makes the
+next genuinely new open offer for that symbol mint a fresh `event_key`. One addition beyond
+BUYBACK's pattern: because a cycle can span weeks/months while each capture only requests a
+trailing `lookback_days` (10-day) window, status is carried forward NON-REGRESSIVELY - each
+event's `facts` remember the most-advanced stage any filing has ever stated for it
+(`stage_evidence`), and a later run that only re-sees an older, less-advanced filing never
+downgrades it back.
+
+OPEN_OFFER never uses Chittorgarh/Groww/Moneycontrol, taxguru.in or any other third-party
+tracker - the one endpoint used is NSE's own, already relied on by BUYBACK.
+
+**Bonus finding, out of scope:** the same `desc` taxonomy also carries `"Delisting"` and
+`"Voluntary Delisting"` as their own exact categories - a ready-made head start for a future
+DELISTING packet, not investigated further here (DELISTING remains `NOT_SUPPORTED_YET`).
+
 ## Revisions and change detection
 
 `market_events/store.py` mirrors `institutional_flows/store.py` exactly, keyed by
@@ -360,9 +421,15 @@ owner-confirmed).
   corporate-actions feed (`subject == "Buy Back"`, an exact categorical match - stronger
   evidence than either EARNINGS or OFS's text/listing-based classification), cross-referenced
   with the corporate-announcements and daily-buyback feeds. See "BUYBACK semantics" above.
-* **OPEN_OFFER/DELISTING remain deferred**, though note the corporate-announcements taxonomy
-  confirms a `Public Announcement-Open Offer` category exists and is reachable through the same
-  feed - a head start for that later packet, not re-investigated here.
+* **OPEN_OFFER is now live (P2D, 2026-10-07)**, using the exact `Public Announcement-Open Offer`
+  category in the corporate-announcements feed that the prior pass (P2A) had already spotted as
+  a head start. Reachability from the actual production runner is unverified for the same
+  general reason as EARNINGS (GitHub Actions runners are known to be blocked for
+  `nseindia.com`); a `SOURCE_UNAVAILABLE` there is a normal, handled outcome. Offer
+  price/shares/percentage/tendering dates are not present in the feed's own text and are never
+  fabricated - see "OPEN_OFFER semantics" above. **DELISTING remains deferred**, though the same
+  `desc` taxonomy confirms `"Delisting"`/`"Voluntary Delisting"` categories exist and are
+  reachable through this same feed - a head start for that later packet, not built here.
 * **GOVT_SECURITIES_AUCTION** (P2B): RBI's own semi-annual G-Sec/T-Bill borrowing calendar is
   published as a document covering the whole half-year, making a hand-maintained controlled
   file (mirroring `data/official_events.json`'s fail-closed loader in `core/event_calendar.py`)

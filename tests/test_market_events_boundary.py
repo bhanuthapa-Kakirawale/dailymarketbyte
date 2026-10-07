@@ -134,15 +134,16 @@ def test_source_failure_never_invents_a_plausible_event(tmp_path):
 
 
 def test_not_supported_yet_family_records_attempt_without_counting_as_failure(tmp_path):
-    """OPEN_OFFER (not EARNINGS/OFS/BUYBACK - each of those now has a real, live-calling
-    fetcher since P2A/P2B/P2C, and this test must never make a network call)."""
+    """GOVT_SECURITIES_AUCTION (not EARNINGS/OFS/BUYBACK/OPEN_OFFER - each of those now has a
+    real, live-calling fetcher since P2A/P2B/P2C/P2D, and this test must never make a network
+    call)."""
     from market_events.service import MarketEventsService
     from market_events.store import latest_attempts
 
-    svc = MarketEventsService(str(tmp_path))     # default fetchers - OPEN_OFFER still NOT_SUPPORTED_YET
+    svc = MarketEventsService(str(tmp_path))     # default fetchers - this family still NOT_SUPPORTED_YET
     res = svc.capture(dt.datetime(2026, 10, 5, 19, 30, tzinfo=IST), "REPORT_JOB",
-                      families=("OPEN_OFFER",))
-    assert res["results"]["OPEN_OFFER"]["status"] == "NOT_SUPPORTED_YET"
+                      families=("GOVT_SECURITIES_AUCTION",))
+    assert res["results"]["GOVT_SECURITIES_AUCTION"]["status"] == "NOT_SUPPORTED_YET"
     attempts = latest_attempts(str(tmp_path))
     assert any(a.get("status") == "NOT_SUPPORTED_YET" for a in attempts)
 
@@ -191,3 +192,28 @@ def test_buyback_replay_never_calls_capture_fn_and_respects_cutoff(tmp_path):
     assert calls == []
     assert ctx.events["BUYBACK"] == []    # written AFTER the cutoff - never shown as available
     assert ctx.status["BUYBACK"] == "HISTORICAL_SNAPSHOT_UNAVAILABLE"
+
+
+# --------------------------------------------------------------------------- OPEN_OFFER replay (P2D)
+def test_open_offer_replay_never_calls_capture_fn_and_respects_cutoff(tmp_path):
+    """Same generic replay/point-in-time mechanism EARNINGS/OFS/BUYBACK already prove above,
+    demonstrated explicitly for OPEN_OFFER - a family-agnostic guarantee, not a per-family
+    reimplementation."""
+    from market_events.models import OPEN_OFFER, SCHEMA_VERSION, SUCCESS, MarketEvent
+    from market_events.store import write_revision
+
+    ev = MarketEvent(schema_version=SCHEMA_VERSION, family=OPEN_OFFER,
+                     event_key="OPEN_OFFER:DEMOOO:x", symbol="DEMOOO", company="Demo Target Ltd",
+                     status="ANNOUNCED", sub_type=None, data_as_of="2026-10-05",
+                     source_name="nse_sast_open_offer_announcements", source_reference="x",
+                     first_retrieved_at="2026-10-05T23:00:00+05:30", status_capture=SUCCESS)
+    write_revision(str(tmp_path), ev)
+
+    from market_events.context import load_market_events
+    calls = []
+    ctx = load_market_events(str(tmp_path), cutoff=dt.datetime(2026, 10, 5, 7, 45, tzinfo=IST),
+                             live=False, on_or_before=dt.date(2026, 10, 5),
+                             families=("OPEN_OFFER",), capture_fn=lambda f: calls.append(f))
+    assert calls == []
+    assert ctx.events["OPEN_OFFER"] == []     # written AFTER the cutoff - never shown as available
+    assert ctx.status["OPEN_OFFER"] == "HISTORICAL_SNAPSHOT_UNAVAILABLE"

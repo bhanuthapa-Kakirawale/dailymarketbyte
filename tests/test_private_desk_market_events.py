@@ -113,6 +113,21 @@ def test_stock_page_official_events_card_extended_not_duplicated(client,
     assert r.text.count("H · Official events") == 1
 
 
+def test_stock_page_shows_open_offer_with_acquirer(client, desk_out_with_market_events):
+    """OPEN_OFFER (P2D) associates with its target company's stock page, same as
+    EARNINGS/BUYBACK - the acquirer fact is shown, never a fabricated one."""
+    r = client.get("/stock/SYMB")
+    assert r.status_code == 200
+    assert "OPEN OFFER" in r.text.upper()
+    assert "Acquirer Co" in r.text
+
+
+def test_events_page_shows_open_offer_tag(client, desk_out_with_market_events):
+    r = client.get("/events")
+    assert "OPEN OFFER" in r.text.upper()
+    assert "SYMB" in r.text
+
+
 def test_govt_auction_never_attached_to_a_stock(client, desk_out_with_market_events):
     """GOVT_SECURITIES_AUCTION is market-wide (symbol=None) - it must never appear on a stock
     page's per-symbol official-events card."""

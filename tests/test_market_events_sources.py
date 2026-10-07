@@ -142,23 +142,25 @@ def test_parse_error_is_recorded_and_never_written(tmp_path):
 
 
 def test_not_supported_yet_every_family_by_default(tmp_path):
-    """EARNINGS (P2A), OFS (P2B) and BUYBACK (P2C) are now the three exceptions with real,
-    live-calling fetchers; IPO's stub stays NOT_SUPPORTED_YET-shaped by design (it is never
-    acquired by this engine - see its own reworded reason string) and every other family is
-    still genuinely unsupported. EARNINGS/OFS/BUYBACK are excluded from this capture
-    specifically so this test never makes a live network call (tests/ stays fully offline) -
-    see each adapter's own section further down this file for its offline, fixture-based
-    coverage."""
-    from market_events.models import ALL_FAMILIES, BUYBACK, EARNINGS, OFS
+    """EARNINGS (P2A), OFS (P2B), BUYBACK (P2C) and OPEN_OFFER (P2D) are now the four exceptions
+    with real, live-calling fetchers; IPO's stub stays NOT_SUPPORTED_YET-shaped by design (it is
+    never acquired by this engine - see its own reworded reason string) and every other family
+    is still genuinely unsupported. EARNINGS/OFS/BUYBACK/OPEN_OFFER are excluded from this
+    capture specifically so this test never makes a live network call (tests/ stays fully
+    offline) - see each adapter's own section further down this file for its offline,
+    fixture-based coverage."""
+    from market_events.models import ALL_FAMILIES, BUYBACK, EARNINGS, OFS, OPEN_OFFER
     from market_events.service import MarketEventsService
     from market_events.sources import DEFAULT_FETCHERS
 
     assert not getattr(DEFAULT_FETCHERS[EARNINGS], "not_supported_yet", False)
     assert not getattr(DEFAULT_FETCHERS[OFS], "not_supported_yet", False)
     assert not getattr(DEFAULT_FETCHERS[BUYBACK], "not_supported_yet", False)
+    assert not getattr(DEFAULT_FETCHERS[OPEN_OFFER], "not_supported_yet", False)
 
     svc = MarketEventsService(str(tmp_path))
-    still_unsupported = tuple(f for f in ALL_FAMILIES if f not in (EARNINGS, OFS, BUYBACK))
+    still_unsupported = tuple(f for f in ALL_FAMILIES
+                              if f not in (EARNINGS, OFS, BUYBACK, OPEN_OFFER))
     res = svc.capture(NOW, "REPORT_JOB", families=still_unsupported)
     for family in still_unsupported:
         assert res["results"][family]["status"] == "NOT_SUPPORTED_YET"
@@ -645,3 +647,294 @@ def test_buyback_source_defaults_to_review_required_rights():
     from core.sources import SRC_NSE_CORPORATE_ACTIONS
     from publication.rights import rights_for
     assert rights_for(SRC_NSE_CORPORATE_ACTIONS).status.value == "REVIEW_REQUIRED"
+
+
+# ---------------------------------------------------------------------- OPEN_OFFER adapter (P2D)
+# Fixtures below are literal shapes from REAL rows pulled live from NSE's own
+# corporate-announcements endpoint this session (2026-10-07), filtered to
+# desc == "Public Announcement-Open Offer" - never re-fetched during a test run. Company/text
+# details (G-TEC JAINX's same-cycle PA+DPS, Shankara's offer-opening corrigendum, Niraj's
+# post-offer advertisement, Bliss GVS's acquirer-named addendum) are the real examples found
+# during discovery; wording is trimmed to the sentence that carries the explicit fact, never
+# paraphrased into a different claim.
+_OO_ROW_GTEC_PA = {
+    "symbol": "GTECJAINX", "sm_name": "G-TEC JAINX EDUCATION LIMITED",
+    "desc": "Public Announcement-Open Offer",
+    "attchmntText": ("Navigant Corporate Advisors Limited has Submitted to the Exchange a copy "
+                     "of Public Announcement under Regulation 3(1) and 3(3) read with "
+                     "Regulations 13, 14 and 15(1) of the SEBI (SAST) Regulations, 2011."),
+    "an_dt": "29-Sep-2026 11:21:17",
+}
+_OO_ROW_GTEC_DPS = {
+    "symbol": "GTECJAINX", "sm_name": "G-TEC JAINX EDUCATION LIMITED",
+    "desc": "Public Announcement-Open Offer",
+    "attchmntText": ("Navigant Corporate Advisors Limited has Submitted to the Exchange a copy "
+                     "of detailed public statement to the shareholders of G-TEC JAINX EDUCATION "
+                     "LIMITED (Target Company)."),
+    "an_dt": "30-Sep-2026 11:31:03",
+}
+_OO_ROW_SHANKARA_PA = {
+    "symbol": "SHANKARA", "sm_name": "Shankara Building Products Limited",
+    "desc": "Public Announcement-Open Offer",
+    "attchmntText": ("Corporate Professionals Capital Private Ltd has submitted to the Exchange "
+                     "a copy of Public Announcement under Regulation 3(1) read with Regulation "
+                     "3(3), Regulation 3(2) and Regulation 4 of SEBI (SAST) Regulations, 2011."),
+    "an_dt": "15-Jul-2026 19:22:10",
+}
+_OO_ROW_SHANKARA_OPENING = {
+    "symbol": "SHANKARA", "sm_name": "Shankara Building Products Limited",
+    "desc": "Public Announcement-Open Offer",
+    "attchmntText": ("Corporate Professionals Capital Private Limited has Submitted to the "
+                     "Exchange a copy of offer opening public announcement and corrigendum to "
+                     "the detailed public statement under Regulation 18(7) of SEBI (SAST) "
+                     "Regulations, 2011 for the attention of the shareholders of the Shankara "
+                     "Building Products Limited (Target Company)."),
+    "an_dt": "04-Sep-2026 12:15:23",
+}
+_OO_ROW_NIRAJ_POST_OFFER = {
+    "symbol": "NIRAJ", "sm_name": "Niraj Cement Structurals Limited",
+    "desc": "Public Announcement-Open Offer",
+    "attchmntText": ("Navigant Corporate Advisors Limited has Submitted to the Exchange a copy "
+                     "of post offer advertisement in terms of Regulation 18(12) of SEBI SAST "
+                     "(Regulations), 2011 of Niraj Cement Structurals Limited (Target Company)."),
+    "an_dt": "20-Aug-2026 12:22:21",
+}
+_OO_ROW_BLISSGVS_ACQUIRER = {
+    "symbol": "BLISSGVS", "sm_name": "Bliss GVS Pharma Limited",
+    "desc": "Public Announcement-Open Offer",
+    "attchmntText": ("SBI Capital Markets Limited has informed to the Exchange about Addendum "
+                     "to Public Announcement and Detailed Public Statement for the Open Offer "
+                     "made by Anupam Rasayan Limited, the acquirer for the addition of PAC."),
+    "an_dt": "20-Jul-2026 12:54:09",
+}
+_OO_ROW_ACQUISITION_NON_OPEN_OFFER = {
+    "symbol": "XYZCORP", "sm_name": "XYZ Corp Ltd", "desc": "Acquisition",
+    "attchmntText": "XYZ Corp Ltd has acquired a 30% stake in ABC Ltd.",
+    "an_dt": "01-Oct-2026 10:00:00",
+}
+_OO_ROW_SAST_DISCLOSURE_NON_OPEN_OFFER = {
+    "symbol": "XYZCORP", "sm_name": "XYZ Corp Ltd",
+    "desc": "Disclosure under SEBI Takeover Regulations",
+    "attchmntText": "Disclosure of change in shareholding under Regulation 29(1).",
+    "an_dt": "01-Oct-2026 10:00:00",
+}
+_OO_ROW_WITHDRAWN = {
+    "symbol": "WDOFFER", "sm_name": "Withdrawn Offer Ltd",
+    "desc": "Public Announcement-Open Offer",
+    "attchmntText": "The acquirer has announced the withdrawal of the open offer.",
+    "an_dt": "10-Aug-2026 10:00:00",
+}
+
+
+def _oo_payload(rows=()):
+    class FakeNSE:
+        def get(self, path):
+            return list(rows)
+    return FakeNSE()
+
+
+def test_open_offer_adapter_classifies_exact_desc_public_announcement_open_offer():
+    """`desc` is an exact categorical match - never a free-text search."""
+    from market_events.sources.open_offer import fetch_open_offer
+    res = fetch_open_offer("2026-10-07T19:00:00+05:30", nse=_oo_payload([_OO_ROW_GTEC_PA]))
+    assert res.status == "SUCCESS"
+    assert len(res.events) == 1
+    assert res.events[0].symbol == "GTECJAINX"
+
+
+def test_open_offer_adapter_rejects_generic_acquisition_and_sast_disclosure_rows():
+    """Generic 'Acquisition'/'Disclosure under SEBI Takeover Regulations' desc values are never
+    classified as OPEN_OFFER - only the exact category is."""
+    from market_events.sources.open_offer import fetch_open_offer
+    res = fetch_open_offer("2026-10-07T19:00:00+05:30",
+                           nse=_oo_payload([_OO_ROW_ACQUISITION_NON_OPEN_OFFER,
+                                           _OO_ROW_SAST_DISCLOSURE_NON_OPEN_OFFER]))
+    assert res.status == "SUCCESS"
+    assert res.events == []
+
+
+def test_open_offer_adapter_normalizes_symbol_and_company():
+    from market_events.sources.open_offer import fetch_open_offer
+    res = fetch_open_offer("2026-10-07T19:00:00+05:30", nse=_oo_payload([_OO_ROW_GTEC_PA]))
+    ev = res.events[0]
+    assert ev.symbol == "GTECJAINX"
+    assert ev.company == "G-TEC JAINX EDUCATION LIMITED"
+
+
+def test_open_offer_adapter_acquirer_parsed_when_explicitly_stated():
+    from market_events.sources.open_offer import fetch_open_offer
+    res = fetch_open_offer("2026-07-20T19:00:00+05:30",
+                           nse=_oo_payload([_OO_ROW_BLISSGVS_ACQUIRER]))
+    facts = {f["label"]: f["value"] for f in res.events[0].facts}
+    assert facts["acquirer"] == "Anupam Rasayan Limited"
+
+
+def test_open_offer_adapter_acquirer_absent_when_not_explicitly_stated():
+    """The GTEC PA row names only the filing intermediary - never guessed as the acquirer."""
+    from market_events.sources.open_offer import fetch_open_offer
+    res = fetch_open_offer("2026-09-29T19:00:00+05:30", nse=_oo_payload([_OO_ROW_GTEC_PA]))
+    facts = {f["label"]: f["value"] for f in res.events[0].facts}
+    assert "acquirer" not in facts
+
+
+def test_open_offer_adapter_price_shares_percentage_dates_absent_never_fabricated():
+    """None of these fields are stated in the feed's one-line text - they must stay absent,
+    never a guessed/plausible value."""
+    from market_events.sources.open_offer import fetch_open_offer
+    res = fetch_open_offer("2026-09-29T19:00:00+05:30", nse=_oo_payload([_OO_ROW_GTEC_PA]))
+    facts = {f["label"]: f["value"] for f in res.events[0].facts}
+    for label in ("offer_price", "shares_offered", "percentage_sought", "offer_open_date",
+                 "offer_close_date"):
+        assert label not in facts
+
+
+def test_open_offer_adapter_event_key_stable_across_two_calls_with_same_lookup():
+    from market_events.models import OPEN_OFFER, SCHEMA_VERSION, SUCCESS, MarketEvent
+    from market_events.sources.open_offer import fetch_open_offer
+    prior = MarketEvent(schema_version=SCHEMA_VERSION, family=OPEN_OFFER,
+                        event_key="OPEN_OFFER:GTECJAINX:fixedkey", symbol="GTECJAINX",
+                        company="G-TEC JAINX EDUCATION LIMITED", status="ANNOUNCED",
+                        sub_type=None, data_as_of="2026-09-29", source_name="x",
+                        source_reference="x", first_retrieved_at="2026-09-29T19:00:00+05:30",
+                        status_capture=SUCCESS)
+    lookup_fn = lambda family, symbol: prior if symbol == "GTECJAINX" else None
+    res1 = fetch_open_offer("2026-09-29T19:00:00+05:30", nse=_oo_payload([_OO_ROW_GTEC_PA]),
+                           lookup_fn=lookup_fn)
+    res2 = fetch_open_offer("2026-09-29T19:00:00+05:30", nse=_oo_payload([_OO_ROW_GTEC_PA]),
+                           lookup_fn=lookup_fn)
+    assert res1.events[0].event_key == res2.events[0].event_key == "OPEN_OFFER:GTECJAINX:fixedkey"
+
+
+def test_open_offer_adapter_multi_filing_same_cycle_reuses_event_key():
+    """Real example: G-TEC JAINX EDUCATION filed a Public Announcement (29-Sep-2026) then a
+    Detailed Public Statement the very next day - the SAME cycle, same event_key."""
+    from market_events.models import OPEN_OFFER, SCHEMA_VERSION, SUCCESS, MarketEvent
+    from market_events.sources.open_offer import fetch_open_offer
+    prior = MarketEvent(schema_version=SCHEMA_VERSION, family=OPEN_OFFER,
+                        event_key="OPEN_OFFER:GTECJAINX:abc123", symbol="GTECJAINX",
+                        company="G-TEC JAINX EDUCATION LIMITED", status="ANNOUNCED",
+                        sub_type=None, data_as_of="2026-09-29", source_name="x",
+                        source_reference="x", first_retrieved_at="2026-09-29T19:00:00+05:30",
+                        status_capture=SUCCESS,
+                        facts=[{"label": "stage_evidence", "value": "ANNOUNCED"}])
+    res = fetch_open_offer("2026-09-30T19:00:00+05:30", nse=_oo_payload([_OO_ROW_GTEC_DPS]),
+                           lookup_fn=lambda family, symbol: prior if symbol == "GTECJAINX" else None)
+    assert res.events[0].event_key == "OPEN_OFFER:GTECJAINX:abc123"
+
+
+def test_open_offer_adapter_offer_opening_signal_advances_status_and_never_regresses():
+    """Real example: Shankara Building Products filed a Public Announcement (15-Jul-2026) then
+    an offer-opening announcement/corrigendum under Regulation 18(7) (04-Sep-2026) - the SAME
+    cycle, 51 days later; status advances ANNOUNCED -> OPEN and a later run that only re-sees
+    the older PA must never regress it back."""
+    from market_events.models import OPEN_OFFER, SCHEMA_VERSION, SUCCESS, MarketEvent
+    from market_events.sources.open_offer import fetch_open_offer
+
+    res1 = fetch_open_offer("2026-07-15T19:00:00+05:30", nse=_oo_payload([_OO_ROW_SHANKARA_PA]))
+    assert res1.events[0].status == "ANNOUNCED"
+    stored = res1.events[0]
+
+    res2 = fetch_open_offer("2026-09-04T19:00:00+05:30",
+                            nse=_oo_payload([_OO_ROW_SHANKARA_OPENING]),
+                            lookup_fn=lambda family, symbol: stored if symbol == "SHANKARA" else None)
+    assert res2.events[0].status == "OPEN"
+    assert res2.events[0].event_key == stored.event_key
+    advanced = res2.events[0]
+
+    # A later run that only re-sees the OLDER PA filing (e.g. a re-fetched window) must never
+    # downgrade the cycle back to ANNOUNCED.
+    res3 = fetch_open_offer("2026-09-05T19:00:00+05:30", nse=_oo_payload([_OO_ROW_SHANKARA_PA]),
+                            lookup_fn=lambda family, symbol: advanced if symbol == "SHANKARA" else None)
+    assert res3.events[0].status == "OPEN"
+
+
+def test_open_offer_adapter_post_offer_advertisement_sets_completed_status():
+    """Regulation 18(12) is literally the SAST post-offer-advertisement regulation - an explicit
+    completion signal, never inferred."""
+    from market_events.sources.open_offer import fetch_open_offer
+    res = fetch_open_offer("2026-08-20T19:00:00+05:30",
+                           nse=_oo_payload([_OO_ROW_NIRAJ_POST_OFFER]))
+    assert res.events[0].status == "COMPLETED"
+
+
+def test_open_offer_adapter_withdrawn_status_from_explicit_text():
+    from market_events.sources.open_offer import fetch_open_offer
+    res = fetch_open_offer("2026-08-10T19:00:00+05:30", nse=_oo_payload([_OO_ROW_WITHDRAWN]))
+    assert res.events[0].status == "WITHDRAWN"
+
+
+def test_open_offer_adapter_two_filings_in_same_window_collapse_to_one_event():
+    """G-TEC JAINX's PA and DPS both fall inside a single fetch call's window (1 day apart) -
+    must still be ONE event, not two."""
+    from market_events.sources.open_offer import fetch_open_offer
+    res = fetch_open_offer("2026-09-30T19:00:00+05:30",
+                           nse=_oo_payload([_OO_ROW_GTEC_PA, _OO_ROW_GTEC_DPS]))
+    assert len(res.events) == 1
+    assert res.events[0].symbol == "GTECJAINX"
+
+
+def test_open_offer_adapter_new_cycle_mints_new_key_when_prior_is_terminal():
+    """Mirrors the EARNINGS/OFS/BUYBACK terminal-filter behaviour: when `lookup_fn` finds no
+    non-terminal event (the prior cycle is COMPLETED/WITHDRAWN and so is filtered out by
+    `_lookup_open_event` before this adapter is even called), a fresh key is minted - a
+    genuinely new open offer for the same company is never merged into the old cycle."""
+    from market_events.sources.open_offer import fetch_open_offer
+    res = fetch_open_offer("2026-10-07T19:00:00+05:30", nse=_oo_payload([_OO_ROW_GTEC_PA]),
+                           lookup_fn=lambda family, symbol: None)
+    assert res.events[0].event_key.startswith("OPEN_OFFER:GTECJAINX:")
+    assert res.events[0].event_key != "OPEN_OFFER:GTECJAINX:abc123"
+
+
+def test_open_offer_adapter_duplicate_identical_row_fetched_twice_is_same_event():
+    """Re-fetching the SAME filing twice (the rolling lookback window re-covers it) must not
+    create two different event representations - the service layer's checksum dedup is what
+    turns this into UNCHANGED; the adapter itself must at least be deterministic/idempotent."""
+    from market_events.sources.open_offer import fetch_open_offer
+    res1 = fetch_open_offer("2026-09-29T19:00:00+05:30", nse=_oo_payload([_OO_ROW_GTEC_PA]))
+    res2 = fetch_open_offer("2026-09-29T19:00:00+05:30", nse=_oo_payload([_OO_ROW_GTEC_PA]))
+    assert res1.events[0].to_dict() == res2.events[0].to_dict()
+
+
+def test_open_offer_adapter_source_unavailable_on_network_exception():
+    from market_events.sources.open_offer import fetch_open_offer
+
+    class FailingNSE:
+        def get(self, path):
+            raise ConnectionError("blocked")
+
+    res = fetch_open_offer("2026-10-07T19:00:00+05:30", nse=FailingNSE())
+    assert res.status == "SOURCE_UNAVAILABLE"
+
+
+def test_open_offer_adapter_parse_error_on_non_list_payload():
+    from market_events.sources.open_offer import fetch_open_offer
+
+    class FakeNSE:
+        def get(self, path):
+            return {"unexpected": "shape"}
+
+    res = fetch_open_offer("2026-10-07T19:00:00+05:30", nse=FakeNSE())
+    assert res.status == "PARSE_ERROR"
+
+
+def test_open_offer_adapter_parse_error_on_schema_drift():
+    """Every row missing the 'desc' key NSE's own feed carries -> fails closed, never a
+    guessed mapping."""
+    from market_events.sources.open_offer import fetch_open_offer
+    res = fetch_open_offer("2026-10-07T19:00:00+05:30",
+                           nse=_oo_payload([{"unexpected": "shape"}]))
+    assert res.status == "PARSE_ERROR"
+
+
+def test_open_offer_adapter_empty_payload_is_healthy_success():
+    """Confirmed live reachable, zero-matching-row shape -> SUCCESS+[], never NOT_SUPPORTED_YET."""
+    from market_events.sources.open_offer import fetch_open_offer
+    res = fetch_open_offer("2026-10-07T19:00:00+05:30", nse=_oo_payload())
+    assert res.status == "SUCCESS"
+    assert res.events == []
+
+
+def test_open_offer_source_defaults_to_review_required_rights():
+    from core.sources import SRC_NSE_SAST_ANNOUNCEMENTS
+    from publication.rights import rights_for
+    assert rights_for(SRC_NSE_SAST_ANNOUNCEMENTS).status.value == "REVIEW_REQUIRED"

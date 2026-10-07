@@ -114,6 +114,29 @@ def _check_buyback(now_iso: str) -> dict:
            "sample_field_keys": sorted(buyback_rows[0].keys()) if buyback_rows else []}
 
 
+def _check_open_offer(now_iso: str) -> dict:
+    """OPEN_OFFER is LIVE as of P2D (2026-10-07): NSE's general corporate-announcements feed
+    (`/api/corporate-announcements?index=equities`, filtered to the exact category
+    `desc == "Public Announcement-Open Offer"` - the SAME feed BUYBACK already reads as its
+    secondary source) is the one and only viable official source found; NSE's structured
+    corporate-actions feed carries no open-offer rows at all, and NSE has no dedicated
+    open-offer/takeover page or API - see docs/MARKET_EVENTS_ENGINE.md."""
+    from operations.connectivity import classify_exception
+    try:
+        from market import NSE
+        nse = NSE()
+    except Exception as exc:
+        return {"check": "OPEN_OFFER", "status": "SOURCE_UNAVAILABLE",
+               "connectivity": classify_exception(exc), "detail": f"{type(exc).__name__}: {exc}"}
+    from market_events.sources.open_offer import fetch_open_offer
+    res = fetch_open_offer(now_iso, nse=nse)
+    if res.status != "SUCCESS":
+        return {"check": "OPEN_OFFER", "status": res.status, "connectivity": res.connectivity,
+               "detail": res.reason}
+    return {"check": "OPEN_OFFER", "status": "REACHABLE", "connectivity": "REACHABLE",
+           "events_classified_count": len(res.events)}
+
+
 def _check_ipo() -> dict:
     return {"check": "IPO", "status": "N/A",
            "detail": "sourced via ipo_watch/official_snapshots by design - never fetched by "
@@ -125,7 +148,8 @@ def _check_skipped(family: str) -> dict:
            "detail": "no endpoint configured - NOT_SUPPORTED_YET by design this pass"}
 
 
-CHECKS = {"EARNINGS": _check_earnings, "OFS": _check_ofs, "BUYBACK": _check_buyback}
+CHECKS = {"EARNINGS": _check_earnings, "OFS": _check_ofs, "BUYBACK": _check_buyback,
+         "OPEN_OFFER": _check_open_offer}
 
 
 def run_diagnostic(families=None, now: dt.datetime | None = None) -> dict:

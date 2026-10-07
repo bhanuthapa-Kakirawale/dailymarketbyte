@@ -142,14 +142,14 @@ def test_parse_error_is_recorded_and_never_written(tmp_path):
 
 
 def test_not_supported_yet_every_family_by_default(tmp_path):
-    """EARNINGS (P2A), OFS (P2B), BUYBACK (P2C) and OPEN_OFFER (P2D) are now the four exceptions
-    with real, live-calling fetchers; IPO's stub stays NOT_SUPPORTED_YET-shaped by design (it is
-    never acquired by this engine - see its own reworded reason string) and every other family
-    is still genuinely unsupported. EARNINGS/OFS/BUYBACK/OPEN_OFFER are excluded from this
-    capture specifically so this test never makes a live network call (tests/ stays fully
-    offline) - see each adapter's own section further down this file for its offline,
-    fixture-based coverage."""
-    from market_events.models import ALL_FAMILIES, BUYBACK, EARNINGS, OFS, OPEN_OFFER
+    """EARNINGS (P2A), OFS (P2B), BUYBACK (P2C), OPEN_OFFER (P2D) and DELISTING (P2E) are now
+    the five exceptions with real, live-calling fetchers; IPO's stub stays NOT_SUPPORTED_YET-
+    shaped by design (it is never acquired by this engine - see its own reworded reason string)
+    and every other family is still genuinely unsupported. EARNINGS/OFS/BUYBACK/OPEN_OFFER/
+    DELISTING are excluded from this capture specifically so this test never makes a live
+    network call (tests/ stays fully offline) - see each adapter's own section further down
+    this file for its offline, fixture-based coverage."""
+    from market_events.models import ALL_FAMILIES, BUYBACK, DELISTING, EARNINGS, OFS, OPEN_OFFER
     from market_events.service import MarketEventsService
     from market_events.sources import DEFAULT_FETCHERS
 
@@ -157,10 +157,11 @@ def test_not_supported_yet_every_family_by_default(tmp_path):
     assert not getattr(DEFAULT_FETCHERS[OFS], "not_supported_yet", False)
     assert not getattr(DEFAULT_FETCHERS[BUYBACK], "not_supported_yet", False)
     assert not getattr(DEFAULT_FETCHERS[OPEN_OFFER], "not_supported_yet", False)
+    assert not getattr(DEFAULT_FETCHERS[DELISTING], "not_supported_yet", False)
 
     svc = MarketEventsService(str(tmp_path))
     still_unsupported = tuple(f for f in ALL_FAMILIES
-                              if f not in (EARNINGS, OFS, BUYBACK, OPEN_OFFER))
+                              if f not in (EARNINGS, OFS, BUYBACK, OPEN_OFFER, DELISTING))
     res = svc.capture(NOW, "REPORT_JOB", families=still_unsupported)
     for family in still_unsupported:
         assert res["results"][family]["status"] == "NOT_SUPPORTED_YET"
@@ -938,3 +939,387 @@ def test_open_offer_source_defaults_to_review_required_rights():
     from core.sources import SRC_NSE_SAST_ANNOUNCEMENTS
     from publication.rights import rights_for
     assert rights_for(SRC_NSE_SAST_ANNOUNCEMENTS).status.value == "REVIEW_REQUIRED"
+
+
+# ------------------------------------------------------------------------ DELISTING adapter (P2E)
+# Fixtures below are literal shapes from REAL rows pulled live from NSE's own
+# corporate-announcements endpoint this session (2026-10-07, a 365-day pull returned 17 rows
+# under desc in {"Delisting","Voluntary Delisting"}) - never re-fetched during a test run.
+# Wording is trimmed to the sentence that carries the explicit fact, never paraphrased into a
+# different claim. Two rows (KEI, FEDDERELEC's Nov-2025 filing) are real, confirmed mismatches
+# between NSE's own `desc` tag and its `attchmntText` - kept as the false-positive-guard fixture.
+_DL_ROW_ATCOM_COMPULSORY_BSE = {
+    "symbol": "ATCOM", "sm_name": "Atcom Technologies Limited", "desc": "Delisting",
+    "attchmntText": ("Members of the Exchange are hereby informed about the Compulsory "
+                     "Delisting of Equity Shares of Atcom Technologies Limited w.e.f. "
+                     "September 02, 2026, in terms of Rule 21(2)(b) of the Securities "
+                     "Contracts (Regulations) Rules 1957 which has been compulsorily "
+                     "delisted by BSE Limited."),
+    "an_dt": "31-Aug-2026 19:42:26",
+}
+_DL_ROW_IZMO_VOLUNTARY_CSE = {
+    "symbol": "IZMO", "sm_name": "IZMO Limited", "desc": "Voluntary Delisting",
+    "attchmntText": ("IZMO Limited has informed the Exchange about Voluntary Delisting from "
+                     "the Calcutta Stock Exchange Limited (\"CSE\")."),
+    "an_dt": "14-Aug-2026 17:37:09",
+}
+_DL_ROW_JINDALPHOT_VOLUNTARY_BARE = {
+    "symbol": "JINDALPHOT", "sm_name": "Jindal Photo Limited", "desc": "Voluntary Delisting",
+    "attchmntText": "Jindal Photo Limited has informed the Exchange about Voluntary Delisting",
+    "an_dt": "16-Jul-2026 20:09:41",
+}
+_DL_ROW_JPASSOCIAT_NCLT = {
+    "symbol": "JPASSOCIAT", "sm_name": "Jaiprakash Associates Limited", "desc": "Delisting",
+    "attchmntText": ("Members of the Exchange are hereby informed about the Delisting of "
+                     "Equity shares of Jaiprakash Associates Limited w.e.f. June 18, 2026, "
+                     "pursuant to Resolution plan approved by Hon'ble National Company Law "
+                     "Tribunal (NCLT), Allahabad Bench, Prayagraj, under section 30(6) read "
+                     "with section 31 of Insolvency Bankruptcy Code, 2016."),
+    "an_dt": "11-Jun-2026 18:51:18",
+}
+_DL_ROW_HERCULES_VOLUNTARY_REG56 = {
+    "symbol": "HERCULES", "sm_name": "Hercules Investments Limited", "desc": "Delisting",
+    "attchmntText": ("Members of the Exchange are hereby informed about the Delisting of "
+                     "Equity shares of Hercules Investments Limited w.e.f. January 09, 2026, "
+                     "pursuant to Voluntary Delisting application under Regulation 5 and 6 of "
+                     "SEBI (Delisting of Equity Shares) Regulations, 2021."),
+    "an_dt": "19-Dec-2025 16:11:01",
+}
+_DL_ROW_GAMMONIND_WITHDRAWN = {
+    "symbol": "GAMMONIND", "sm_name": "Gammon India Limited", "desc": "Delisting",
+    "attchmntText": ("Members of the Exchange are hereby informed about the withdrawal of "
+                     "delisting of Equity Shares of Gammon India Limited (GAMMONIND) w.e.f. "
+                     "February 25, 2026, as per the Hon'ble Securities Appellate Tribunal "
+                     "(SAT), Mumbai, order dated February 19, 2026, to restore the listing of "
+                     "the Company."),
+    "an_dt": "25-Feb-2026 15:52:08",
+}
+_DL_ROW_KEI_MISTAGGED = {
+    "symbol": "KEI", "sm_name": "KEI Industries Limited", "desc": "Voluntary Delisting",
+    "attchmntText": ("KEI Industries Limited has informed the Exchange about Outcome of "
+                     "Board Meeting - Disclosure/ Announcements pursuant to Regulation 30 "
+                     "and 33 of SEBI (Listing Obligations and Disclosures Requirements) "
+                     "Regulations, 2015."),
+    "an_dt": "21-Jan-2026 17:42:56",
+}
+_DL_ROW_HITECHCORP_DUP1 = {
+    "symbol": "HITECHCORP", "sm_name": "Hitech Corporation Limited", "desc": "Voluntary Delisting",
+    "attchmntText": "Hitech Corporation Limited has informed the Exchange about Voluntary Delisting",
+    "an_dt": "09-Jun-2026 19:53:26",
+}
+_DL_ROW_HITECHCORP_DUP2 = {
+    "symbol": "HITECHCORP", "sm_name": "Hitech Corporation Limited", "desc": "Voluntary Delisting",
+    "attchmntText": "Hitech Corporation Limited has informed the Exchange about Voluntary Delisting",
+    "an_dt": "09-Jun-2026 20:05:36",
+}
+_DL_ROW_ACQUISITION_NON_DELISTING = {
+    "symbol": "XYZCORP", "sm_name": "XYZ Corp Ltd", "desc": "Acquisition",
+    "attchmntText": "XYZ Corp Ltd has acquired a 30% stake in ABC Ltd.",
+    "an_dt": "01-Oct-2026 10:00:00",
+}
+# Synthetic (not live-observed): exercises the desc-fallback branch of type classification for a
+# hypothetical terse re-filing whose own text happens not to repeat the word "voluntary" - the
+# `desc` category itself is still an explicit NSE classification, so this is not an inference.
+_DL_ROW_SYNTHETIC_TERSE_VOLUNTARY = {
+    "symbol": "TERSECO", "sm_name": "Terse Co Limited", "desc": "Voluntary Delisting",
+    "attchmntText": "Terse Co Limited has informed the Exchange about its Delisting process.",
+    "an_dt": "01-Oct-2026 10:00:00",
+}
+
+
+def _dl_payload(rows=()):
+    class FakeNSE:
+        def get(self, path):
+            return list(rows)
+    return FakeNSE()
+
+
+def test_delisting_adapter_classifies_exact_desc_values():
+    """desc in {"Delisting","Voluntary Delisting"} - never a free-text search."""
+    from market_events.sources.delisting import fetch_delisting
+    res = fetch_delisting("2026-09-03T19:00:00+05:30",
+                          nse=_dl_payload([_DL_ROW_ATCOM_COMPULSORY_BSE]))
+    assert res.status == "SUCCESS"
+    assert len(res.events) == 1
+    assert res.events[0].symbol == "ATCOM"
+
+
+def test_delisting_adapter_rejects_generic_non_delisting_desc():
+    from market_events.sources.delisting import fetch_delisting
+    res = fetch_delisting("2026-10-07T19:00:00+05:30",
+                          nse=_dl_payload([_DL_ROW_ACQUISITION_NON_DELISTING]))
+    assert res.status == "SUCCESS"
+    assert res.events == []
+
+
+def test_delisting_adapter_false_positive_text_guard_rejects_mistagged_row():
+    """Real, confirmed live: KEI Industries carries desc=="Voluntary Delisting" but its
+    attchmntText is a plain board-meeting disclosure with no delisting wording at all - the
+    desc tag alone must never be trusted."""
+    from market_events.sources.delisting import fetch_delisting
+    res = fetch_delisting("2026-01-21T19:00:00+05:30", nse=_dl_payload([_DL_ROW_KEI_MISTAGGED]))
+    assert res.status == "SUCCESS"
+    assert res.events == []
+    assert "KEI" in res.reason
+    assert "mistagged" in res.reason or "doesn't mention delisting" in res.reason
+
+
+def test_delisting_adapter_normalizes_symbol_and_company():
+    from market_events.sources.delisting import fetch_delisting
+    res = fetch_delisting("2026-09-03T19:00:00+05:30",
+                          nse=_dl_payload([_DL_ROW_ATCOM_COMPULSORY_BSE]))
+    ev = res.events[0]
+    assert ev.symbol == "ATCOM"
+    assert ev.company == "Atcom Technologies Limited"
+
+
+def test_delisting_adapter_compulsory_type_from_explicit_text():
+    from market_events.sources.delisting import fetch_delisting
+    res = fetch_delisting("2026-09-03T19:00:00+05:30",
+                          nse=_dl_payload([_DL_ROW_ATCOM_COMPULSORY_BSE]))
+    facts = {f["label"]: f["value"] for f in res.events[0].facts}
+    assert facts["delisting_type"] == "COMPULSORY"
+
+
+def test_delisting_adapter_voluntary_type_from_explicit_text():
+    from market_events.sources.delisting import fetch_delisting
+    res = fetch_delisting("2026-08-14T19:00:00+05:30", nse=_dl_payload([_DL_ROW_IZMO_VOLUNTARY_CSE]))
+    facts = {f["label"]: f["value"] for f in res.events[0].facts}
+    assert facts["delisting_type"] == "VOLUNTARY"
+
+
+def test_delisting_adapter_voluntary_type_from_regulation_5_6_phrase():
+    """Hercules Investments: text never uses the bare word "voluntary" in isolation from the
+    regulation citation - "Voluntary Delisting application under Regulation 5 and 6" is still
+    an explicit statement."""
+    from market_events.sources.delisting import fetch_delisting
+    res = fetch_delisting("2026-01-09T19:00:00+05:30",
+                          nse=_dl_payload([_DL_ROW_HERCULES_VOLUNTARY_REG56]))
+    facts = {f["label"]: f["value"] for f in res.events[0].facts}
+    assert facts["delisting_type"] == "VOLUNTARY"
+
+
+def test_delisting_adapter_voluntary_type_from_desc_when_text_is_terse():
+    """Synthetic: desc=="Voluntary Delisting" is itself an explicit NSE classification, used
+    when the filing's own terse text happens not to repeat the word."""
+    from market_events.sources.delisting import fetch_delisting
+    res = fetch_delisting("2026-10-01T19:00:00+05:30",
+                          nse=_dl_payload([_DL_ROW_SYNTHETIC_TERSE_VOLUNTARY]))
+    facts = {f["label"]: f["value"] for f in res.events[0].facts}
+    assert facts["delisting_type"] == "VOLUNTARY"
+
+
+def test_delisting_adapter_unknown_type_for_nclt_resolution_plan_rows():
+    """Real example: Jaiprakash Associates' delisting is pursuant to an NCLT-approved
+    Resolution Plan under the Insolvency and Bankruptcy Code - neither "voluntary" nor
+    "compulsory" is stated, so type must stay UNKNOWN rather than being guessed."""
+    from market_events.sources.delisting import fetch_delisting
+    res = fetch_delisting("2026-06-20T19:00:00+05:30", nse=_dl_payload([_DL_ROW_JPASSOCIAT_NCLT]))
+    facts = {f["label"]: f["value"] for f in res.events[0].facts}
+    assert facts["delisting_type"] == "UNKNOWN"
+    assert facts["mechanism"] == "NCLT_RESOLUTION_PLAN"
+
+
+def test_delisting_adapter_mechanism_absent_when_not_nclt():
+    from market_events.sources.delisting import fetch_delisting
+    res = fetch_delisting("2026-09-03T19:00:00+05:30",
+                          nse=_dl_payload([_DL_ROW_ATCOM_COMPULSORY_BSE]))
+    facts = {f["label"]: f["value"] for f in res.events[0].facts}
+    assert "mechanism" not in facts
+
+
+def test_delisting_adapter_other_exchange_captured_when_named():
+    from market_events.sources.delisting import fetch_delisting
+    res = fetch_delisting("2026-09-03T19:00:00+05:30",
+                          nse=_dl_payload([_DL_ROW_ATCOM_COMPULSORY_BSE]))
+    facts = {f["label"]: f["value"] for f in res.events[0].facts}
+    assert facts["other_exchange"] == "BSE"
+
+    res2 = fetch_delisting("2026-08-14T19:00:00+05:30", nse=_dl_payload([_DL_ROW_IZMO_VOLUNTARY_CSE]))
+    facts2 = {f["label"]: f["value"] for f in res2.events[0].facts}
+    assert facts2["other_exchange"] == "CSE"
+
+
+def test_delisting_adapter_other_exchange_absent_when_not_named():
+    """No other exchange is named in Jaiprakash Associates' filing - must never be assumed to
+    be "NSE" by default; the fact is simply absent."""
+    from market_events.sources.delisting import fetch_delisting
+    res = fetch_delisting("2026-06-20T19:00:00+05:30", nse=_dl_payload([_DL_ROW_JPASSOCIAT_NCLT]))
+    facts = {f["label"]: f["value"] for f in res.events[0].facts}
+    assert "other_exchange" not in facts
+
+
+def test_delisting_adapter_withdrawn_status_from_explicit_text():
+    """Real example: Gammon India's delisting was reversed by a SAT order restoring the
+    listing - an explicit reversal, mapped to WITHDRAWN even though the row's own desc is just
+    "Delisting"."""
+    from market_events.sources.delisting import fetch_delisting
+    res = fetch_delisting("2026-02-25T19:00:00+05:30",
+                          nse=_dl_payload([_DL_ROW_GAMMONIND_WITHDRAWN]))
+    assert res.events[0].status == "WITHDRAWN"
+
+
+def test_delisting_adapter_effective_date_in_future_sets_scheduled_status():
+    """ATCOM's own filing (31-Aug-2026) states the delisting takes effect "w.e.f. September 02,
+    2026" - captured one day before that date, the event is still pending, never already
+    COMPLETED."""
+    from market_events.sources.delisting import fetch_delisting
+    res = fetch_delisting("2026-08-31T19:00:00+05:30",
+                          nse=_dl_payload([_DL_ROW_ATCOM_COMPULSORY_BSE]))
+    assert res.events[0].status == "SCHEDULED"
+
+
+def test_delisting_adapter_effective_date_passed_sets_completed_status():
+    from market_events.sources.delisting import fetch_delisting
+    res = fetch_delisting("2026-09-03T19:00:00+05:30",
+                          nse=_dl_payload([_DL_ROW_ATCOM_COMPULSORY_BSE]))
+    assert res.events[0].status == "COMPLETED"
+
+
+def test_delisting_adapter_announced_status_when_no_effective_date_stated():
+    """Real example: Jindal Photo's filing states only that voluntary delisting was informed -
+    no "w.e.f." date at all, so the event stays ANNOUNCED rather than guessing a stage."""
+    from market_events.sources.delisting import fetch_delisting
+    res = fetch_delisting("2026-07-16T19:00:00+05:30",
+                          nse=_dl_payload([_DL_ROW_JINDALPHOT_VOLUNTARY_BARE]))
+    assert res.events[0].status == "ANNOUNCED"
+
+
+def test_delisting_adapter_price_dates_absent_never_fabricated():
+    """None of these fields are stated anywhere in this feed's text - must stay absent, never
+    a guessed/plausible value."""
+    from market_events.sources.delisting import fetch_delisting
+    res = fetch_delisting("2026-09-03T19:00:00+05:30",
+                          nse=_dl_payload([_DL_ROW_ATCOM_COMPULSORY_BSE]))
+    facts = {f["label"]: f["value"] for f in res.events[0].facts}
+    for label in ("floor_price", "exit_price", "discovered_price", "bidding_open_date",
+                 "bidding_close_date", "shareholder_approval_date", "exchange_approval_date"):
+        assert label not in facts
+
+
+def test_delisting_adapter_event_key_stable_across_two_calls_with_same_lookup():
+    from market_events.models import DELISTING, SCHEMA_VERSION, SUCCESS, MarketEvent
+    from market_events.sources.delisting import fetch_delisting
+    prior = MarketEvent(schema_version=SCHEMA_VERSION, family=DELISTING,
+                        event_key="DELISTING:ATCOM:fixedkey", symbol="ATCOM",
+                        company="Atcom Technologies Limited", status="SCHEDULED",
+                        sub_type=None, data_as_of="2026-08-31", source_name="x",
+                        source_reference="x", first_retrieved_at="2026-08-31T19:00:00+05:30",
+                        status_capture=SUCCESS,
+                        facts=[{"label": "stage_evidence", "value": "SCHEDULED"},
+                              {"label": "delisting_type", "value": "COMPULSORY"}])
+    lookup_fn = lambda family, symbol: prior if symbol == "ATCOM" else None
+    res1 = fetch_delisting("2026-09-03T19:00:00+05:30",
+                           nse=_dl_payload([_DL_ROW_ATCOM_COMPULSORY_BSE]), lookup_fn=lookup_fn)
+    res2 = fetch_delisting("2026-09-03T19:00:00+05:30",
+                           nse=_dl_payload([_DL_ROW_ATCOM_COMPULSORY_BSE]), lookup_fn=lookup_fn)
+    assert res1.events[0].event_key == res2.events[0].event_key == "DELISTING:ATCOM:fixedkey"
+
+
+def test_delisting_adapter_multi_filing_same_cycle_advances_status_and_never_regresses():
+    """SCHEDULED -> COMPLETED as the effective date passes must reuse the same event_key; a
+    later run that only re-sees the OLDER (still-SCHEDULED-looking) filing must never regress
+    an already-COMPLETED cycle back to SCHEDULED."""
+    from market_events.sources.delisting import fetch_delisting
+
+    res1 = fetch_delisting("2026-08-31T19:00:00+05:30",
+                           nse=_dl_payload([_DL_ROW_ATCOM_COMPULSORY_BSE]))
+    assert res1.events[0].status == "SCHEDULED"
+    stored = res1.events[0]
+
+    res2 = fetch_delisting("2026-09-03T19:00:00+05:30",
+                           nse=_dl_payload([_DL_ROW_ATCOM_COMPULSORY_BSE]),
+                           lookup_fn=lambda family, symbol: stored if symbol == "ATCOM" else None)
+    assert res2.events[0].status == "COMPLETED"
+    assert res2.events[0].event_key == stored.event_key
+    advanced = res2.events[0]
+
+    res3 = fetch_delisting("2026-09-04T19:00:00+05:30",
+                           nse=_dl_payload([_DL_ROW_ATCOM_COMPULSORY_BSE]),
+                           lookup_fn=lambda family, symbol: advanced if symbol == "ATCOM" else None)
+    assert res3.events[0].status == "COMPLETED"
+
+
+def test_delisting_adapter_two_filings_in_same_window_collapse_to_one_event():
+    """Real example: Hitech Corporation filed two identical same-day Voluntary Delisting
+    notices - must still be ONE event, not two."""
+    from market_events.sources.delisting import fetch_delisting
+    res = fetch_delisting("2026-06-09T19:00:00+05:30",
+                          nse=_dl_payload([_DL_ROW_HITECHCORP_DUP1, _DL_ROW_HITECHCORP_DUP2]))
+    assert len(res.events) == 1
+    assert res.events[0].symbol == "HITECHCORP"
+
+
+def test_delisting_adapter_withdrawal_after_prior_completed_mints_new_event():
+    """A withdrawal notice arriving after a prior COMPLETED record never finds that record via
+    `_lookup_open_event` (COMPLETED is terminal) - it mints a fresh, separate event rather than
+    mutating history. This is a deliberate design choice (see module docstring), not a bug."""
+    from market_events.sources.delisting import fetch_delisting
+    res = fetch_delisting("2026-02-25T19:00:00+05:30",
+                          nse=_dl_payload([_DL_ROW_GAMMONIND_WITHDRAWN]),
+                          lookup_fn=lambda family, symbol: None)
+    assert res.events[0].event_key.startswith("DELISTING:GAMMONIND:")
+    assert res.events[0].status == "WITHDRAWN"
+
+
+def test_delisting_adapter_new_cycle_mints_new_key_when_prior_is_terminal():
+    from market_events.sources.delisting import fetch_delisting
+    res = fetch_delisting("2026-09-03T19:00:00+05:30",
+                          nse=_dl_payload([_DL_ROW_ATCOM_COMPULSORY_BSE]),
+                          lookup_fn=lambda family, symbol: None)
+    assert res.events[0].event_key.startswith("DELISTING:ATCOM:")
+    assert res.events[0].event_key != "DELISTING:ATCOM:fixedkey"
+
+
+def test_delisting_adapter_duplicate_identical_row_fetched_twice_is_same_event():
+    from market_events.sources.delisting import fetch_delisting
+    res1 = fetch_delisting("2026-09-03T19:00:00+05:30",
+                           nse=_dl_payload([_DL_ROW_ATCOM_COMPULSORY_BSE]))
+    res2 = fetch_delisting("2026-09-03T19:00:00+05:30",
+                           nse=_dl_payload([_DL_ROW_ATCOM_COMPULSORY_BSE]))
+    assert res1.events[0].to_dict() == res2.events[0].to_dict()
+
+
+def test_delisting_adapter_source_unavailable_on_network_exception():
+    from market_events.sources.delisting import fetch_delisting
+
+    class FailingNSE:
+        def get(self, path):
+            raise ConnectionError("blocked")
+
+    res = fetch_delisting("2026-10-07T19:00:00+05:30", nse=FailingNSE())
+    assert res.status == "SOURCE_UNAVAILABLE"
+
+
+def test_delisting_adapter_parse_error_on_non_list_payload():
+    from market_events.sources.delisting import fetch_delisting
+
+    class FakeNSE:
+        def get(self, path):
+            return {"unexpected": "shape"}
+
+    res = fetch_delisting("2026-10-07T19:00:00+05:30", nse=FakeNSE())
+    assert res.status == "PARSE_ERROR"
+
+
+def test_delisting_adapter_parse_error_on_schema_drift():
+    """Every row missing the 'desc' key NSE's own feed carries -> fails closed, never a
+    guessed mapping."""
+    from market_events.sources.delisting import fetch_delisting
+    res = fetch_delisting("2026-10-07T19:00:00+05:30",
+                          nse=_dl_payload([{"unexpected": "shape"}]))
+    assert res.status == "PARSE_ERROR"
+
+
+def test_delisting_adapter_empty_payload_is_healthy_success():
+    """Confirmed live reachable, zero-matching-row shape -> SUCCESS+[], never NOT_SUPPORTED_YET."""
+    from market_events.sources.delisting import fetch_delisting
+    res = fetch_delisting("2026-10-07T19:00:00+05:30", nse=_dl_payload())
+    assert res.status == "SUCCESS"
+    assert res.events == []
+
+
+def test_delisting_source_defaults_to_review_required_rights():
+    from core.sources import SRC_NSE_DELISTING_ANNOUNCEMENTS
+    from publication.rights import rights_for
+    assert rights_for(SRC_NSE_DELISTING_ANNOUNCEMENTS).status.value == "REVIEW_REQUIRED"

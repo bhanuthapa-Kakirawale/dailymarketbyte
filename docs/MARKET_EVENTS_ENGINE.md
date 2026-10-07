@@ -90,7 +90,7 @@ official source is unreachable or unverified, the family returns `SOURCE_UNAVAIL
 | BUYBACK | NSE's structured corporate-actions feed + corporate-announcements + daily-buyback disclosure (`market_events/sources/buyback.py`) | **LIVE** - `/api/corporates-corporateActions?index=equities` (`subject == "Buy Back"`, an exact categorical match) is PRIMARY, confirmed reachable 2026-10-07; cross-referenced with `/api/corporate-announcements` and `/api/corporates-daily-buyback?` for lifecycle status and route/price/quantity when explicitly stated |
 | GOVT_SECURITIES_AUCTION | RBI's semi-annual G-Sec/T-Bill borrowing calendar | `NOT_SUPPORTED_YET` (planned: hand-maintained controlled file, see Known limitations) |
 | OPEN_OFFER | NSE's corporate-announcements feed, `desc == "Public Announcement-Open Offer"` (`market_events/sources/open_offer.py`) | **LIVE** - confirmed reachable 2026-10-07; an exact categorical match, same feed BUYBACK already reads as its secondary source. Price/shares/%/dates are not in the feed's own text and stay absent - see "OPEN_OFFER semantics" above |
-| DELISTING | NSE/BSE delisting announcements | `NOT_SUPPORTED_YET` - deferred (same `desc` taxonomy already shows `"Delisting"`/`"Voluntary Delisting"` categories - a head start, not yet built) |
+| DELISTING | NSE's corporate-announcements feed, `desc in {"Delisting", "Voluntary Delisting"}` (`market_events/sources/delisting.py`) | **LIVE** - confirmed reachable 2026-10-07; a 365-day pull returned 17 real rows. BSE's delisting purpose code and NSE's own XLSX-based delisting rosters were investigated and NOT used (see "DELISTING semantics" below) |
 
 Governing rule (already established via `official_snapshots.NOT_SUPPORTED`, and the project's
 "reliability over feature count" posture): **no live adapter is written against an endpoint
@@ -291,9 +291,85 @@ downgrades it back.
 OPEN_OFFER never uses Chittorgarh/Groww/Moneycontrol, taxguru.in or any other third-party
 tracker - the one endpoint used is NSE's own, already relied on by BUYBACK.
 
-**Bonus finding, out of scope:** the same `desc` taxonomy also carries `"Delisting"` and
-`"Voluntary Delisting"` as their own exact categories - a ready-made head start for a future
-DELISTING packet, not investigated further here (DELISTING remains `NOT_SUPPORTED_YET`).
+**Bonus finding, now built:** the same `desc` taxonomy also carries `"Delisting"` and
+`"Voluntary Delisting"` as their own exact categories - the head start this section originally
+flagged is now the basis of the live DELISTING adapter (P2E, below).
+
+## DELISTING semantics (`market_events/sources/delisting.py`)
+
+**Discovery (P2E, 2026-10-07):** official sources were checked in preference order. NSE has
+three dedicated static pages (`/static/list/list-of-companies-proposed-to-be-delisted`,
+`/static/list/orders-of-delisting`, `/static/regulations/voluntary-delisting`) offering XLSX
+roster downloads and a compulsory-delisting "Orders of Delisting Committee" table - real and
+official, but XLSX-only (no JSON API), a periodic-roster shape rather than per-filing
+granularity, and unverified for live reachability from this environment (a research pass's
+sandbox was fully blocked on `nseindia.com`, consistent with CLAUDE.md's documented cloud-IP
+blocking). SEBI's site (`sebi.gov.in/sebi_data/docfiles/20626_t.html`) is a plain-text FAQ with
+no company-specific structured data or API. BSE's delisting purpose code (`P29` in its
+corporate-actions API) was only discoverable via a third-party reverse-engineered wrapper (not
+BSE's own documented navigation), 403s on every fetch attempt, carries no explicit
+Voluntary/Compulsory field (free-text `Purpose`), and this codebase has zero existing BSE
+integration - not pursued. The source actually used is the SAME general corporate-announcements
+feed BUYBACK/OPEN_OFFER already read (`/api/corporate-announcements?index=equities`), filtered
+to `desc in {"Delisting", "Voluntary Delisting"}` - confirmed live via this project's own
+`market.NSE()` client with a 365-day pull: 17 real rows, e.g. Atcom Technologies Limited
+(`ATCOM`, compulsorily delisted by BSE Limited, 31-Aug-2026), IZMO Limited (`IZMO`, voluntary
+delisting from the Calcutta Stock Exchange, 14-Aug-2026), Jaiprakash Associates Limited
+(`JPASSOCIAT`, delisted pursuant to an NCLT-approved Resolution Plan, 11-Jun-2026), and Gammon
+India Limited (`GAMMONIND`, a prior delisting withdrawn/reversed by a SAT order, 25-Feb-2026).
+
+A second, TEXT-level guard (`"delist" in attchmntText.lower()`) is required alongside the `desc`
+match: two of the 17 rows (KEI Industries, 21-Jan-2026; Fedders Electric, 05-Nov-2025) carry
+`desc == "Voluntary Delisting"` but an `attchmntText` that is a plain, unrelated board-meeting
+disclosure with no delisting wording at all - a confirmed NSE tagging mismatch. A row passing
+`desc` but failing this text check is dropped, never kept on tag alone.
+
+**Voluntary vs compulsory** is read only from explicit text (`"voluntary"` / `compulsor(y|ily)`),
+never inferred from circumstance; `desc == "Voluntary Delisting"` is itself also accepted as
+explicit evidence for a terse filing whose own prose doesn't repeat the word. A third, genuinely
+distinct bucket exists in the live data: NCLT Resolution-Plan-driven delistings (Jaiprakash
+Associates, Future Supply Chain Solutions, Fedders Electric, Rolta India - all "pursuant to
+Resolution plan approved by... NCLT... under the Insolvency and Bankruptcy Code") state neither
+word, so `delisting_type` stays `UNKNOWN` with a `mechanism=NCLT_RESOLUTION_PLAN` fact rather
+than being forced into either bucket. This means DELISTING ships with real evidence for
+VOLUNTARY and COMPULSORY, plus an honest UNKNOWN for the mechanism-driven cases - not a case of
+"only one type provable."
+
+**Exchange scope:** several real rows describe a delisting from an OTHER exchange (BSE /
+Calcutta Stock Exchange), reported by NSE to its own members as an FYI, not a statement about
+the symbol's own NSE listing (Atcom/Visesh Infotecnics - compulsorily delisted by BSE; IZMO/Jay
+Bharat Maruti/ITC - voluntary delisting from CSE). An `other_exchange` fact is populated only
+when the text explicitly names that other exchange; its absence is never read as "this is an
+NSE delisting" - the adapter only ever states what the filing's own text names.
+
+**Lifecycle mapping** reuses `ANNOUNCED`/`SCHEDULED`/`COMPLETED`/`WITHDRAWN` from `models.py` -
+no new status added:
+
+* "withdrawal of delisting" / "restore the listing" → `WITHDRAWN` (explicit reversal; real
+  examples: Gammon India, Era Infra Engineering, both a prior delisting reversed by a SAT
+  order/BSE notice)
+* an explicit `"w.e.f. <date>"` in the future at capture time → `SCHEDULED`; once that date has
+  passed → `COMPLETED`
+* no parseable effective date (e.g. Jindal Photo's/Hitech Corporation's bare "has informed the
+  Exchange about Voluntary Delisting") → `ANNOUNCED`
+
+Floor price, exit/discovered price, bidding open/close dates, and shareholder/exchange approval
+dates are never stated in this feed's text in any of the 17 observed rows and stay absent - not
+guessed, not backfilled from the XLSX rosters or BSE/SEBI (both investigated and not used, per
+above).
+
+**Event identity reuses the SAME `needs_lookup`/`lookup_fn` reconciliation** EARNINGS/BUYBACK/
+OPEN_OFFER already use: a symbol's latest non-terminal delisting event is reused across multiple
+filings of one cycle (Hitech Corporation filed two identical same-day Voluntary Delisting
+notices; Fedders Electric's Nov-2025 board-meeting disclosure and its Feb-2026 final NCLT
+delisting notice are the SAME cycle). Once a cycle reaches a terminal status
+(`COMPLETED`/`WITHDRAWN`), the next filing for that symbol mints a fresh `event_key` - this also
+means a `WITHDRAWN` notice arriving after a prior `COMPLETED` record (Gammon India, Era Infra)
+becomes its OWN event rather than mutating the completed one; both are real, distinct historical
+facts about the symbol, and this avoids new generic reconciliation machinery.
+
+DELISTING never uses BSE, SEBI, or any third-party aggregator - the one endpoint used is NSE's
+own, already relied on by BUYBACK/OPEN_OFFER.
 
 ## Revisions and change detection
 
@@ -427,9 +503,16 @@ owner-confirmed).
   general reason as EARNINGS (GitHub Actions runners are known to be blocked for
   `nseindia.com`); a `SOURCE_UNAVAILABLE` there is a normal, handled outcome. Offer
   price/shares/percentage/tendering dates are not present in the feed's own text and are never
-  fabricated - see "OPEN_OFFER semantics" above. **DELISTING remains deferred**, though the same
-  `desc` taxonomy confirms `"Delisting"`/`"Voluntary Delisting"` categories exist and are
-  reachable through this same feed - a head start for that later packet, not built here.
+  fabricated - see "OPEN_OFFER semantics" above.
+* **DELISTING is now live (P2E, 2026-10-07)**, using the same corporate-announcements feed's
+  `desc in {"Delisting", "Voluntary Delisting"}` categories - the head start the OPEN_OFFER pass
+  had already spotted. NSE's separate XLSX-based delisting rosters and BSE's/SEBI's sources were
+  investigated and intentionally NOT used (no JSON API / bot-blocked+unofficial-discovery /
+  PDF-only respectively) - see "DELISTING semantics" above for the full evidence and the
+  false-positive tagging guard it required. Reachability from the actual production runner is
+  unverified for the same general reason as EARNINGS/OPEN_OFFER; a `SOURCE_UNAVAILABLE` there is
+  a normal, handled outcome. Floor/exit price and bidding dates are not present in the feed's
+  own text and are never fabricated.
 * **GOVT_SECURITIES_AUCTION** (P2B): RBI's own semi-annual G-Sec/T-Bill borrowing calendar is
   published as a document covering the whole half-year, making a hand-maintained controlled
   file (mirroring `data/official_events.json`'s fail-closed loader in `core/event_calendar.py`)

@@ -132,6 +132,11 @@ SRC_NSE_CORPORATE_ACTIONS = "nse_corporate_actions"  # NSE's structured corporat
 SRC_NSE_SAST_ANNOUNCEMENTS = "nse_sast_open_offer_announcements"  # NSE's corporate-announcements
                                                                     # feed, desc == "Public
                                                                     # Announcement-Open Offer"
+# Market Events Engine V1 (P2E - live DELISTING)
+SRC_NSE_DELISTING_ANNOUNCEMENTS = "nse_delisting_announcements"    # NSE's corporate-announcements
+                                                                    # feed, desc in {"Delisting",
+                                                                    # "Voluntary Delisting"},
+                                                                    # text-validated
 
 _REGISTRY: dict[str, SourceMetadata] = {
     SRC_NSE: SourceMetadata(
@@ -344,6 +349,26 @@ _REGISTRY: dict[str, SourceMetadata] = {
               "advertisement) shares this one `desc` value, so lifecycle stage is read from "
               "the filing's own stated regulation/text (e.g. Regulation 18(7) = offer opening, "
               "18(12) = post-offer advertisement), never inferred from price or holding %."),
+    SRC_NSE_DELISTING_ANNOUNCEMENTS: SourceMetadata(
+        source_name=SRC_NSE_DELISTING_ANNOUNCEMENTS, source_type=SourceType.PRIMARY,
+        source_family=SourceFamily.EXCHANGE, independence_group=GROUP_NSE,
+        retrieval_method="https GET www.nseindia.com/api/corporate-announcements?index=equities"
+                         "&from_date=...&to_date=...",
+        reference="https://www.nseindia.com/companies-listing/corporate-filings-announcements",
+        market_timestamp_available=False, display_rights_status="UNREVIEWED",
+        notes="NSE's general corporate-disclosure feed (the SAME feed BUYBACK/OPEN_OFFER "
+              "already read), filtered to the exact categories `desc in {\"Delisting\", "
+              "\"Voluntary Delisting\"}` - explicit, NSE-assigned classifications, not "
+              "inferred. Used for DELISTING (P2E). A second TEXT-level guard "
+              "(`\"delist\" in attchmntText.lower()`) is required alongside the `desc` match: "
+              "live rows (e.g. KEI Industries 21-Jan-2026) carry this desc tag on an unrelated "
+              "board-meeting disclosure with no delisting wording - a confirmed NSE tagging "
+              "mismatch, so `desc` alone is not trusted. Voluntary/compulsory is read only "
+              "from explicit text; NCLT Resolution-Plan-driven delistings state neither and "
+              "stay type=UNKNOWN. Floor/exit price and bidding dates are never stated in this "
+              "feed and stay absent - never sourced from NSE's separate XLSX-based delisting "
+              "rosters, which were investigated and left out of this pass (no JSON API, "
+              "unverified live reachability)."),
 }
 
 
@@ -406,6 +431,7 @@ __all__ = ["SourceMetadata", "SourceFamily", "source_metadata", "independence_gr
            "SRC_NSE_IPO", "SRC_SEBI_OFFER_DOC", "SRC_MARKET_STRUCTURE", "SRC_NSE_FIIDII_API",
            "SRC_CDSL_FPI_DAILY", "SRC_NSDL_FPI_FORTNIGHTLY", "SRC_NSE_BOARD_MEETINGS",
            "SRC_NSE_OFS", "SRC_NSE_CORPORATE_ACTIONS", "SRC_NSE_SAST_ANNOUNCEMENTS",
+           "SRC_NSE_DELISTING_ANNOUNCEMENTS",
            "GROUP_NSE", "GROUP_NSEIX",
            "GROUP_RBI", "GROUP_FED", "GROUP_YAHOO", "GROUP_GEMINI", "GROUP_INTERNAL",
            "GROUP_DEMO", "GROUP_CDSL", "GROUP_NSDL", "GROUP_UNKNOWN", "NEWS_GROUP_PREFIX"]

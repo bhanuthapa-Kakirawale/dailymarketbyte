@@ -1,16 +1,16 @@
-"""Per-family fetchers. EARNINGS (P2A), OFS (P2B), BUYBACK (P2C) and OPEN_OFFER (P2D) have
-real, live adapters; IPO is a read-only projection over `ipo_watch` (never acquired here).
-GOVT_SECURITIES_AUCTION/DELISTING still have no official source verified reachable from this
-environment, and "reliability over feature count" (docs/MARKET_EVENTS_ENGINE.md) means no
-adapter is written against an endpoint that was never actually probed - they return
-`NOT_SUPPORTED_YET`, a normal, non-failure state (mirrors `official_snapshots`'s own
-`NOT_SUPPORTED` for ESM), until `validate_market_events_sources.py`'s connectivity probe clears
-one of them for a real adapter.
+"""Per-family fetchers. EARNINGS (P2A), OFS (P2B), BUYBACK (P2C), OPEN_OFFER (P2D) and
+DELISTING (P2E) have real, live adapters; IPO is a read-only projection over `ipo_watch`
+(never acquired here). GOVT_SECURITIES_AUCTION still has no official source verified
+reachable from this environment, and "reliability over feature count"
+(docs/MARKET_EVENTS_ENGINE.md) means no adapter is written against an endpoint that was
+never actually probed - it returns `NOT_SUPPORTED_YET`, a normal, non-failure state
+(mirrors `official_snapshots`'s own `NOT_SUPPORTED` for ESM), until
+`validate_market_events_sources.py`'s connectivity probe clears it for a real adapter.
 """
 from __future__ import annotations
 
-from ..models import (ALL_FAMILIES, BUYBACK, EARNINGS, IPO, OFS, OPEN_OFFER, FamilyFetchResult,
-                      NOT_SUPPORTED_YET)
+from ..models import (ALL_FAMILIES, BUYBACK, DELISTING, EARNINGS, IPO, OFS, OPEN_OFFER,
+                      FamilyFetchResult, NOT_SUPPORTED_YET)
 
 
 def _not_supported(family: str, reason: str):
@@ -49,5 +49,8 @@ DEFAULT_FETCHERS[BUYBACK] = fetch_buyback
 
 from .open_offer import fetch_open_offer    # noqa: E402 - same reason as above
 DEFAULT_FETCHERS[OPEN_OFFER] = fetch_open_offer
+
+from .delisting import fetch_delisting      # noqa: E402 - same reason as above
+DEFAULT_FETCHERS[DELISTING] = fetch_delisting
 
 __all__ = ["DEFAULT_FETCHERS"]

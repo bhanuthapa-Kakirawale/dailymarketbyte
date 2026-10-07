@@ -198,3 +198,56 @@ def test_plan_public_sections_market_events_section_includes_buyback():
     out = plan_public_sections(FakeGate(), intel, DAY, "PRE", max_structure=0)
     families_shown = {c["tag"] for c in (out.market_events or {}).get("cards", [])}
     assert "BUYBACK" in families_shown
+
+
+# --------------------------------------------------------------------------- OPEN_OFFER reaches the scene (P2D)
+def test_plan_public_sections_market_events_section_includes_open_offer():
+    from market_events.models import OPEN_OFFER, SCHEMA_VERSION, SUCCESS, MarketEvent
+    from presentation.public_intelligence import PublicIntelligence, plan_public_sections
+
+    class FakeGate:
+        profile = type("P", (), {"value": "PRIVATE_ANALYTICS"})()
+
+        def admit(self, fact):
+            return True
+
+    ev = MarketEvent(schema_version=SCHEMA_VERSION, family=OPEN_OFFER,
+                     event_key="OPEN_OFFER:DEMOOO:x", symbol="DEMOOO",
+                     company="Demo Open Offer Ltd", status="ANNOUNCED", sub_type=None,
+                     data_as_of=DAY.isoformat(), source_name="nse_sast_open_offer_announcements",
+                     source_reference="https://x",
+                     facts=[{"label": "stage_evidence", "value": "ANNOUNCED"}],
+                     status_capture=SUCCESS)
+    intel = PublicIntelligence()
+    intel.market_events = {OPEN_OFFER: [ev]}
+    intel.universe_symbols = {"DEMOOO"}
+    out = plan_public_sections(FakeGate(), intel, DAY, "PRE", max_structure=0)
+    families_shown = {c["tag"] for c in (out.market_events or {}).get("cards", [])}
+    assert "OPEN OFFER" in families_shown
+
+
+# --------------------------------------------------------------------------- DELISTING reaches the scene (P2E)
+def test_plan_public_sections_market_events_section_includes_delisting():
+    from market_events.models import DELISTING, SCHEMA_VERSION, SUCCESS, MarketEvent
+    from presentation.public_intelligence import PublicIntelligence, plan_public_sections
+
+    class FakeGate:
+        profile = type("P", (), {"value": "PRIVATE_ANALYTICS"})()
+
+        def admit(self, fact):
+            return True
+
+    ev = MarketEvent(schema_version=SCHEMA_VERSION, family=DELISTING,
+                     event_key="DELISTING:DEMODL:x", symbol="DEMODL",
+                     company="Demo Delisting Ltd", status="COMPLETED", sub_type=None,
+                     data_as_of=DAY.isoformat(), source_name="nse_delisting_announcements",
+                     source_reference="https://x",
+                     facts=[{"label": "stage_evidence", "value": "COMPLETED"},
+                           {"label": "delisting_type", "value": "VOLUNTARY"}],
+                     status_capture=SUCCESS)
+    intel = PublicIntelligence()
+    intel.market_events = {DELISTING: [ev]}
+    intel.universe_symbols = {"DEMODL"}
+    out = plan_public_sections(FakeGate(), intel, DAY, "PRE", max_structure=0)
+    families_shown = {c["tag"] for c in (out.market_events or {}).get("cards", [])}
+    assert "DELISTING" in families_shown

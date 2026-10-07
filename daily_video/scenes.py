@@ -349,10 +349,13 @@ def diverging_rows(ctx, t, rows, top, bottom, start=0.5, x0=theme.X0, x1=theme.X
         ty = box[1] + (30 if big else 18)
         if r.get("tag"):
             tx = chip(ctx, tx, ty, r["tag"], col, p=p, size=theme.T_SMALL) + 16
-        fn = fit(r["name"], (x1 - x0) * 0.5, 50 if big else 38, min_size=28)
+        fv = font(84 if big else 48)
+        value_w = tlen(r["value"], fv)
+        col_gap = 28
+        name_max_w = max(60.0, (box[2] - 36 - value_w - col_gap) - tx)
+        fn = fit(r["name"], name_max_w, 50 if big else 38, min_size=28)
         ctx.ink.text(ctx.d, (tx, ty - (6 if r.get("tag") else 0)), r["name"], fn,
                      alpha(theme.TEXT_PRIMARY, p), "name")
-        fv = font(84 if big else 48)
         ctx.ink.right(ctx.d, box[2] - 36, box[1] + (24 if big else 10), r["value"], fv,
                       alpha(col, p), "value")
         bar_y = box[3] - (h * 0.30 if big else h * 0.34)

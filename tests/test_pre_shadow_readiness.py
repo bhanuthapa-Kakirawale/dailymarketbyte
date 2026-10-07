@@ -486,7 +486,12 @@ FROZEN = {
     "daily_video/pre_storyboard.py": "eb750f52913074a4b8b268753c65130ec21c32a9070511724e1de7b8171c24b9",
     "daily_video/radar_scenes.py": "ecda846e8012b64794641568023fa3582d256b2456c6ff805171cb76738b9647",
     "daily_video/radar_story_scene.py": "e544e5b3d224e6fcd194b9c5602a26749bda5f6c7a1a0228cb9e2ba38b53c64a",
-    "daily_video/scenes.py": "8ff19afcd878d6122f49a3410583d688bd327a04fc2de1b7f6725078a1fe53d1",
+    # Re-pinned 2026-10-07 with owner approval: `diverging_rows` (SECTORS/FLOWS) now reserves
+    # the name column against the value's actual rendered width instead of a flat half-card-width
+    # constant, fixing a real freeze-frame overlap between a long category label and a wide
+    # negative/comma crore value (e.g. "STOCK EXCHANGE" / "-₹4,281 cr"). No other frozen
+    # file changed.
+    "daily_video/scenes.py": "4347e5280af68e429a25e471d372bc830c52bedc9ec4b5c1c22208c8d9be8abb",
     "daily_video/storyboard.py": "cf7cc4860852b9316354a1cc36c9672373b9bc3e646b552d194ba78664620783",
     "daily_video/theme.py": "8e1af617da9052c104ede87ddd393de5744355d657b513accfee4414f8b726db",
     "daily_video/typography.py": "d6b5620d928e4ea9eef40647713b37f639f5ce087a47bd112bf0af2c37f152ae",

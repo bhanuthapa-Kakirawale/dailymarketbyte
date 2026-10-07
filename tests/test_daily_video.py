@@ -241,6 +241,56 @@ def test_fii_dii_is_omitted_not_fabricated_when_report_has_no_flows(real):
     assert any(o["section"] == "FII / DII" for o in real["sb"].omitted)
 
 
+# --------------------------------------------------------------------- FLOWS label/value collision
+def _flows_scene_rec_qa(bars):
+    """Build a bare FLOWS scene with the given `bars` rows and freeze it, same shape as the
+    CDSL depository-flow candidate (presentation/pre_plan.py's STOCK EXCHANGE / PRIMARY & OTHERS
+    bars) that produced a real `freeze_frame_qa` overlap on 2026-10-07."""
+    spec = SceneSpec(kind="FLOWS", section="FLOWS", duration=5.4,
+                     headline="FPIs were net sellers of equity in the latest depository-reported "
+                               "figures", subline="Depository-reported FPI equity flow (not final)",
+                     texts={"bars": bars}, freeze={"t": 4.8})
+    sb = Storyboard(session_date=dt.date(2026, 1, 1), date_label="THU 01 JAN 2026",
+                    kicker="SESSION RECAP", scenes=[spec])
+    _, rec, qa = Composer(sb).freeze(0)
+    return rec, qa
+
+
+def test_flows_long_label_and_negative_crore_value_do_not_overlap():
+    """Regression for the 2026-10-07 MORNING PRE run: 'STOCK EXCHANGE' / '-₹4,281 cr' and
+    'PRIMARY & OTHERS' / '+₹119 cr' rendered overlapping bounding boxes, failing freeze-frame
+    QA and the whole run (products/premarket.py's `result["ok"]`)."""
+    bars = [{"name": "STOCK EXCHANGE", "value": "-₹4,281 cr", "tag": "NET SELLERS",
+             "numeric": -4281, "positive": False},
+            {"name": "PRIMARY & OTHERS", "value": "+₹119 cr", "tag": "NET BUYERS",
+             "numeric": 119, "positive": True}]
+    _, qa = _flows_scene_rec_qa(bars)
+    assert qa["passed"], qa["issues"]
+
+
+def test_flows_handles_a_larger_comma_separated_negative_value():
+    bars = [{"name": "STOCK EXCHANGE", "value": "-₹12,345 cr", "tag": "NET SELLERS",
+             "numeric": -12345, "positive": False},
+            {"name": "PRIMARY & OTHERS", "value": "+₹119 cr", "tag": "NET BUYERS",
+             "numeric": 119, "positive": True}]
+    _, qa = _flows_scene_rec_qa(bars)
+    assert qa["passed"], qa["issues"]
+
+
+def test_flows_normal_fii_dii_values_still_pass_and_stay_readable():
+    """The plain NSE FII/DII case (short labels, short values) must keep passing unchanged,
+    with both label and value staying at a readable size (not shrunk by the new reservation)."""
+    bars = [{"name": "FII", "value": "-₹3,810 cr", "tag": "NET SELLERS",
+             "numeric": -3810, "positive": False},
+            {"name": "DII", "value": "+₹2,100 cr", "tag": "NET BUYERS",
+             "numeric": 2100, "positive": True}]
+    rec, qa = _flows_scene_rec_qa(bars)
+    assert qa["passed"], qa["issues"]
+    sizes = {tb.text: tb.size for tb in rec.texts}
+    assert sizes["FII"] >= 28
+    assert sizes["-₹3,810 cr"] >= 28
+
+
 # --------------------------------------------------------------------------- 22-24 encode
 def test_small_storyboard_encodes_valid_h264(tmp_path):
     scenes = [SceneSpec(kind="HOOK", section="HOOK", duration=0.5, headline="+1.00%",

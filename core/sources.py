@@ -134,6 +134,12 @@ SRC_NSE_SAST_ANNOUNCEMENTS = "nse_sast_open_offer_announcements"  # NSE's corpor
                                                                     # Announcement-Open Offer"
 # Market Events Engine V1 (P2E - live DELISTING)
 SRC_NSE_DELISTING_ANNOUNCEMENTS = "nse_delisting_announcements"    # NSE's corporate-announcements
+SRC_RBI_AUCTIONS = "rbi_govt_securities_auction_press_release"  # RBI's own live auction
+                                                                  # notification/result press
+                                                                  # releases (distinct from
+                                                                  # SRC_RBI_PRESS, which is the
+                                                                  # hand-entered, manually
+                                                                  # verified MPC schedule only)
                                                                     # feed, desc in {"Delisting",
                                                                     # "Voluntary Delisting"},
                                                                     # text-validated
@@ -369,6 +375,22 @@ _REGISTRY: dict[str, SourceMetadata] = {
               "feed and stay absent - never sourced from NSE's separate XLSX-based delisting "
               "rosters, which were investigated and left out of this pass (no JSON API, "
               "unverified live reachability)."),
+    SRC_RBI_AUCTIONS: SourceMetadata(
+        source_name=SRC_RBI_AUCTIONS, source_type=SourceType.PRIMARY,
+        source_family=SourceFamily.REGULATOR, independence_group=GROUP_RBI,
+        retrieval_method="https GET www.rbi.org.in/scripts/FS_PressRelease.aspx?fn=2757 "
+                         "(auction notification/result press releases, title-matched)",
+        reference="https://www.rbi.org.in/scripts/FS_PressRelease.aspx?fn=2757",
+        market_timestamp_available=False, display_rights_status="UNREVIEWED",
+        notes="RBI's own live press-release feed for Government of India dated-securities and "
+              "Treasury Bill auctions - confirmed to carry the substantive notification/result "
+              "tables (security name, notified amount, auction/settlement date; cut-off/"
+              "weighted-average yield) directly in the page's own HTML, not PDF-only. Distinct "
+              "from SRC_RBI_PRESS, which is a hand-entered, manually re-verified schedule entry "
+              "(e.g. the RBI MPC calendar) and never a number - this source is a live automated "
+              "fetch and defaults UNREVIEWED like every other new source here. Used for "
+              "GOVT_SECURITIES_AUCTION (P2F); State Government Securities (SDL) rows share the "
+              "same feed but are deferred out of V1 scope."),
 }
 
 
@@ -431,7 +453,7 @@ __all__ = ["SourceMetadata", "SourceFamily", "source_metadata", "independence_gr
            "SRC_NSE_IPO", "SRC_SEBI_OFFER_DOC", "SRC_MARKET_STRUCTURE", "SRC_NSE_FIIDII_API",
            "SRC_CDSL_FPI_DAILY", "SRC_NSDL_FPI_FORTNIGHTLY", "SRC_NSE_BOARD_MEETINGS",
            "SRC_NSE_OFS", "SRC_NSE_CORPORATE_ACTIONS", "SRC_NSE_SAST_ANNOUNCEMENTS",
-           "SRC_NSE_DELISTING_ANNOUNCEMENTS",
+           "SRC_NSE_DELISTING_ANNOUNCEMENTS", "SRC_RBI_AUCTIONS",
            "GROUP_NSE", "GROUP_NSEIX",
            "GROUP_RBI", "GROUP_FED", "GROUP_YAHOO", "GROUP_GEMINI", "GROUP_INTERNAL",
            "GROUP_DEMO", "GROUP_CDSL", "GROUP_NSDL", "GROUP_UNKNOWN", "NEWS_GROUP_PREFIX"]

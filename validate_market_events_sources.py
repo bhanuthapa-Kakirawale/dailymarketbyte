@@ -137,6 +137,30 @@ def _check_open_offer(now_iso: str) -> dict:
            "events_classified_count": len(res.events)}
 
 
+def _check_govt_securities_auction(now_iso: str) -> dict:
+    """GOVT_SECURITIES_AUCTION is LIVE as of P2F (2026-10-07): RBI's own press-release feed
+    (`https://www.rbi.org.in/scripts/FS_PressRelease.aspx?fn=2757`), plain un-scripted HTML
+    reachable via a direct GET (no Akamai warm-up needed, unlike nseindia.com) - uses a plain
+    `requests` GET, not `market.NSE()`. See docs/MARKET_EVENTS_ENGINE.md."""
+    from operations.connectivity import classify_exception
+    from market_events.sources.govt_securities_auction import (LISTING_URL, _http_get,
+                                                                fetch_govt_securities_auction,
+                                                                parse_listing)
+    try:
+        listing_html = _http_get(LISTING_URL)
+    except Exception as exc:
+        return {"check": "GOVT_SECURITIES_AUCTION", "status": "SOURCE_UNAVAILABLE",
+               "connectivity": classify_exception(exc), "detail": f"{type(exc).__name__}: {exc}"}
+    rows = parse_listing(listing_html)
+    if not rows:
+        return {"check": "GOVT_SECURITIES_AUCTION", "status": "PARSE_ERROR",
+               "connectivity": "REACHABLE", "detail": "listing page shape changed"}
+    res = fetch_govt_securities_auction(now_iso)
+    return {"check": "GOVT_SECURITIES_AUCTION", "status": "REACHABLE" if res.status == "SUCCESS"
+           else res.status, "connectivity": res.connectivity, "listing_row_count": len(rows),
+           "events_classified_count": len(res.events), "detail": res.reason[:200]}
+
+
 def _check_ipo() -> dict:
     return {"check": "IPO", "status": "N/A",
            "detail": "sourced via ipo_watch/official_snapshots by design - never fetched by "
@@ -149,7 +173,8 @@ def _check_skipped(family: str) -> dict:
 
 
 CHECKS = {"EARNINGS": _check_earnings, "OFS": _check_ofs, "BUYBACK": _check_buyback,
-         "OPEN_OFFER": _check_open_offer}
+         "OPEN_OFFER": _check_open_offer,
+         "GOVT_SECURITIES_AUCTION": _check_govt_securities_auction}
 
 
 def run_diagnostic(families=None, now: dt.datetime | None = None) -> dict:

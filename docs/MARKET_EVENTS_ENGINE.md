@@ -7,9 +7,11 @@ and the Private Desk's own, broader event calendar. One reusable
 acquisition→revision→replay→rights pipeline (`market_events/`), not seven independent hacks,
 mirroring `institutional_flows/`'s proven shape rather than duplicating it.
 
-**Status (P2C, 2026-10-07): EARNINGS, OFS and BUYBACK are all live from NSE's own feeds. IPO is
-live as a read-only projection over the existing, already-live `ipo_watch` pipeline (never a
-second acquisition). Every other family still returns `NOT_SUPPORTED_YET`.**
+**Status (P2F, 2026-10-07): EARNINGS, OFS, BUYBACK, OPEN_OFFER, DELISTING (all NSE's own feeds)
+and GOVT_SECURITIES_AUCTION (RBI's own press-release feed) are all live. IPO is live as a
+read-only projection over the existing, already-live `ipo_watch` pipeline (never a second
+acquisition). State Development Loans (SDL) - the same RBI feed, deferred out of
+GOVT_SECURITIES_AUCTION's V1 scope - and every other family still return `NOT_SUPPORTED_YET`.**
 
 ## Purpose
 
@@ -88,35 +90,96 @@ official source is unreachable or unverified, the family returns `SOURCE_UNAVAIL
 | IPO | `ipo_watch`/`official_snapshots` (`market_events/sources/ipo_projection.py`) | **LIVE as a read-only projection** - never re-acquired; shown via the existing IPO WATCH scene in PRE/POST, and via this projection on the Private Desk's `/events`/dashboard/Data Quality only |
 | OFS | NSE's own OFS mechanism feed (`market_events/sources/ofs.py`) | **LIVE** - `/api/live-ofs-active-issues` + `/api/live-ofs-past-issues`, confirmed reachable 2026-10-06; every row IS an OFS by construction (no text classification needed, unlike EARNINGS) |
 | BUYBACK | NSE's structured corporate-actions feed + corporate-announcements + daily-buyback disclosure (`market_events/sources/buyback.py`) | **LIVE** - `/api/corporates-corporateActions?index=equities` (`subject == "Buy Back"`, an exact categorical match) is PRIMARY, confirmed reachable 2026-10-07; cross-referenced with `/api/corporate-announcements` and `/api/corporates-daily-buyback?` for lifecycle status and route/price/quantity when explicitly stated |
-| GOVT_SECURITIES_AUCTION | RBI's semi-annual G-Sec/T-Bill borrowing calendar | `NOT_SUPPORTED_YET` (planned: hand-maintained controlled file, see Known limitations) |
+| GOVT_SECURITIES_AUCTION | RBI's own press-release feed (`market_events/sources/govt_securities_auction.py`) | **LIVE** - `https://www.rbi.org.in/scripts/FS_PressRelease.aspx?fn=2757`, confirmed reachable via a plain HTTP GET (no cookie warm-up, unlike nseindia.com) 2026-10-07; the announcement AND result press releases each carry the substantive table directly in their own HTML, never PDF-only |
 | OPEN_OFFER | NSE's corporate-announcements feed, `desc == "Public Announcement-Open Offer"` (`market_events/sources/open_offer.py`) | **LIVE** - confirmed reachable 2026-10-07; an exact categorical match, same feed BUYBACK already reads as its secondary source. Price/shares/%/dates are not in the feed's own text and stay absent - see "OPEN_OFFER semantics" above |
 | DELISTING | NSE's corporate-announcements feed, `desc in {"Delisting", "Voluntary Delisting"}` (`market_events/sources/delisting.py`) | **LIVE** - confirmed reachable 2026-10-07; a 365-day pull returned 17 real rows. BSE's delisting purpose code and NSE's own XLSX-based delisting rosters were investigated and NOT used (see "DELISTING semantics" below) |
 
 Governing rule (already established via `official_snapshots.NOT_SUPPORTED`, and the project's
 "reliability over feature count" posture): **no live adapter is written against an endpoint
 that has not actually been verified reachable from this environment.** `market_events/sources/`
-holds `DEFAULT_FETCHERS`, one per family; EARNINGS, OFS, BUYBACK and OPEN_OFFER now map to real
-adapters (`market_events.sources.earnings.fetch_earnings`, `market_events.sources.ofs.fetch_ofs`,
-`market_events.sources.buyback.fetch_buyback`, `market_events.sources.open_offer.fetch_open_offer`),
-IPO's stub carries an honest reason ("sourced
-via `ipo_watch` by design, never acquired by this engine" - not "unreachable", since it IS
-reachable, just intentionally out of this engine's scope), and every other family stays the
-generic `NOT_SUPPORTED_YET` stub carrying an explicit `not_supported_yet = True` marker (so Data
-Quality can tell "never attempted" apart from "has a real adapter").
+holds `DEFAULT_FETCHERS`, one per family; EARNINGS, OFS, BUYBACK, OPEN_OFFER, DELISTING and
+GOVT_SECURITIES_AUCTION now map to real adapters (`market_events.sources.earnings.fetch_earnings`,
+`market_events.sources.ofs.fetch_ofs`, `market_events.sources.buyback.fetch_buyback`,
+`market_events.sources.open_offer.fetch_open_offer`,
+`market_events.sources.delisting.fetch_delisting`,
+`market_events.sources.govt_securities_auction.fetch_govt_securities_auction`), IPO's stub
+carries an honest reason ("sourced via `ipo_watch` by design, never acquired by this engine" -
+not "unreachable", since it IS reachable, just intentionally out of this engine's scope), and
+every other family (SDL, CMB, switches, ...) stays the generic `NOT_SUPPORTED_YET` stub carrying
+an explicit `not_supported_yet = True` marker (so Data Quality can tell "never attempted" apart
+from "has a real adapter").
 
 `python validate_market_events_sources.py` is the manual, read-only connectivity diagnostic
 (mirrors `validate_pre_production.py --connectivity-only`) - one probe per family, never writes
 to `market_events/`, never gates anything.
 
-## Government securities auction yield semantics (design constraint for the eventual adapter)
+## GOVT_SECURITIES_AUCTION semantics (`market_events/sources/govt_securities_auction.py`)
 
-Before an auction's result is published, any coupon shown is labelled `Coupon: X%`, **never**
-`Yield: X%` - yield is `DETERMINED AT AUCTION` until the result exists. A previous auction's
-cut-off yield may be shown only explicitly labelled `PREVIOUS AUCTION`, never implied as
-guaranteed for the upcoming one. After the result is officially published, `Cut-off yield: X%`
-may be shown with its own result date/source. This rule governs the `GOVT_SECURITIES_AUCTION`
-family's `facts` the moment a real source lands; nothing here is bypassable by a looser display
-choice downstream.
+**Discovery (P2F, 2026-10-07):** RBI's own press-release listing
+(`https://www.rbi.org.in/scripts/FS_PressRelease.aspx?fn=2757`) is plain, un-scripted HTML -
+confirmed reachable from this environment via a direct `requests` GET, no cookie warm-up needed
+(unlike `nseindia.com`). Each individual press-release detail page (same listing, one `prid=`
+link per release) was confirmed to carry the SUBSTANTIVE notification/result table directly in
+its own HTML - security name, notified amount, auction/settlement date for an announcement
+("Auction of Government of India Dated Securities" / "Auction of 91-Day, 182-Day and 364-Day
+Treasury Bills"); notified amount, amount accepted, cut-off price/yield (YTM), weighted-average
+price/yield (WAY) for a result ("Government Stock - Full Auction Results" / "Treasury Bills:
+Full Auction Result") - never PDF-only (the PDF link is supplementary), confirmed with real
+October 2026 examples (e.g. "7.06% GS 2041" / "7.43% GS 2076", notified ₹36,000 crore, auctioned
+09-Oct-2026; the 30-Sep-2026 T-Bill result: 91-day cut-off yield 5.5199%, weighted average
+5.4902%). A candidate `dbie.rbihub.in` domain surfaced during discovery was investigated and
+rejected - it is **not** RBI's own site (RBI's actual Database on Indian Economy domain is
+`data.rbi.org.in`, formerly `dbie.rbi.org.in`, per RBI's own URL-change announcement) - and was
+never used.
+
+**V1 scope:** central government dated securities (`GSEC_NEW`/`GSEC_REISSUE`) and the three
+standard Treasury Bill tenors (`TBILL_91`/`TBILL_182`/`TBILL_364`), both their announcement and
+matching result lifecycle stages. **Deferred:** State Development Loans (the SAME feed, under
+"Auction of State Government Securities" / "...Full Auction Result" / "Result of Yield/Price
+Based Auction of State Government Securities" titles - same source/schema, left out of V1 to
+keep scope narrow: one notification can name several states at once, a materially different
+grouping shape from one security/tenor per row); Cash Management Bills; switches; government
+buybacks of its own debt; underwriting-auction releases; the half-yearly/quarterly
+issuance-calendar PDFs (calendar-level documents, not individual auction events); RBI liquidity
+operations (WMA limits, floating-rate-bond interest resets). The abbreviated "...Auction
+Results: Cut-off" result variant (published alongside the Full Auction Result, same day, a
+strict subset of its fields) is deliberately skipped - only the Full Auction Result is read, to
+avoid a redundant second parse of the same auction.
+
+**Event identity is a direct natural key, not `needs_lookup`:** this family is market-wide
+(`symbol=None`, per `MarketEvent`'s own documented invariant), so the `_lookup_open_event`
+symbol-keyed reconciliation EARNINGS/OFS/BUYBACK/OPEN_OFFER/DELISTING share cannot apply (and a
+pseudo-symbol would silently break `watch.select_market_events`'s "if it names a security, that
+security is in the tracked universe" check - never done).
+`event_key = f"GOVT_SECURITIES_AUCTION:MARKET:{instrument_slug}:{auction_date_iso}"` instead:
+`instrument_slug` is the security's own stated name (G-Sec, e.g. `7_06_GS_2041`) or the fixed
+tenor constant (T-Bill), `auction_date_iso` is the auction date the announcement itself states
+(or, for a result captured without its announcement in the same pass, the press release's own
+publication date - RBI states results are "announced on the same day" as the auction). A later
+notified-amount revision for the SAME instrument/date naturally keeps the SAME key and is picked
+up as an ordinary checksum-driven `REVISED` write - no new logic needed. **Known, accepted
+limitation:** a genuine auction-DATE revision (RBI rescheduling an already-announced auction)
+mints a new event_key rather than revising the original, because this feed gives no symbol or
+other cross-referencing field to reconcile it by (unlike EARNINGS' board-meeting reschedule,
+which reconciles via NSE's own stable `bm_symbol`). No live example of this was observed this
+pass.
+
+**Announcement + result merge:** a single fetch groups every qualifying row from a trailing
+`lookback_days = 21` window by `(instrument_slug, auction_date_iso)` BEFORE building any
+`MarketEvent`, so an auction whose announcement AND result both fall inside one fetch's window
+becomes ONE `COMPLETED` event carrying both fact sets - never two events for one auction cycle.
+21 days is generous against the real observed announcement-to-result gap (4-6 days), so a daily
+capture almost never sees a result without its announcement already in the same window. Before a
+result exists, the event is `SCHEDULED` with only the announcement's facts (notified amount,
+repayment/settlement date, GoI notification reference) - no yield field is ever shown, satisfying
+the pre-existing project design note that a coupon is never shown labelled `Yield:` before a
+result exists. After the result is captured, `cutoff_yield_pct`/`cutoff_price`/
+`weighted_avg_yield_pct`/`weighted_avg_price` facts are added and the status becomes `COMPLETED`.
+`Devolvement on Primary Dealers` is read only when the source states a non-"NIL" figure - a
+`NIL` (the overwhelmingly common case) is omitted, never written as a fabricated `0`.
+
+GOVT_SECURITIES_AUCTION never uses a third-party auction calendar, `dbie.rbihub.in`, or any
+hand-maintained date file - the one source used is RBI's own live press-release feed.
 
 ## EARNINGS classification (`market_events/sources/earnings.py`)
 
@@ -513,12 +576,19 @@ owner-confirmed).
   unverified for the same general reason as EARNINGS/OPEN_OFFER; a `SOURCE_UNAVAILABLE` there is
   a normal, handled outcome. Floor/exit price and bidding dates are not present in the feed's
   own text and are never fabricated.
-* **GOVT_SECURITIES_AUCTION** (P2B): RBI's own semi-annual G-Sec/T-Bill borrowing calendar is
-  published as a document covering the whole half-year, making a hand-maintained controlled
-  file (mirroring `data/official_events.json`'s fail-closed loader in `core/event_calendar.py`)
-  cheaper and more reliable than a weekly scraper - but it requires real, owner-verified
-  entries (quoted line, source URL, verified-on date) exactly like the RBI MPC schedule; no
-  placeholder/synthetic entries are shipped in `data/`.
+* **GOVT_SECURITIES_AUCTION is now live (P2F, 2026-10-07)**, using RBI's own live press-release
+  feed (`https://www.rbi.org.in/scripts/FS_PressRelease.aspx?fn=2757`) rather than the
+  hand-maintained half-yearly-calendar file originally planned at P2B - the weekly
+  announcement/result press releases turned out to carry fully structured, directly-parseable
+  HTML, making a live adapter both possible and more current than a manually-entered calendar.
+  See "GOVT_SECURITIES_AUCTION semantics" above for scope, event identity and the
+  announcement+result merge design. Reachability from the actual production runner (GitHub
+  Actions) is unverified - RBI's site is a different host from `nseindia.com`, so the
+  documented NSE cloud-IP blocking doesn't directly apply, but this has not been tested live
+  from a runner; a `SOURCE_UNAVAILABLE` there is a normal, handled outcome. State Development
+  Loans (SDL), Cash Management Bills, switches, and an auction-DATE revision (as opposed to an
+  amount revision) remain explicitly out of scope / a known limitation - see the semantics
+  section above.
 * Detailed earnings-result interpretation (revenue/EBITDA/PAT/margin parsing) is explicitly out
   of scope for V1 - a later packet.
 * Source-conflict handling (two official sources disagreeing on one filing) is designed for but

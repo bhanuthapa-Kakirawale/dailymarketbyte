@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import datetime as dt
 
-from .models import BUYBACK, DELISTING, EARNINGS, GOVT_SECURITIES_AUCTION, IPO, OFS, OPEN_OFFER
+from .models import (BUYBACK, COMPLETED, DELISTING, EARNINGS, GOVT_SECURITIES_AUCTION, IPO, OFS,
+                     OPEN_OFFER)
 from .facts import market_event_fact
 
 from presentation.provenance_label import ProvenanceLabel, fmt_date
@@ -31,6 +32,10 @@ FAMILY_CHIP = {EARNINGS: "EARNINGS", IPO: "IPO", OFS: "OFS",
 # not load-bearing today, but it makes the "never shown twice" invariant provable in code
 # rather than true only by omission.
 EXCLUDED_FROM_PUBLIC_SCENE = frozenset({IPO})
+
+_AUCTION_SUB_TYPE_LABEL = {"TBILL_91": "91-Day T-Bill", "TBILL_182": "182-Day T-Bill",
+                          "TBILL_364": "364-Day T-Bill", "GSEC_NEW": "G-Sec",
+                          "GSEC_REISSUE": "G-Sec (re-issue)"}
 
 
 def select_market_events(events_by_family: dict, universe_symbols, day: dt.date,
@@ -79,8 +84,13 @@ def _line(ev) -> str:
         band = f.get("price_band")
         return f"{FAMILY_CHIP[ev.family]} {ev.status.lower()}" + (f" at {band}" if band else "")
     if ev.family == GOVT_SECURITIES_AUCTION:
+        label = _AUCTION_SUB_TYPE_LABEL.get(ev.sub_type, "Auction")
+        if ev.status == COMPLETED:
+            yield_pct = f.get("cutoff_yield_pct")
+            return (f"{label} auction completed" +
+                   (f", cut-off yield {yield_pct}%" if yield_pct is not None else ""))
         amount = f.get("notified_amount_crore")
-        return (f"{ev.sub_type or 'Auction'} scheduled" +
+        return (f"{label} auction scheduled" +
                (f", notified amount Rs {amount} cr" if amount else ""))
     if ev.family == BUYBACK:
         price = f.get("buyback_price")

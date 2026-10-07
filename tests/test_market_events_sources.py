@@ -142,14 +142,15 @@ def test_parse_error_is_recorded_and_never_written(tmp_path):
 
 
 def test_not_supported_yet_every_family_by_default(tmp_path):
-    """EARNINGS (P2A), OFS (P2B), BUYBACK (P2C), OPEN_OFFER (P2D) and DELISTING (P2E) are now
-    the five exceptions with real, live-calling fetchers; IPO's stub stays NOT_SUPPORTED_YET-
-    shaped by design (it is never acquired by this engine - see its own reworded reason string)
-    and every other family is still genuinely unsupported. EARNINGS/OFS/BUYBACK/OPEN_OFFER/
-    DELISTING are excluded from this capture specifically so this test never makes a live
-    network call (tests/ stays fully offline) - see each adapter's own section further down
-    this file for its offline, fixture-based coverage."""
-    from market_events.models import ALL_FAMILIES, BUYBACK, DELISTING, EARNINGS, OFS, OPEN_OFFER
+    """EARNINGS (P2A), OFS (P2B), BUYBACK (P2C), OPEN_OFFER (P2D), DELISTING (P2E) and
+    GOVT_SECURITIES_AUCTION (P2F) are now the six exceptions with real, live-calling fetchers;
+    IPO's stub stays NOT_SUPPORTED_YET-shaped by design (it is never acquired by this engine -
+    see its own reworded reason string). EARNINGS/OFS/BUYBACK/OPEN_OFFER/DELISTING/
+    GOVT_SECURITIES_AUCTION are excluded from this capture specifically so this test never makes
+    a live network call (tests/ stays fully offline) - see each adapter's own section further
+    down this file for its offline, fixture-based coverage."""
+    from market_events.models import (ALL_FAMILIES, BUYBACK, DELISTING, EARNINGS,
+                                      GOVT_SECURITIES_AUCTION, OFS, OPEN_OFFER)
     from market_events.service import MarketEventsService
     from market_events.sources import DEFAULT_FETCHERS
 
@@ -158,10 +159,11 @@ def test_not_supported_yet_every_family_by_default(tmp_path):
     assert not getattr(DEFAULT_FETCHERS[BUYBACK], "not_supported_yet", False)
     assert not getattr(DEFAULT_FETCHERS[OPEN_OFFER], "not_supported_yet", False)
     assert not getattr(DEFAULT_FETCHERS[DELISTING], "not_supported_yet", False)
+    assert not getattr(DEFAULT_FETCHERS[GOVT_SECURITIES_AUCTION], "not_supported_yet", False)
 
     svc = MarketEventsService(str(tmp_path))
-    still_unsupported = tuple(f for f in ALL_FAMILIES
-                              if f not in (EARNINGS, OFS, BUYBACK, OPEN_OFFER, DELISTING))
+    live = (EARNINGS, OFS, BUYBACK, OPEN_OFFER, DELISTING, GOVT_SECURITIES_AUCTION)
+    still_unsupported = tuple(f for f in ALL_FAMILIES if f not in live)
     res = svc.capture(NOW, "REPORT_JOB", families=still_unsupported)
     for family in still_unsupported:
         assert res["results"][family]["status"] == "NOT_SUPPORTED_YET"
@@ -1323,3 +1325,385 @@ def test_delisting_source_defaults_to_review_required_rights():
     from core.sources import SRC_NSE_DELISTING_ANNOUNCEMENTS
     from publication.rights import rights_for
     assert rights_for(SRC_NSE_DELISTING_ANNOUNCEMENTS).status.value == "REVIEW_REQUIRED"
+
+
+# --------------------------------------------------------------- GOVT_SECURITIES_AUCTION (P2F)
+# Fixtures below are TRIMMED, structurally faithful excerpts of REAL RBI press-release pages
+# (https://www.rbi.org.in/scripts/FS_PressRelease.aspx?fn=2757 and its per-`prid` detail pages)
+# pulled live this session (2026-10-07) - the listing's own markup (bare, unquoted `href`
+# attributes - that is RBI's real markup, not a typo) and each detail page's real table
+# structure/column headers/row labels, trimmed to just the elements this adapter reads. Real
+# values (security names, amounts, dates, yields) are the genuine ones observed live; only the
+# surrounding page chrome (menus, PDF links, the Annex boilerplate) is cut. Never re-fetched
+# during a test run.
+_GSA_LISTING_HTML = (
+    '<table class="tablebg" width="100%">'
+    '<tr><th colspan="4" align="left">Oct 05, 2026</th></tr>'
+    "<tr><td><a class='link2' href=FS_PressRelease.aspx?prid=63730&fn=2757>"
+    "Auction of Government of India Dated Securities</a></td></tr>"
+    '<tr><th colspan="4" align="left">Oct 07, 2026</th></tr>'
+    "<tr><td><a class='link2' href=FS_PressRelease.aspx?prid=63712&fn=2757>"
+    "Auction of 91-Day, 182-Day and 364-Day Treasury Bills</a></td></tr>"
+    "<tr><td><a class='link2' href=FS_PressRelease.aspx?prid=63696&fn=2757>"
+    "Treasury Bills: Full Auction Result</a></td></tr>"
+    '<tr><th colspan="4" align="left">Oct 01, 2026</th></tr>'
+    "<tr><td><a class='link2' href=FS_PressRelease.aspx?prid=63716&fn=2757>"
+    "Auction of State Government Securities</a></td></tr>"
+    "<tr><td><a class='link2' href=FS_PressRelease.aspx?prid=63670&fn=2757>"
+    "WMA Limit for Government of India for October 2026 – March 2027</a></td></tr>"
+    "</table>"
+)
+
+_GSEC_ANNOUNCE_HTML = (
+    '<table class="tablecontent2"><tr><td>'
+    '<p>Government of India (GoI) has announced the sale (re-issue) of two dated securities '
+    'for a notified amount of Rs 36,000 crore as per the following details:</p>'
+    '<table width="90%" class="tablebg">'
+    '<tr class="head"><td>Sr No</td><td>Security</td><td>Date of Repayment</td>'
+    '<td>Notified Amount (Rs Crore)</td><td>GoI specific Notification</td>'
+    '<td>Auction Date</td><td>Settlement Date</td></tr>'
+    '<tr align="center"><td>1</td><td>7.06% GS 2041</td><td>Jul 27, 2041</td>'
+    '<td align="right">23,000</td>'
+    '<td rowspan="2"><a href="x">F.No.4(1)-B(W&amp;M)/2026 dated October 05, 2026</a></td>'
+    '<td rowspan="2">October 09, 2026<br>(Friday)</td>'
+    '<td rowspan="2">October 12, 2026<br>(Monday)</td></tr>'
+    '<tr align="center"><td>2</td><td>7.43% GS 2076</td><td>Jan 19, 2076</td>'
+    '<td align="right">13,000</td></tr>'
+    '<tr><td> </td><td align="center">Total</td><td> </td><td align="right">36,000</td>'
+    '<td> </td><td> </td><td> </td></tr>'
+    '</table>'
+    '<p class="head">Press Release: 2026-2027/1252</p>'
+    '</td></tr></table>'
+)
+
+_GSEC_ANNOUNCE_NEW_HTML = _GSEC_ANNOUNCE_HTML.replace("sale (re-issue)", "sale")
+
+_TBILL_ANNOUNCE_HTML = (
+    '<table class="tablecontent2"><tr><td>'
+    '<p>Reserve Bank of India announces the auction of Government of India Treasury Bills as '
+    'per the following details:</p>'
+    '<table width="90%" class="tablebg">'
+    '<tr align="center" class="head"><td>Sr. No.</td><td>Treasury Bill</td>'
+    '<td>Notified Amount (Rs crore)</td><td>Auction Date</td><td>Settlement Date</td></tr>'
+    '<tr align="center"><td>1</td><td>91-Day</td><td align="right">8,000</td>'
+    '<td rowspan="3">October 07, 2026<br>(Wednesday)</td>'
+    '<td rowspan="3">October 08, 2026<br>(Thursday)</td></tr>'
+    '<tr align="center"><td>2</td><td>182-Day</td><td align="right">8,000</td></tr>'
+    '<tr align="center"><td>3</td><td>364-Day</td><td align="right">7,000</td></tr>'
+    '<tr><td> </td><td align="center">Total</td><td align="right">23,000</td>'
+    '<td> </td><td> </td></tr>'
+    '</table>'
+    '<p class="head">Press Release: 2026-2027/1234</p>'
+    '</td></tr></table>'
+)
+
+_TBILL_RESULT_HTML = (
+    '<table class="tablecontent2">'
+    '<tr><td align="right" class="tableheader"><b> Date : Oct 07, 2026</b></td></tr>'
+    '<tr><td><table width="90%" class="tablebg">'
+    '<tr><td colspan="5" align="right">(Amount in Rs crore)</td></tr>'
+    '<tr class="head"><td colspan="2" align="center">Auction Results</td>'
+    '<td align="center">91-Day</td><td align="center">182-Day</td><td align="center">364-Day</td></tr>'
+    '<tr><td align="center">I.</td><td>Notified Amount</td><td align="right">9,000</td>'
+    '<td align="right">8,000</td><td align="right">7,000</td></tr>'
+    '<tr><td rowspan="2" align="center">III.</td><td rowspan="2">Cut-off price (Rs) / Yield</td>'
+    '<td align="right">98.6425</td><td align="right">97.1139</td><td align="right">94.1949</td></tr>'
+    '<tr><td align="right">(YTM: 5.5199%)</td><td align="right">(YTM: 5.9601%)</td>'
+    '<td align="right">(YTM: 6.1798%)</td></tr>'
+    '<tr><td rowspan="2" align="center">VI.</td>'
+    '<td rowspan="2">Weighted Average Price (Rs)/Yield</td>'
+    '<td align="right">98.6497</td><td align="right">97.1246</td><td align="right">94.2031</td></tr>'
+    '<tr><td align="right">(WAY: 5.4902%)</td><td align="right">(WAY: 5.9373%)</td>'
+    '<td align="right">(WAY: 6.1705%)</td></tr>'
+    '<tr><td align="center">XI.</td><td>Devolvement on Primary Dealers</td>'
+    '<td align="right">NIL</td><td align="right">NIL</td><td align="right">NIL</td></tr>'
+    '</table></td></tr>'
+    '<tr><td><p class="head">Press Release: 2026-2027/1218</p></td></tr>'
+    '</table>'
+)
+
+_GSEC_RESULT_HTML = (
+    '<table class="tablecontent2">'
+    '<tr><td align="right" class="tableheader"><b> Date : Oct 01, 2026</b></td></tr>'
+    '<tr><td><table width="90%" class="tablebg">'
+    '<tr><td colspan="6" align="right">(Amount in Rs Crore)</td></tr>'
+    '<tr class="head"><td colspan="2" align="center">Auction Results</td>'
+    '<td align="center">6.20% GS 2029</td><td align="center">6.57% GS 2033</td>'
+    '<td align="center">7.63% GS 2056</td><td align="center">7.50% GOI SGrB 2056</td></tr>'
+    '<tr><td align="center">I.</td><td>Notified Amount</td><td align="right">9,000</td>'
+    '<td align="right">12,000</td><td align="right">9,000</td><td align="right">3,000</td></tr>'
+    '<tr><td rowspan="2" align="center">III.</td><td rowspan="2">Cut-off price (Rs) / Yield</td>'
+    '<td align="right">98.53</td><td align="right">96.79</td><td align="right">99.30</td>'
+    '<td align="right">98.20</td></tr>'
+    '<tr><td align="right">(YTM: 6.7688%)</td><td align="right">(YTM: 7.1680%)</td>'
+    '<td align="right">(YTM: 7.6895%)</td><td align="right">(YTM: 7.6539%)</td></tr>'
+    '<tr><td align="center">XI.</td><td>Devolvement on Primary Dealers</td>'
+    '<td align="right">NIL</td><td align="right">NIL</td><td align="right">NIL</td>'
+    '<td align="right">NIL</td></tr>'
+    '</table></td></tr>'
+    '<tr><td><p class="head">Press Release: 2026-2027/1231</p></td></tr>'
+    '</table>'
+)
+
+_GSA_NOW_ISO = "2026-10-07T19:30:00+05:30"
+
+
+def _gsa_http_get(pages: dict):
+    """Maps a URL to fixture HTML by key substring. Every detail-page URL also contains the
+    listing's own 'fn=2757' query param, so a `prid=` URL is only ever matched against a
+    `prid=`-keyed fixture (never falling back to the listing fixture by accident)."""
+    def get(url):
+        is_detail = "prid=" in url
+        for key, html in pages.items():
+            if key.startswith("prid=") != is_detail:
+                continue
+            if key in url:
+                return html
+        raise AssertionError(f"unexpected URL in test: {url}")
+    return get
+
+
+def test_gsa_parse_listing_extracts_date_title_prid_in_document_order():
+    from market_events.sources.govt_securities_auction import parse_listing
+    rows = parse_listing(_GSA_LISTING_HTML)
+    assert rows[0] == (dt.date(2026, 10, 5), "Auction of Government of India Dated Securities",
+                       "63730")
+    assert rows[-1][2] == "63670"
+
+
+def test_gsa_classify_title_only_matches_known_titles():
+    from market_events.sources.govt_securities_auction import _classify_title
+    assert _classify_title("Auction of Government of India Dated Securities") == "GSEC_ANNOUNCE"
+    assert _classify_title("Government Stock - Full Auction Results") == "GSEC_RESULT"
+    assert _classify_title("Treasury Bills: Full Auction Result") == "TBILL_RESULT"
+    assert (_classify_title("Auction of 91-Day, 182-Day and 364-Day Treasury Bills")
+           == "TBILL_ANNOUNCE")
+    # deferred out of V1 scope (SDL) and unrelated operations - never misclassified as ours
+    assert _classify_title("Auction of State Government Securities") is None
+    assert _classify_title("WMA Limit for Government of India for October 2026") is None
+    assert _classify_title("Government Stock - Auction Results: Cut-off") is None
+
+
+def test_gsa_gsec_announcement_parses_both_securities_with_shared_auction_date():
+    from market_events.sources.govt_securities_auction import _parse_gsec_announcement
+    items = _parse_gsec_announcement(_GSEC_ANNOUNCE_HTML, "63730",
+                                     "Auction of Government of India Dated Securities")
+    assert len(items) == 2
+    by_name = {it["security_name"]: it for it in items}
+    assert by_name["7.06% GS 2041"]["auction_date"] == "2026-10-09"
+    assert by_name["7.43% GS 2076"]["auction_date"] == "2026-10-09"
+    facts1 = {f["label"]: f["value"] for f in by_name["7.06% GS 2041"]["facts"]}
+    assert facts1["notified_amount_crore"] == 23000
+    assert facts1["repayment_date"] == "2041-07-27"
+    assert facts1["settlement_date"] == "2026-10-12"
+    assert "F.No.4(1)-B(W&M)/2026" in facts1["goi_notification_reference"]
+
+
+def test_gsa_gsec_announcement_total_row_never_becomes_an_event():
+    from market_events.sources.govt_securities_auction import _parse_gsec_announcement
+    items = _parse_gsec_announcement(_GSEC_ANNOUNCE_HTML, "63730", "x")
+    assert not any(it["security_name"].strip().lower() == "total" for it in items)
+
+
+def test_gsa_gsec_sub_type_reissue_detected_from_lead_text():
+    from market_events.sources.govt_securities_auction import _parse_gsec_announcement
+    items = _parse_gsec_announcement(_GSEC_ANNOUNCE_HTML, "63730", "x")
+    assert all(it["sub_type"] == "GSEC_REISSUE" for it in items)
+
+
+def test_gsa_gsec_sub_type_absent_when_reissue_not_stated():
+    """Never guessed as GSEC_NEW just because "re-issue" is absent - stays None/unknown."""
+    from market_events.sources.govt_securities_auction import _parse_gsec_announcement
+    items = _parse_gsec_announcement(_GSEC_ANNOUNCE_NEW_HTML, "63730", "x")
+    assert all(it["sub_type"] is None for it in items)
+
+
+def test_gsa_tbill_announcement_parses_all_three_tenors():
+    from market_events.sources.govt_securities_auction import (TBILL_91, TBILL_182, TBILL_364,
+                                                                _parse_tbill_announcement)
+    items = _parse_tbill_announcement(_TBILL_ANNOUNCE_HTML, "63712",
+                                      "Auction of 91-Day, 182-Day and 364-Day Treasury Bills")
+    by_slug = {it["instrument_slug"]: it for it in items}
+    assert set(by_slug) == {TBILL_91, TBILL_182, TBILL_364}
+    assert by_slug[TBILL_91]["auction_date"] == "2026-10-07"
+    facts = {f["label"]: f["value"] for f in by_slug[TBILL_91]["facts"]}
+    assert facts["notified_amount_crore"] == 8000
+    assert facts["settlement_date"] == "2026-10-08"
+
+
+def test_gsa_tbill_result_parses_yield_and_price_per_tenor():
+    from market_events.sources.govt_securities_auction import (TBILL_91,
+                                                                _parse_tbill_result)
+    items = _parse_tbill_result(_TBILL_RESULT_HTML, "63696", "Treasury Bills: Full Auction Result")
+    by_slug = {it["instrument_slug"]: it for it in items}
+    assert by_slug[TBILL_91]["auction_date"] == "2026-10-07"   # from the press release's own Date
+    facts = {f["label"]: f["value"] for f in by_slug[TBILL_91]["facts"]}
+    assert facts["notified_amount_crore"] == 9000
+    assert facts["cutoff_price"] == 98.6425
+    assert facts["cutoff_yield_pct"] == 5.5199
+    assert facts["weighted_avg_yield_pct"] == 5.4902
+
+
+def test_gsa_devolvement_nil_is_omitted_never_a_fabricated_zero():
+    from market_events.sources.govt_securities_auction import _parse_tbill_result
+    items = _parse_tbill_result(_TBILL_RESULT_HTML, "63696", "x")
+    facts = {f["label"]: f["value"] for f in items[0]["facts"]}
+    assert "devolvement_crore" not in facts
+
+
+def test_gsa_gsec_result_parses_per_security_columns_by_header_name():
+    from market_events.sources.govt_securities_auction import _parse_gsec_result
+    items = _parse_gsec_result(_GSEC_RESULT_HTML, "63709", "Government Stock - Full Auction Results")
+    by_name = {it["security_name"]: it for it in items}
+    assert set(by_name) == {"6.20% GS 2029", "6.57% GS 2033", "7.63% GS 2056",
+                            "7.50% GOI SGrB 2056"}
+    assert all(it["auction_date"] == "2026-10-01" for it in items)
+    facts = {f["label"]: f["value"] for f in by_name["6.57% GS 2033"]["facts"]}
+    assert facts["notified_amount_crore"] == 12000
+    assert facts["cutoff_yield_pct"] == 7.1680
+
+
+def test_gsa_fetch_merges_announcement_and_result_into_one_completed_event():
+    """A T-Bill announcement and its matching result (SAME tenor, same auction date, within one
+    fetch's lookback window) must become ONE COMPLETED MarketEvent - never two."""
+    from market_events.sources.govt_securities_auction import (TBILL_91,
+                                                                fetch_govt_securities_auction)
+    http_get = _gsa_http_get({
+        "FS_PressRelease.aspx?fn=2757": _GSA_LISTING_HTML,
+        "prid=63730": _GSEC_ANNOUNCE_HTML, "prid=63712": _TBILL_ANNOUNCE_HTML,
+        "prid=63696": _TBILL_RESULT_HTML,
+    })
+    res = fetch_govt_securities_auction(_GSA_NOW_ISO, http_get=http_get)
+    assert res.status == "SUCCESS"
+    tbill_91 = [e for e in res.events if e.sub_type == TBILL_91][0]
+    assert tbill_91.status == "COMPLETED"
+    assert tbill_91.data_as_of == "2026-10-07"
+    labels = {f["label"] for f in tbill_91.facts}
+    assert {"notified_amount_crore", "settlement_date", "cutoff_yield_pct",
+           "weighted_avg_yield_pct"} <= labels
+    # exactly one event per instrument - never a separate schedule + result pair
+    assert len([e for e in res.events if e.sub_type == TBILL_91]) == 1
+
+
+def test_gsa_fetch_scheduled_only_when_no_result_captured_yet():
+    from market_events.sources.govt_securities_auction import fetch_govt_securities_auction
+    listing = (
+        '<table class="tablebg" width="100%">'
+        '<tr><th colspan="4" align="left">Oct 05, 2026</th></tr>'
+        "<tr><td><a class='link2' href=FS_PressRelease.aspx?prid=63730&fn=2757>"
+        "Auction of Government of India Dated Securities</a></td></tr></table>"
+    )
+    http_get = _gsa_http_get({"fn=2757": listing, "prid=63730": _GSEC_ANNOUNCE_HTML})
+    res = fetch_govt_securities_auction(_GSA_NOW_ISO, http_get=http_get)
+    assert res.status == "SUCCESS"
+    assert all(e.status == "SCHEDULED" for e in res.events)
+    assert all(e.company == "Government of India" and e.symbol is None for e in res.events)
+
+
+def test_gsa_fetch_skips_sdl_and_unrelated_titles_entirely():
+    from market_events.sources.govt_securities_auction import fetch_govt_securities_auction
+    listing = (
+        '<table class="tablebg" width="100%">'
+        '<tr><th colspan="4" align="left">Oct 01, 2026</th></tr>'
+        "<tr><td><a class='link2' href=FS_PressRelease.aspx?prid=63716&fn=2757>"
+        "Auction of State Government Securities</a></td></tr>"
+        "<tr><td><a class='link2' href=FS_PressRelease.aspx?prid=63670&fn=2757>"
+        "WMA Limit for Government of India for October 2026</a></td></tr></table>"
+    )
+
+    def fail_if_called(url):
+        raise AssertionError(f"should never fetch a detail page for a non-GOVT_SECURITIES_"
+                             f"AUCTION title: {url}")
+    http_get = _gsa_http_get({"fn=2757": listing})
+    # patch in a guard so a bug that fetches SDL/WMA detail pages fails loudly, not silently
+    def get(url):
+        if "prid=" in url:
+            fail_if_called(url)
+        return http_get(url)
+    res = fetch_govt_securities_auction(_GSA_NOW_ISO, http_get=get)
+    assert res.status == "SUCCESS"
+    assert res.events == []
+
+
+def test_gsa_event_key_is_market_wide_and_instrument_date_scoped():
+    from market_events.sources.govt_securities_auction import _parse_gsec_announcement
+    items = _parse_gsec_announcement(_GSEC_ANNOUNCE_HTML, "63730", "x")
+    assert items[0]["instrument_slug"] == "7_06_GS_2041"
+
+
+def test_gsa_capture_revision_triggered_by_a_notified_amount_change(tmp_path):
+    """The SAME instrument/auction-date key naturally picks up a later amount revision as a
+    normal checksum-driven REVISED write - no lookup/reconciliation machinery needed, since
+    GOVT_SECURITIES_AUCTION is market-wide (symbol=None) and the key is already stable."""
+    from market_events.models import FamilyFetchResult, SUCCESS
+    from market_events.service import MarketEventsService
+    from market_events.sources.govt_securities_auction import (GOVT_SECURITIES_AUCTION, SCHEMA_VERSION,
+                                                                MarketEvent)
+
+    def make_event(amount):
+        return MarketEvent(
+            schema_version=SCHEMA_VERSION, family=GOVT_SECURITIES_AUCTION,
+            event_key="GOVT_SECURITIES_AUCTION:MARKET:TBILL_91:2026-10-07", symbol=None,
+            company="Government of India", status="SCHEDULED", sub_type="TBILL_91",
+            data_as_of="2026-10-07", source_name="rbi_govt_securities_auction_press_release",
+            source_reference="x", status_capture=SUCCESS,
+            facts=[{"label": "notified_amount_crore", "value": amount}])
+
+    calls = {"n": 0}
+
+    def fetch(now_iso):
+        calls["n"] += 1
+        amount = 8000 if calls["n"] == 1 else 9000
+        return FamilyFetchResult(status=SUCCESS, events=[make_event(amount)])
+
+    svc = MarketEventsService(str(tmp_path), fetchers={GOVT_SECURITIES_AUCTION: fetch})
+    r1 = svc.capture(NOW, "REPORT_JOB", families=(GOVT_SECURITIES_AUCTION,))
+    assert r1["results"][GOVT_SECURITIES_AUCTION]["events"][0]["change_state"] == "NEW_EVENT"
+    r2 = svc.capture(NOW, "REPORT_JOB", families=(GOVT_SECURITIES_AUCTION,))
+    assert r2["results"][GOVT_SECURITIES_AUCTION]["events"][0]["change_state"] == "REVISED"
+
+
+def test_gsa_adapter_source_unavailable_on_network_exception():
+    from market_events.sources.govt_securities_auction import fetch_govt_securities_auction
+
+    def failing_get(url):
+        raise ConnectionError("blocked")
+
+    res = fetch_govt_securities_auction(_GSA_NOW_ISO, http_get=failing_get)
+    assert res.status == "SOURCE_UNAVAILABLE"
+
+
+def test_gsa_adapter_parse_error_when_listing_shape_changes():
+    from market_events.sources.govt_securities_auction import fetch_govt_securities_auction
+    res = fetch_govt_securities_auction(_GSA_NOW_ISO, http_get=lambda url: "<html>nothing here</html>")
+    assert res.status == "PARSE_ERROR"
+
+
+def test_gsa_source_defaults_to_review_required_rights():
+    from core.sources import SRC_RBI_AUCTIONS
+    from publication.rights import rights_for
+    assert rights_for(SRC_RBI_AUCTIONS).status.value == "REVIEW_REQUIRED"
+
+
+def test_gsa_excluded_from_private_desk_stock_families():
+    """Market-wide, never a company's own event - must never appear on a stock page."""
+    from market_events.models import GOVT_SECURITIES_AUCTION
+    from private_desk.services.market_events import STOCK_FAMILIES
+    assert GOVT_SECURITIES_AUCTION not in STOCK_FAMILIES
+
+
+def test_gsa_watch_line_is_status_aware_scheduled_vs_completed():
+    from market_events.models import GOVT_SECURITIES_AUCTION, SCHEMA_VERSION, SUCCESS, MarketEvent
+    from market_events.watch import _line
+    scheduled = MarketEvent(schema_version=SCHEMA_VERSION, family=GOVT_SECURITIES_AUCTION,
+                            event_key="k1", symbol=None, company="Government of India",
+                            status="SCHEDULED", sub_type="TBILL_91", data_as_of="2026-10-07",
+                            source_name="x", source_reference="x", status_capture=SUCCESS,
+                            facts=[{"label": "notified_amount_crore", "value": 8000}])
+    completed = MarketEvent(schema_version=SCHEMA_VERSION, family=GOVT_SECURITIES_AUCTION,
+                            event_key="k1", symbol=None, company="Government of India",
+                            status="COMPLETED", sub_type="TBILL_91", data_as_of="2026-10-07",
+                            source_name="x", source_reference="x", status_capture=SUCCESS,
+                            facts=[{"label": "cutoff_yield_pct", "value": 5.52}])
+    assert "scheduled" in _line(scheduled) and "8000" in _line(scheduled)
+    assert "completed" in _line(completed) and "5.52" in _line(completed)

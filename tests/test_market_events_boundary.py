@@ -134,16 +134,18 @@ def test_source_failure_never_invents_a_plausible_event(tmp_path):
 
 
 def test_not_supported_yet_family_records_attempt_without_counting_as_failure(tmp_path):
-    """GOVT_SECURITIES_AUCTION (not EARNINGS/OFS/BUYBACK/OPEN_OFFER - each of those now has a
-    real, live-calling fetcher since P2A/P2B/P2C/P2D, and this test must never make a network
-    call)."""
+    """"SDL" (State Development Loans - deferred out of GOVT_SECURITIES_AUCTION's P2F scope,
+    see market_events/sources/govt_securities_auction.py's module docstring) has no registered
+    fetcher at all - not EARNINGS/OFS/BUYBACK/OPEN_OFFER/DELISTING/GOVT_SECURITIES_AUCTION,
+    each of which now has a real, live-calling fetcher since P2A-P2F, and this test must never
+    make a network call."""
     from market_events.service import MarketEventsService
     from market_events.store import latest_attempts
 
-    svc = MarketEventsService(str(tmp_path))     # default fetchers - this family still NOT_SUPPORTED_YET
+    svc = MarketEventsService(str(tmp_path))     # default fetchers - "SDL" has none registered
     res = svc.capture(dt.datetime(2026, 10, 5, 19, 30, tzinfo=IST), "REPORT_JOB",
-                      families=("GOVT_SECURITIES_AUCTION",))
-    assert res["results"]["GOVT_SECURITIES_AUCTION"]["status"] == "NOT_SUPPORTED_YET"
+                      families=("SDL",))
+    assert res["results"]["SDL"]["status"] == "NOT_SUPPORTED_YET"
     attempts = latest_attempts(str(tmp_path))
     assert any(a.get("status") == "NOT_SUPPORTED_YET" for a in attempts)
 

@@ -6,6 +6,7 @@ import copy
 import json
 import os
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -15,7 +16,7 @@ import radar.video_scenes as vs
 from radar.video_theme import (CONTENT_BOTTOM, CONTENT_LEFT, CONTENT_RIGHT, CONTENT_TOP, FPS, H,
                                MIN_FONT_SIZE, W)
 
-ARTIFACT = "output/radar/daily_radar_2026-09-21.json"
+ARTIFACT = str(Path(__file__).parent / "fixtures" / "radar" / "daily_radar_2026-09-21.json")
 
 
 def _ffmpeg_available() -> bool:

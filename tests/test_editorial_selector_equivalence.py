@@ -1,34 +1,61 @@
 """Phase 4.2 Packet 5.4C, packet spec section 29: production selector vs `HYBRID_RESERVED_
-DIVERSITY` (Policy F) equivalence, over the real 60-session local validation dataset.
+DIVERSITY` (Policy F) equivalence, over the real 60-session validation dataset.
 
-This is the one test in this packet that touches real local data (store-only, zero Yahoo
-universe calls, one Yahoo benchmark call, one NSE constituent call - same network footprint as
-`python -m radar.editorial_policy_validation_60`) rather than hand-built fixtures, because the
-packet requires proving equivalence against the ACTUAL 60-session dataset Packet 5.4B.2
-validated, not a synthetic stand-in. Expected: 100% `(session_date, symbol)` selection match.
+This is the one test in this packet that runs over REAL recorded market data rather than
+hand-built synthetic fixtures, because the packet requires proving equivalence against the
+ACTUAL 60-session dataset Packet 5.4B.2 validated, not a synthetic stand-in. PK-B (test
+reproducibility) froze that real dataset into a tracked fixture
+(`tests/fixtures/editorial_selector/ohlcv_60_session_2026-09-21.csv`, see
+`_generate_fixture.py` in the same directory for provenance) so this test no longer depends on
+a developer's locally-accumulated `output/data/market_ohlcv.db` or on a live NSE/Yahoo call -
+it is real data, just a frozen snapshot instead of a live, continuously-accumulating one.
+Expected: 100% `(session_date, symbol)` selection match.
 """
+import csv
 import datetime as dt
+from pathlib import Path
 
-import market
 import radar.editorial_policy_hybrid as eph
 import radar.editorial_policy_validation_60 as v60
 import radar.editorial_selector as es
 import radar.historical_validation as hv
-import radar.relative_acquisition as relative_acquisition
-from config import OUT_DIR
 from radar.novelty import classify_history
 from radar.novelty_validation import combined_records
-from storage.ohlcv_repository import OHLCVStore, default_db_path
+from storage.ohlcv_models import OHLCVBar, QualityStatus
+from storage.ohlcv_repository import OHLCVStore
+
+FIXTURE_CSV = Path(__file__).parent / "fixtures" / "editorial_selector" / "ohlcv_60_session_2026-09-21.csv"
+BENCHMARK_SYMBOL = "^NSEI"
 
 
-def _run_60_session_pipeline():
-    universe_full = market.get_universe("NIFTY200")
-    store = OHLCVStore(default_db_path(OUT_DIR))
-    store_symbols = {row.symbol for row in store.get_range(
-        list(universe_full), dt.date(2000, 1, 1), dt.date(2100, 1, 1))}
-    universe = {s: universe_full[s] for s in universe_full if s in store_symbols}
+def _load_fixture_rows() -> list[dict]:
+    with open(FIXTURE_CSV, newline="", encoding="utf-8") as fh:
+        return list(csv.DictReader(fh))
 
-    benchmark_series_full = relative_acquisition.build_market_benchmark_series(period="1y")
+
+def _run_60_session_pipeline(tmp_path):
+    rows = _load_fixture_rows()
+
+    store = OHLCVStore(str(tmp_path / "ohlcv.db"))
+    bars = [OHLCVBar(symbol=r["symbol"], session_date=dt.date.fromisoformat(r["session_date"]),
+                     open=float(r["open"]) if r["open"] else None,
+                     high=float(r["high"]) if r["high"] else None,
+                     low=float(r["low"]) if r["low"] else None,
+                     close=float(r["close"]) if r["close"] else None,
+                     volume=float(r["volume"]) if r["volume"] else None,
+                     source=r["source"], retrieved_at=dt.datetime.fromisoformat(r["retrieved_at"]),
+                     quality_status=QualityStatus(r["quality_status"]))
+            for r in rows]
+    store.upsert_bars(bars)
+
+    frozen_symbols = {r["symbol"] for r in rows}
+    universe = {s: s for s in frozen_symbols if s != BENCHMARK_SYMBOL}
+
+    benchmark_rows = sorted((r for r in rows if r["symbol"] == BENCHMARK_SYMBOL),
+                           key=lambda r: r["session_date"])
+    benchmark_series_full = [{"date": dt.date.fromisoformat(r["session_date"]),
+                              "close": float(r["close"])} for r in benchmark_rows]
+
     selected, prev_dates, _warnings = v60.select_60_sessions(benchmark_series_full)
 
     results = []
@@ -39,8 +66,8 @@ def _run_60_session_pipeline():
     return results
 
 
-def test_matches_policy_f_over_60_session_dataset():
-    results = _run_60_session_pipeline()
+def test_matches_policy_f_over_60_session_dataset(tmp_path):
+    results = _run_60_session_pipeline(tmp_path)
 
     # Policy F's own dict-record simulation, exactly as Packet 5.4B.2 runs it - frozen,
     # untouched by this packet.

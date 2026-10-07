@@ -1,0 +1,640 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Private Desk Blueprint</title>
+<style>
+:root {
+  --bg: #0e1116; --panel: #151a21; --panel2: #1b212a; --line: #2a323d; --text: #d7dde5;
+  --muted: #8a96a6; --dim: #5d6876; --accent: #4ea1ff; --pos: #6fbf95; --neg: #d08a8a;
+  --warn: #d9b46a; --hi: #c38bff; --chip: #1f2a38; --code: #10151c;
+  --mono: "Cascadia Mono", Consolas, "SFMono-Regular", Menlo, monospace;
+  --sans: "Segoe UI", system-ui, -apple-system, Roboto, Arial, sans-serif;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f6f7f9; --panel: #ffffff; --panel2: #f0f2f5; --line: #d9dee5; --text: #1d2430;
+    --muted: #586374; --dim: #7c8796; --accent: #1f6fd1; --pos: #2f7d55; --neg: #a5413f;
+    --warn: #8a6410; --hi: #7a43b8; --chip: #e7eef8; --code: #eef1f5;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #f6f7f9; --panel: #ffffff; --panel2: #f0f2f5; --line: #d9dee5; --text: #1d2430;
+  --muted: #586374; --dim: #7c8796; --accent: #1f6fd1; --pos: #2f7d55; --neg: #a5413f;
+  --warn: #8a6410; --hi: #7a43b8; --chip: #e7eef8; --code: #eef1f5;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14.5px/1.55 var(--sans); }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, kbd, .mono { font-family: var(--mono); font-size: .92em; }
+code { background: var(--code); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; }
+
+.layout { display: grid; grid-template-columns: 250px minmax(0, 1fr); max-width: 1320px; margin: 0 auto; }
+nav.toc { position: sticky; top: 0; height: 100vh; overflow: auto; padding: 22px 14px 40px 18px;
+  border-right: 1px solid var(--line); }
+nav.toc .brand { font-weight: 700; letter-spacing: .05em; font-size: 12px; margin-bottom: 4px; }
+nav.toc .tag { display: inline-block; font-size: 10.5px; font-weight: 700; letter-spacing: .08em;
+  color: var(--hi); border: 1px solid var(--hi); border-radius: 3px; padding: 1px 6px; margin-bottom: 16px; }
+nav.toc ol { list-style: none; padding: 0; margin: 0; counter-reset: s; }
+nav.toc li { counter-increment: s; }
+nav.toc li a { display: block; padding: 5px 8px; border-radius: 4px; color: var(--muted); font-size: 13px; }
+nav.toc li a::before { content: counter(s) "  "; color: var(--dim); font-family: var(--mono); font-size: 11px; }
+nav.toc li a:hover, nav.toc li a.on { background: var(--panel2); color: var(--text); text-decoration: none; }
+nav.toc .tools { margin-top: 18px; display: flex; gap: 6px; flex-wrap: wrap; }
+button { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 4px;
+  padding: 4px 10px; font: 12px var(--sans); cursor: pointer; }
+button:hover { border-color: var(--accent); }
+
+main { padding: 26px 34px 80px; min-width: 0; }
+header.hero { border-bottom: 1px solid var(--line); padding-bottom: 18px; margin-bottom: 8px; }
+h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -.01em; }
+.lede { color: var(--muted); max-width: 820px; margin: 0; }
+.pills { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
+.pill { font-size: 11px; font-weight: 700; letter-spacing: .05em; padding: 2px 8px; border-radius: 3px;
+  border: 1px solid var(--line); color: var(--muted); background: var(--panel); }
+.pill.p { color: var(--hi); border-color: color-mix(in srgb, var(--hi) 55%, transparent); }
+section { padding-top: 26px; scroll-margin-top: 10px; }
+h2 { font-size: 19px; margin: 0 0 4px; display: flex; align-items: baseline; gap: 10px; }
+h2 .n { font-family: var(--mono); font-size: 13px; color: var(--dim); }
+h2 + .sub { color: var(--muted); margin: 0 0 14px; }
+h3 { font-size: 15px; margin: 18px 0 6px; }
+p { margin: 6px 0 10px; max-width: 880px; }
+.grid { display: grid; gap: 12px; }
+.g2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; min-width: 0; }
+.card h4 { margin: 0 0 6px; font-size: 13.5px; }
+.card .k { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; font-weight: 700; }
+.card ul { margin: 6px 0 0; padding-left: 18px; }
+.card li { margin: 3px 0; }
+.note { color: var(--muted); font-size: 13px; }
+.callout { border: 1px solid var(--line); border-left: 3px solid var(--warn); background: var(--panel);
+  border-radius: 5px; padding: 10px 14px; margin: 12px 0; max-width: 900px; }
+.callout.i { border-left-color: var(--accent); }
+.callout.g { border-left-color: var(--pos); }
+.callout b:first-child { display: block; margin-bottom: 2px; }
+
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+th, td { text-align: left; vertical-align: top; padding: 7px 9px; border-bottom: 1px solid var(--line); }
+th { color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; font-weight: 700; }
+.tw { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+.tw table th:first-child, .tw table td:first-child { padding-left: 12px; }
+
+/* flow diagram */
+.flow { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; align-items: stretch; }
+.node { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; position: relative; }
+.node .t { font-size: 11px; color: var(--dim); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.node b { display: block; margin: 2px 0 4px; }
+.node .d { font-size: 12.5px; color: var(--muted); }
+.node:not(:last-child)::after { content: "→"; position: absolute; right: -10px; top: 50%; transform: translate(50%, -50%);
+  color: var(--dim); font-size: 16px; }
+.node.you { border-color: color-mix(in srgb, var(--hi) 60%, transparent); }
+
+/* timeline */
+.tl { position: relative; margin: 6px 0 0; padding-left: 0; list-style: none; }
+.tl li { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 14px; padding: 10px 0; border-bottom: 1px dashed var(--line); }
+.tl .when { font-family: var(--mono); font-size: 13px; color: var(--accent); padding-top: 1px; }
+.tl .what > b:first-child { display: block; }
+
+/* checklists */
+.check { list-style: none; padding: 0; margin: 6px 0 0; }
+.check li { display: flex; gap: 9px; align-items: flex-start; padding: 5px 0; }
+.check input { margin-top: 3px; accent-color: var(--accent); flex: none; }
+.check label { cursor: pointer; }
+.check li.done label { color: var(--dim); text-decoration: line-through; }
+.progress { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.ck-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+
+pre.cmd { position: relative; background: var(--code); border: 1px solid var(--line); border-radius: 5px;
+  padding: 9px 70px 9px 12px; margin: 6px 0 10px; overflow-x: auto; font-family: var(--mono); font-size: 13px; }
+pre.cmd button { position: absolute; top: 6px; right: 6px; font-size: 11px; padding: 2px 8px; }
+.steps { counter-reset: st; list-style: none; padding: 0; margin: 0; }
+.steps > li { counter-increment: st; position: relative; padding: 10px 0 10px 40px; border-bottom: 1px solid var(--line); }
+.steps > li::before { content: counter(st); position: absolute; left: 0; top: 10px; width: 26px; height: 26px;
+  border-radius: 50%; border: 1px solid var(--line); background: var(--panel2); display: grid; place-items: center;
+  font-family: var(--mono); font-size: 12px; color: var(--accent); }
+.steps > li > b:first-child { display: block; }
+.steps ul { margin: 6px 0 0; padding-left: 18px; } .steps ul li { margin: 3px 0; }
+.ok { color: var(--pos); } .bad { color: var(--neg); } .wa { color: var(--warn); }
+.badge { font-family: var(--mono); font-size: 11px; font-weight: 700; padding: 0 6px; border-radius: 3px;
+  border: 1px solid var(--line); background: var(--panel2); white-space: nowrap; }
+.tier { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 4px; background: var(--chip);
+  font-family: var(--mono); font-size: 11px; font-weight: 700; margin-right: 4px; }
+details { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; margin: 8px 0; }
+details > summary { cursor: pointer; padding: 9px 14px; font-weight: 600; }
+details > div { padding: 0 14px 12px; }
+footer { color: var(--dim); font-size: 12px; border-top: 1px solid var(--line); margin-top: 40px; padding-top: 14px; }
+
+@media (max-width: 980px) {
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  nav.toc { position: static; height: auto; border-right: none; border-bottom: 1px solid var(--line); padding: 14px 16px; }
+  nav.toc ol { display: flex; flex-wrap: wrap; gap: 2px; }
+  main { padding: 18px 16px 60px; }
+  .g2, .g3, .flow { grid-template-columns: minmax(0, 1fr); }
+  .pill { white-space: normal; }
+  .node:not(:last-child)::after { content: "↓"; right: 50%; top: auto; bottom: -14px; transform: translateX(50%); }
+  .tl li { grid-template-columns: 1fr; gap: 2px; }
+}
+@media print {
+  nav.toc, pre.cmd button, .tools { display: none; }
+  .layout { grid-template-columns: 1fr; }
+  body { background: #fff; color: #000; }
+}
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="toc" aria-label="Contents">
+  <div class="brand">DAILY MARKET BYTE</div>
+  <div class="tag">PRIVATE / LOCAL ONLY</div>
+  <ol>
+    <li><a href="#overview">The system at a glance</a></li>
+    <li><a href="#setup">One-time setup</a></li>
+    <li><a href="#training">App training plan</a></li>
+    <li><a href="#daily">Daily routine</a></li>
+    <li><a href="#docs">Which .md to follow</a></li>
+    <li><a href="#verify">What to verify</a></li>
+    <li><a href="#selection">Stock-selection playbook</a></li>
+    <li><a href="#journal">Your research journal</a></li>
+    <li><a href="#guardrails">Guardrails &amp; red flags</a></li>
+    <li><a href="#reference">Quick reference</a></li>
+  </ol>
+  <div class="tools">
+    <button type="button" id="themeBtn" title="Switch light / dark">Theme</button>
+    <button type="button" onclick="window.print()">Print</button>
+    <button type="button" id="resetBtn" title="Clear today's ticks">Reset ticks</button>
+  </div>
+</nav>
+
+<main>
+<header class="hero">
+  <h1>Private Intelligence Blueprint</h1>
+  <p class="lede">How to learn, run, verify and use the Daily Market Byte private stack: the evening pipeline,
+    the Private Trading Intelligence Desk, the Market Radar and the Market Regime classifier. Use it to decide
+    what deserves your attention each day, with every claim traceable to stored data.</p>
+  <div class="pills">
+    <span class="pill p">PRIVATE / LOCAL ONLY</span>
+    <span class="pill">Desk Phase 1 · read-only</span>
+    <span class="pill">Market Regime V1 · FROZEN / PROVISIONAL</span>
+    <span class="pill">No orders · no uploads</span>
+    <span class="pill" id="todayPill">Today</span>
+  </div>
+  <div class="callout">
+    <b>Decision support, not advice.</b>
+    Everything the desk shows is an observation or a deterministic detector result. A Radar candidate is an
+    <em>attention item</em>, and the market regime describes the current environment, not tomorrow. Nothing
+    here has been validated as profitable yet (outcome analytics is a later phase). You make every decision,
+    including sizing and risk.
+  </div>
+</header>
+
+<!-- 1 -->
+<section id="overview">
+  <h2><span class="n">01</span>The system at a glance</h2>
+  <p class="sub">Data flows in one direction. You read; nothing you do in the desk changes the data.</p>
+  <div class="flow">
+    <div class="node"><span class="t">~19:30 IST</span><b>Evening job</b><span class="d"><code>run_evening_full.bat</code> builds the canonical report, Radar, Market Structure and official lists for the session that just closed.</span></div>
+    <div class="node"><span class="t">Stored</span><b>Private stores</b><span class="d">OHLCV, Radar candidate history, editorial selections, Market Structure JSON, official snapshots.</span></div>
+    <div class="node"><span class="t">Read-only</span><b>Private Desk</b><span class="d">Regime card, attention set, what changed, stock pages, sectors, history, data quality.</span></div>
+    <div class="node you"><span class="t">You</span><b>Review &amp; shortlist</b><span class="d">Verify the evidence, put it in context, write your own research notes.</span></div>
+    <div class="node you"><span class="t">Over weeks</span><b>Journal → evidence</b><span class="d">Your recorded outcomes become your own track record, until Phase 2 analytics exists.</span></div>
+  </div>
+  <div class="grid g3" style="margin-top:14px">
+    <div class="card"><div class="k">Market Radar</div><h4>Which stocks did something unusual?</h4>
+      Three independent evidence families: <b>VOLUME</b> (RVOL ≥ 3x; ≥ 5x is EXTREME), <b>STRUCTURE</b> (range breaks, SMA20/50 crosses),
+      <b>RELATIVE</b> (5D and 20D vs NIFTY 50 beyond ±1.5 pp). Two families make a candidate NOTABLE, three make it HIGH INTEREST.</div>
+    <div class="card"><div class="k">Market Regime</div><h4>What kind of market is it?</h4>
+      BULLISH / BEARISH / NEUTRAL / TRANSITIONAL / INSUFFICIENT_DATA, from trend, breadth, sectors and volume, with volatility as a stress check.
+      Deterministic rules with a WHY sentence. Context only: it never re-ranks the Radar.</div>
+    <div class="card"><div class="k">Market Structure</div><h4>How broad is the move?</h4>
+      NIFTY 200 advances / declines, unusual volume (≥ 2x), range events and sector breadth, always with the real denominator
+      (for example <code>51 / 200</code>).</div>
+  </div>
+</section>
+
+<!-- 2 -->
+<section id="setup">
+  <h2><span class="n">02</span>One-time setup</h2>
+  <p class="sub">Do this once, and again after every <code>git pull</code>.</p>
+  <ol class="steps">
+    <li><b>Open a terminal in the project</b>
+      <pre class="cmd">cd /d D:\Claude_WS\daily_byte
+venv\Scripts\activate</pre></li>
+    <li><b>Install pipeline + desk dependencies</b>
+      <pre class="cmd">pip install -r requirements.txt
+pip install -r requirements-desk.txt</pre>
+      <span class="note">The desk packages (FastAPI, uvicorn, Jinja2, Plotly) are only needed for the desk, not the pipeline.</span></li>
+    <li><b>Check the pipeline setup</b>Must end with <code>VERDICT: READY</code>
+      <pre class="cmd">scripts\check_setup.bat</pre></li>
+    <li><b>Check the desk data</b>Exit 0 = ready, 2 = something needs attention
+      <pre class="cmd">scripts\check_private_desk.bat</pre></li>
+    <li><b>Start the desk</b>Open <a href="http://127.0.0.1:8765">http://127.0.0.1:8765</a>. Stop it with Ctrl+C.
+      <pre class="cmd">scripts\run_private_desk.bat</pre></li>
+    <li><b>Build the regime research pack</b>Optional; rerun weekly.
+      <pre class="cmd">python -m private_desk.regime.research</pre>
+      <span class="note">Writes <code>output\private_desk\regime_research\</code> (validation report, history CSV, threshold review).</span></li>
+  </ol>
+</section>
+
+<!-- 3 -->
+<section id="training">
+  <h2><span class="n">03</span>App training plan</h2>
+  <p class="sub">Eight short modules, one page each. Do one or two per evening for the first week. A module is done when you can answer its self-check without looking.</p>
+
+  <div class="grid g2">
+    <div class="card">
+      <div class="k">Module 1 · ~10 min</div><h4>The header and freshness strip</h4>
+      <ul><li>Read <em>Latest completed market session</em> vs <em>Showing session</em>.</li>
+        <li>Find each source's FRESH / STALE / MISSING badge.</li>
+        <li>Switch the session selector to an older day and notice the blue "earlier session" banner.</li></ul>
+      <p class="note"><b>Self-check:</b> what does STALE mean, and what is the fix? (The evening job hasn't covered the latest session: run <code>run_evening_full.bat</code>.)</p>
+    </div>
+    <div class="card">
+      <div class="k">Module 2 · ~15 min</div><h4>The Market Regime card and the Regime page</h4>
+      <ul><li>Read the label, then the 7 dimension states, then <b>Why</b>.</li>
+        <li>Open <code>detail →</code>. For each dimension, find the numbers and the rule that produced its state.</li>
+        <li>In <em>Recent regime history</em>, find a <code>*</code> (unconfirmed change) and an <code>APPROX</code> row.</li></ul>
+      <p class="note"><b>Self-check:</b> what is the difference between NEUTRAL and TRANSITIONAL? Which dimensions can never decide the regime? (RELATIVE and FLOWS are context only; volatility can only block BULLISH.)</p>
+    </div>
+    <div class="card">
+      <div class="k">Module 3 · ~15 min</div><h4>Dashboard: attention set and What changed</h4>
+      <ul><li>Read "N attention candidates from M Radar candidates". The attention set is a reading order, not a filter.</li>
+        <li>Learn the 5 tiers (see <a href="#selection">section 7</a>) and read the "In attention set because" column.</li>
+        <li>Click each What-changed tile: it opens the Radar page with that filter applied.</li></ul>
+      <p class="note"><b>Self-check:</b> what decides the order inside a tier? (The existing Radar order: HIGH INTEREST first, then symbol. There is no hidden score.)</p>
+    </div>
+    <div class="card">
+      <div class="k">Module 4 · ~20 min</div><h4>Stock intelligence page (A–H)</h4>
+      <ul><li><b>A</b> Summary and WHY THIS STOCK: ✓ EVIDENCE VERIFIED vs VALUES UNAVAILABLE.</li>
+        <li><b>B</b> Chart: toggle SMA20/50 and the prior 20/50-session high/low.</li>
+        <li><b>C</b> Structure, <b>D</b> Volume (RVOL chart), <b>E</b> Relative vs NIFTY, <b>F</b> Sector + market regime, <b>G</b> Radar history, <b>H</b> Official events.</li></ul>
+      <p class="note"><b>Self-check:</b> why can Market Structure count a stock as "unusual volume" while the Radar's VOLUME family did not fire? (2x vs 3x thresholds.)</p>
+    </div>
+    <div class="card">
+      <div class="k">Module 5 · ~10 min</div><h4>Radar page: the complete list</h4>
+      <ul><li>Sort by Day %, RVOL and families. Use the filter chips.</li>
+        <li>Download <code>radar.csv</code>: it includes reasons, metrics, official events and the session's market regime.</li></ul>
+      <p class="note"><b>Self-check:</b> which page is authoritative when the dashboard and the Radar disagree? (Radar: the dashboard is a subset.)</p>
+    </div>
+    <div class="card">
+      <div class="k">Module 6 · ~10 min</div><h4>Sectors</h4>
+      <ul><li>NIFTY 200 sector breadth (NSE Industry column) vs NSE sectoral <em>indices</em>. These are separate universes and never mixed.</li>
+        <li>Check the reconciliation row: sector counts add up to the headline.</li></ul>
+      <p class="note"><b>Self-check:</b> is a Radar candidate's sector participating, or is the stock alone?</p>
+    </div>
+    <div class="card">
+      <div class="k">Module 7 · ~10 min</div><h4>History</h4>
+      <ul><li>Filter by symbol, family, novelty and appearance over a date range.</li>
+        <li>Look for repeat names: FIRST RECORDED vs CONSECUTIVE vs REAPPEARED +Ns.</li></ul>
+      <p class="note"><b>Self-check:</b> how many times did your watched symbol appear in the last month?</p>
+    </div>
+    <div class="card">
+      <div class="k">Module 8 · ~10 min</div><h4>Data Quality</h4>
+      <ul><li>Databases OK, Radar run COMPLETE, replay reconciliation <code>MATCHED</code>, Market Structure 100% PUBLISHABLE.</li>
+        <li>Regime classifier panel: status OK, universe POINT_IN_TIME, validation CURRENT, "point-in-time validation from".</li></ul>
+      <p class="note"><b>Self-check:</b> what would make you distrust tonight's page? (Anything not FRESH / OK / MATCHED; see <a href="#guardrails">section 9</a>.)</p>
+    </div>
+  </div>
+
+  <h3>Suggested first two weeks</h3>
+  <div class="tw"><table>
+    <thead><tr><th>Days</th><th>Focus</th><th>Outcome</th></tr></thead>
+    <tbody>
+      <tr><td>1–2</td><td>Modules 1–3. Run the evening job, then walk the dashboard top to bottom.</td><td>You can say today's regime and why in one sentence.</td></tr>
+      <tr><td>3–4</td><td>Modules 4–5. Open every attention-set stock page.</td><td>You can explain each candidate's families from the evidence values.</td></tr>
+      <tr><td>5</td><td>Modules 6–8. Run the full verification checklist (<a href="#verify">section 6</a>).</td><td>You know where a data problem would show.</td></tr>
+      <tr><td>6–10</td><td>Daily routine only. Start the research journal (<a href="#journal">section 8</a>).</td><td>A steady 25-minute evening review.</td></tr>
+      <tr><td>Weekly</td><td>Rebuild the regime research pack and review History plus your journal.</td><td>Your own evidence starts to build up.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- 4 -->
+<section id="daily">
+  <h2><span class="n">04</span>Daily routine</h2>
+  <p class="sub">Two pipeline commands plus a structured desk review. The desk is end-of-day intelligence; it has no intraday data.</p>
+  <ul class="tl">
+    <li><span class="when">07:00</span><div class="what"><b>Morning PRE (before 09:15)</b>
+      <code>scripts\run_morning_pre.bat</code>. Expect the verdict <code>REVIEW THE VIDEO</code>, then review the video (USER_GUIDE §5). It never uploads. If it is BLOCKED with <code>PREVIOUS_SESSION_MISSING</code>, run the evening command first.</div></li>
+    <li><span class="when">09:15–15:30</span><div class="what"><b>Market hours</b>
+      Nothing to run. Last evening's desk view is the plan you prepared; your own execution and risk tools are separate.</div></li>
+    <li><span class="when">15:40</span><div class="what"><b>Session becomes final</b>
+      Before this, no pipeline step treats today as complete.</div></li>
+    <li><span class="when">19:30</span><div class="what"><b>Evening full run</b>
+      <code>scripts\run_evening_full.bat</code>. You need <code>PASS FOR SHADOW REVIEW</code>. <code>RIGHTS_BLOCK_ONLY</code> is expected; anything else is <code>ATTENTION REQUIRED</code> (USER_GUIDE §6).</div></li>
+    <li><span class="when">19:45</span><div class="what"><b>Desk health</b>
+      <code>scripts\check_private_desk.bat</code> (exit 0), then <code>scripts\run_private_desk.bat</code>. The header must be <span class="ok">ALL FRESH</span>.</div></li>
+    <li><span class="when">19:50</span><div class="what"><b>Desk review (~25 min)</b>Work through the checklist below.</div></li>
+    <li><span class="when">Saturday</span><div class="what"><b>Weekly review (~30 min)</b>
+      Run <code>python -m private_desk.regime.research</code>. Read the regime history, review this week's journal rows against what happened, and check History for repeat names.</div></li>
+    <li><span class="when">Monthly</span><div class="what"><b>Housekeeping</b>
+      Run <code>python scripts\clean_dev_artifacts.py</code> (a dry run; add <code>--execute</code> only after reading the list). Back up <code>output\data\</code> (CLEANUP_POLICY.md).</div></li>
+  </ul>
+
+  <div class="card" style="margin-top:14px" data-checklist="daily">
+    <div class="ck-head"><h4>Tonight's desk review</h4><span class="progress"></span></div>
+    <ul class="check">
+      <li><input type="checkbox" id="d1"><label for="d1"><b>Freshness:</b> header shows ALL FRESH, and the showing session is the latest completed session.</label></li>
+      <li><input type="checkbox" id="d2"><label for="d2"><b>Regime:</b> read the label and its Why. Note whether it changed from yesterday (Regime page history, a <code>*</code> means unconfirmed).</label></li>
+      <li><input type="checkbox" id="d3"><label for="d3"><b>Breadth facts:</b> NIFTY 200 adv/dec, unusual volume and range events. Is the day broad or narrow?</label></li>
+      <li><input type="checkbox" id="d4"><label for="d4"><b>What changed:</b> NEW, REAPPEARED, STATE CHANGE and NO LONGER A CANDIDATE counts. Open the change items.</label></li>
+      <li><input type="checkbox" id="d5"><label for="d5"><b>Attention set:</b> open each stock page (A → H) and confirm EVIDENCE VERIFIED.</label></li>
+      <li><input type="checkbox" id="d6"><label for="d6"><b>Sector pulse:</b> are this session's candidates clustered in participating sectors or isolated?</label></li>
+      <li><input type="checkbox" id="d7"><label for="d7"><b>Official events:</b> note any F&amp;O ban / ASM / GSM flags on the names you care about.</label></li>
+      <li><input type="checkbox" id="d8"><label for="d8"><b>Shortlist:</b> write 0–5 names in your journal with the reason and the regime (<a href="#journal">section 8</a>).</label></li>
+      <li><input type="checkbox" id="d9"><label for="d9"><b>Export:</b> optionally download <code>radar.csv</code> into your research folder.</label></li>
+    </ul>
+    <p class="note" style="margin-top:8px">Ticks are saved in this browser only, per calendar day.</p>
+  </div>
+</section>
+
+<!-- 5 -->
+<section id="docs">
+  <h2><span class="n">05</span>Which .md to follow</h2>
+  <p class="sub">All in <code>docs\</code>. Read the "Must" rows once in full; use the rest as reference.</p>
+  <div class="tw"><table>
+    <thead><tr><th>Priority</th><th>Document</th><th>Use it for</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge ok">MUST</span></td><td><code>USER_GUIDE.md</code></td><td>Operator manual: the two daily commands, evening checklist (§4), video checklist (§5), failures (§6), testing (§7).</td></tr>
+      <tr><td><span class="badge ok">MUST</span></td><td><code>PRIVATE_DESK_USER_GUIDE.md</code></td><td>Every desk page and column, the attention-set tiers, WHY THIS STOCK, universe badges, troubleshooting.</td></tr>
+      <tr><td><span class="badge ok">MUST</span></td><td><code>PRIVATE_MARKET_REGIME.md</code></td><td>Exact regime rules and thresholds, the confirmation rule, the historical-universe limitation, validation groups, the Phase-2 eligibility gate.</td></tr>
+      <tr><td><span class="badge">CORE</span></td><td><code>PRIVATE_INTELLIGENCE.md</code></td><td>What private intelligence exists, where it is stored, how to render a private (never uploaded) video.</td></tr>
+      <tr><td><span class="badge">CORE</span></td><td><code>MARKET_INTELLIGENCE_RADAR.md</code></td><td>Radar detectors, evidence families, novelty, editorial selection.</td></tr>
+      <tr><td><span class="badge">CORE</span></td><td><code>MARKET_STRUCTURE.md</code></td><td>NIFTY 200 breadth definitions, coverage policy, sector mapping.</td></tr>
+      <tr><td><span class="badge">CORE</span></td><td><code>EXCHANGE_WATCH.md</code> · <code>IPO_WATCH.md</code></td><td>F&amp;O ban / ASM / GSM / IPO lists and what ENTERED / EXITED means.</td></tr>
+      <tr><td><span class="badge">TESTING</span></td><td><code>TESTING_GUIDE.md</code></td><td>Isolated test runs (live / replay / fixture) that cannot touch production.</td></tr>
+      <tr><td><span class="badge">TESTING</span></td><td><code>SHADOW_TRIAL_CHECKLIST.md</code></td><td>The 5-day trial table and pass criteria.</td></tr>
+      <tr><td><span class="badge">REFERENCE</span></td><td><code>VALIDATION_RULES.md</code> · <code>OHLCV_STORE.md</code></td><td>Session alignment, holiday placeholders, benchmark gap recovery; why a number may be missing.</td></tr>
+      <tr><td><span class="badge">REFERENCE</span></td><td><code>PRODUCTION_SCHEDULE.md</code> · <code>STATE_STORE.md</code></td><td>Job order (REPORT → PRE / POST), durable state.</td></tr>
+      <tr><td><span class="badge">REFERENCE</span></td><td><code>CLEANUP_POLICY.md</code></td><td>What is safe to delete and what to back up.</td></tr>
+      <tr><td><span class="badge">LATER</span></td><td><code>PRIVATE_DESK_ROADMAP.md</code> · <code>PRIVATE_DESK_KITE_INTEGRATION.md</code></td><td>Future phases and the context-only candidate packet contract (no order fields).</td></tr>
+      <tr><td><span class="badge">PUBLIC SIDE</span></td><td><code>PUBLICATION_POLICY.md</code> · <code>CONTENT_SAFETY.md</code></td><td>Why private intelligence never appears in the public Short.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- 6 -->
+<section id="verify">
+  <h2><span class="n">06</span>What to verify while testing</h2>
+  <p class="sub">Trust is earned by checks. Run these during the shadow trial and whenever something looks off.</p>
+  <div class="grid g2">
+    <div class="card" data-checklist="evening">
+      <div class="ck-head"><h4>Evening run (USER_GUIDE §4)</h4><span class="progress"></span></div>
+      <ul class="check">
+        <li><input type="checkbox" id="e1"><label for="e1">Session = the trading day that just closed; report ID matches; publication ready = True.</label></li>
+        <li><input type="checkbox" id="e2"><label for="e2">NIFTY close in the report = NSE's published close (spot-check by hand).</label></li>
+        <li><input type="checkbox" id="e3"><label for="e3">Movers coverage ≥ 90%; no unexplained index fallback.</label></li>
+        <li><input type="checkbox" id="e4"><label for="e4">Market Structure: NIFTY 200 · 200 constituents, every metric ≥ 95% (PUBLISHABLE).</label></li>
+        <li><input type="checkbox" id="e5"><label for="e5">Official snapshots SUCCESS / NO_DATA; F&amp;O list date = the next trade date.</label></li>
+        <li><input type="checkbox" id="e6"><label for="e6">Private Radar BUILT; <code>output\radar\daily_radar_&lt;SESSION&gt;.json</code> exists.</label></li>
+        <li><input type="checkbox" id="e7"><label for="e7">Verdict PASS FOR SHADOW REVIEW; audit RIGHTS_BLOCK_ONLY (never CONTENT_FAILURE).</label></li>
+      </ul>
+    </div>
+    <div class="card" data-checklist="desk">
+      <div class="ck-head"><h4>Private Desk (Data Quality page)</h4><span class="progress"></span></div>
+      <ul class="check">
+        <li><input type="checkbox" id="q1"><label for="q1">All 4 databases OK, WAL none or pending; Radar run marker COMPLETE.</label></li>
+        <li><input type="checkbox" id="q2"><label for="q2">Detector replay OK and reconciliation <code>MATCHED</code> for all candidates.</label></li>
+        <li><input type="checkbox" id="q3"><label for="q3">OHLCV: universe symbols missing = none, stale = none.</label></li>
+        <li><input type="checkbox" id="q4"><label for="q4">Regime classifier status OK; latest universe quality POINT_IN_TIME; not STALE.</label></li>
+        <li><input type="checkbox" id="q5"><label for="q5">Regime historical validation CURRENT (rebuild with the research command if OUTDATED / NOT BUILT).</label></li>
+        <li><input type="checkbox" id="q6"><label for="q6">Spot-check one candidate: the stock page's RVOL and range levels match the chart.</label></li>
+        <li><input type="checkbox" id="q7"><label for="q7">Dashboard adv/dec equals the Data Quality Market Structure counts.</label></li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>Safe test runs (never touch production)</h3>
+  <pre class="cmd">scripts\test_full_cycle.bat
+scripts\check_test_run.bat
+scripts\clean_test_artifacts.bat</pre>
+  <p class="note">Each test run gets its own <code>output\test_runs\&lt;run_id&gt;\</code>, refuses uploads, and fingerprints production before and after (<code>production_state_modified</code> must be false). See TESTING_GUIDE.md.</p>
+  <h3>Code regression (after any change or <code>git pull</code>)</h3>
+  <pre class="cmd">python -m pytest tests/ -q</pre>
+  <p class="note">Focused suites: <code>tests/test_private_regime.py</code>, <code>tests/test_private_desk.py</code>. Everything must pass. A failing test is a stop, not a warning.</p>
+</section>
+
+<!-- 7 -->
+<section id="selection">
+  <h2><span class="n">07</span>Stock-selection playbook: getting the most out of it</h2>
+  <p class="sub">A disciplined way to turn the desk into a short research list. It narrows attention; it does not tell you what to do.</p>
+
+  <div class="callout i"><b>The core idea</b>
+    The desk gives you three questions answered with evidence: <em>What kind of market is it?</em> (regime),
+    <em>How broad is it?</em> (Market Structure and sectors), and <em>Which stocks did something unusual, and how?</em> (Radar).
+    The most useful names are usually where these three line up, or where a stock clearly diverges from them.</div>
+
+  <ol class="steps">
+    <li><b>Start with the regime, never with a stock</b>
+      Read the label and its Why before opening any candidate. It sets the bar for everything that follows.
+      <div class="tw" style="margin-top:8px"><table>
+        <thead><tr><th>Regime</th><th>What it means for your review</th></tr></thead>
+        <tbody>
+          <tr><td><span class="badge">BULLISH</span></td><td>Trend and breadth agree upward. Candidates aligned with the market (positive relative strength, upward structure events) have the wind behind them. Still verify each one.</td></tr>
+          <tr><td><span class="badge">BEARISH</span></td><td>Most stocks are weak. A stock with <b>persistent positive</b> relative performance stands out against the tide, so note it. Upside structure events here deserve extra confirmation.</td></tr>
+          <tr><td><span class="badge">NEUTRAL</span></td><td>Range-like market. Range breaks matter more than drift; expect less follow-through from the index itself.</td></tr>
+          <tr><td><span class="badge">TRANSITIONAL</span></td><td>Evidence conflicts or is changing. Raise your bar: ask for more evidence families and check whether the stock's sector participates. A <code>*</code> means a new state is not yet confirmed.</td></tr>
+          <tr><td><span class="badge">INSUFFICIENT</span></td><td>Don't lean on the regime. Judge candidates on their own evidence only.</td></tr>
+        </tbody>
+      </table></div></li>
+    <li><b>Read the attention set tier by tier</b>
+      <span class="tier">1</span>STORY SELECTED (the Radar's own selector)
+      <span class="tier">2</span>3 EVIDENCE FAMILIES
+      <span class="tier">3</span>VOLUME + STRUCTURE
+      <span class="tier">4</span>NEW (first recorded or back after N sessions)
+      <span class="tier">5</span>STATE CHANGE (quiet-day fill).
+      <span class="note">Tiers 2–3 carry the most independent evidence; tier 4 is where new names first appear. Then scan the full Radar page for names in sectors you follow.</span></li>
+    <li><b>Verify the evidence on the stock page before believing it</b>
+      <ul>
+        <li><b>EVIDENCE VERIFIED</b> (✓) means the numbers reproduce. <b>VALUES UNAVAILABLE</b> means treat it as unconfirmed.</li>
+        <li><b>Direction comes from the day % and the close</b>, not from the family names.</li>
+        <li><b>Volume:</b> UNUSUAL (≥ 3x) vs EXTREME (≥ 5x). Check the 60-session RVOL chart: is this the first spike or one of many?</li>
+        <li><b>Structure:</b> a 50-session range break is a bigger event than an SMA20 cross. Check how far the close is beyond the level (break distance %).</li>
+        <li><b>Relative:</b> PERSISTENT means both 5D and 20D vs NIFTY 50 point the same way, so it is not a one-day move.</li>
+      </ul></li>
+    <li><b>Check the context around the stock</b>
+      <ul>
+        <li><b>Sector (section F):</b> is the sector participating (breadth, median move, other candidates), or is the stock alone?</li>
+        <li><b>Market regime line (section F):</b> is the stock moving with or against the regime? Write that down; both can be interesting for different reasons.</li>
+        <li><b>Radar history (section G):</b> FIRST RECORDED, CONSECUTIVE or REAPPEARED. Repeated appearances with the same direction are persistence; a flip in direction is a change.</li>
+        <li><b>Official events (section H):</b> F&amp;O ban, ASM or GSM membership changes how a stock trades. Treat these as caution flags, and read the exchange's own wording.</li>
+      </ul></li>
+    <li><b>Apply your own filters (outside the desk)</b>
+      <ul>
+        <li>Upcoming results or corporate actions, news, and liquidity for your size.</li>
+        <li>Your own entry plan, invalidation level and position size. The desk deliberately provides none of these.</li>
+      </ul></li>
+    <li><b>Write it down: 0 to 5 names, never forced</b>
+      On a day with nothing convincing, the right shortlist is empty. Record every name in the journal (section 8) with its evidence and the regime. That record is how you learn which setups work <em>for you</em>.</li>
+  </ol>
+
+  <h3>Alignment matrix (use it as a note, not a rule)</h3>
+  <div class="tw"><table>
+    <thead><tr><th></th><th>Candidate evidence upward (positive relative / upward structure)</th><th>Candidate evidence downward</th></tr></thead>
+    <tbody>
+      <tr><th>BULLISH regime</th><td><span class="ok">Aligned:</span> standard confirmation.</td><td><span class="wa">Against the market:</span> stock-specific weakness. Find out why.</td></tr>
+      <tr><th>BEARISH regime</th><td><span class="wa">Against the market:</span> relative strength stands out. Demand persistence and volume.</td><td><span class="ok">Aligned:</span> standard confirmation.</td></tr>
+      <tr><th>NEUTRAL / TRANSITIONAL</th><td colspan="2">No tailwind either way. Weight the stock's own evidence, its sector's participation and how many families fired.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>What the desk deliberately does not give you</h3>
+  <p class="note">No score, no ranking by "best", no buy/sell/hold, no target or stop, no forecast, and no hit-rate statistics yet. Regime-conditioned outcome research (for example "does Volume + Structure behave differently in BULLISH vs BEARISH sessions?") is Phase 2. It will use only point-in-time sessions; the first fully eligible session is expected to be 2026-10-15. Until then, your journal is the evidence.</p>
+</section>
+
+<!-- 8 -->
+<section id="journal">
+  <h2><span class="n">08</span>Your research journal</h2>
+  <p class="sub">The single highest-leverage habit. Keep it in your own spreadsheet; the desk never writes it.</p>
+  <div class="tw"><table>
+    <thead><tr><th>Column</th><th>Fill with</th><th>From</th></tr></thead>
+    <tbody>
+      <tr><td>Session date</td><td>The desk's showing session</td><td>Header</td></tr>
+      <tr><td>Symbol · sector</td><td>e.g. ABC · Capital Goods</td><td>Stock page</td></tr>
+      <tr><td>Market regime</td><td>Label, plus whether it was confirmed (no <code>*</code>)</td><td>Regime card / CSV <code>market_regime</code></td></tr>
+      <tr><td>Evidence</td><td>Families, reason codes, RVOL, break distance %, 5D/20D vs NIFTY</td><td>WHY THIS STOCK / CSV</td></tr>
+      <tr><td>Context</td><td>Sector participating? Aligned or against the regime? Official flags?</td><td>Sections F and H</td></tr>
+      <tr><td>Your thesis</td><td>One sentence, in your words</td><td>You</td></tr>
+      <tr><td>Your invalidation</td><td>What would prove the thesis wrong</td><td>You</td></tr>
+      <tr><td>Outcome +5 / +20 sessions</td><td>Fill in later, factually</td><td>Stock page chart later</td></tr>
+      <tr><td>Lesson</td><td>What you would do differently</td><td>You</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">Tip: start each evening's rows from <code>radar.csv</code> (Radar page), which already has symbol, sector, families, detector IDs, day %, RVOL, 5D/20D vs NIFTY, official events and the market regime.</p>
+</section>
+
+<!-- 9 -->
+<section id="guardrails">
+  <h2><span class="n">09</span>Guardrails &amp; red flags</h2>
+  <div class="grid g2">
+    <div class="card"><div class="k">Do not use tonight's view if…</div>
+      <ul>
+        <li>any source is <span class="wa">STALE</span> or <span class="bad">MISSING</span>, or the evening verdict was ATTENTION REQUIRED;</li>
+        <li>replay reconciliation is not MATCHED for the names you care about;</li>
+        <li>the regime status is STALE or INSUFFICIENT_DATA (use it as no context at all);</li>
+        <li>a page says DATA UNAVAILABLE and "failed safely" (reload after the evening job finishes).</li>
+      </ul></div>
+    <div class="card"><div class="k">Interpretation traps</div>
+      <ul>
+        <li>One-day breadth is not a regime: the regime uses 10-session and 50-session breadth.</li>
+        <li>An <code>APPROX</code> history row is a rough reconstruction (back-dated universe), not validation.</li>
+        <li>Market Structure "unusual volume" (≥ 2x) is wider than the Radar's VOLUME family (≥ 3x).</li>
+        <li>An F&amp;O ban / ASM / GSM listing is an exchange surveillance status. Describe it in the exchange's terms, and treat it as a caution.</li>
+        <li>No intraday data: everything describes the completed session.</li>
+      </ul></div>
+  </div>
+  <div class="callout"><b>Hard boundaries (built in, test-enforced)</b>
+    The desk is read-only, local-only and has no broker connection. The Kite packet is context-only, with no order fields.
+    Private intelligence never reaches the public YouTube Short. Keep it that way; don't share desk screenshots publicly.</div>
+</section>
+
+<!-- 10 -->
+<section id="reference">
+  <h2><span class="n">10</span>Quick reference</h2>
+  <div class="tw"><table>
+    <thead><tr><th>Task</th><th>Command / place</th></tr></thead>
+    <tbody>
+      <tr><td>Morning PRE</td><td><code>scripts\run_morning_pre.bat</code></td></tr>
+      <tr><td>Evening REPORT + POST</td><td><code>scripts\run_evening_full.bat</code> (<code>--rerender-post</code> after a recovered snapshot)</td></tr>
+      <tr><td>Full daily status</td><td><code>scripts\check_daily_run.bat</code></td></tr>
+      <tr><td>Desk health</td><td><code>scripts\check_private_desk.bat</code></td></tr>
+      <tr><td>Start desk</td><td><code>scripts\run_private_desk.bat</code> → <a href="http://127.0.0.1:8765">127.0.0.1:8765</a> (<code>--port 8766</code> if busy)</td></tr>
+      <tr><td>Regime detail</td><td><a href="http://127.0.0.1:8765/regime">127.0.0.1:8765/regime</a></td></tr>
+      <tr><td>Radar CSV</td><td><a href="http://127.0.0.1:8765/radar.csv">127.0.0.1:8765/radar.csv</a></td></tr>
+      <tr><td>Regime research pack</td><td><code>python -m private_desk.regime.research</code> → <code>output\private_desk\regime_research\</code></td></tr>
+      <tr><td>Private video (never uploaded)</td><td>see PRIVATE_INTELLIGENCE.md §4</td></tr>
+      <tr><td>Rebuild one Market Structure day</td><td><code>python -m market_structure.build --session YYYY-MM-DD</code></td></tr>
+      <tr><td>Isolated test cycle</td><td><code>scripts\test_full_cycle.bat</code> then <code>scripts\check_test_run.bat</code></td></tr>
+      <tr><td>Regression tests</td><td><code>python -m pytest tests/ -q</code></td></tr>
+      <tr><td>Cleanup (dry run)</td><td><code>python scripts\clean_dev_artifacts.py</code></td></tr>
+      <tr><td>Desk cache (safe to delete)</td><td><code>output\private_desk\cache\</code>, <code>output\private_desk\regime\</code></td></tr>
+    </tbody>
+  </table></div>
+
+  <details><summary>Glossary</summary><div>
+    <p><b>RVOL</b>: session volume ÷ mean of the prior 20 sessions (the current session excluded).
+      <b>NOTABLE / HIGH INTEREST</b>: 2 / 3 independent evidence families.
+      <b>Novelty</b>: the Radar's NEW_CANDIDATE / CONTINUATION / specific change.
+      <b>Appearance</b>: FIRST RECORDED / CONSECUTIVE / REAPPEARED +Ns.
+      <b>POINT_IN_TIME / APPROX / UNKN</b>: universe-membership quality of a regime session.
+      <b>Confirmation rule</b>: a new BULLISH / BEARISH / NEUTRAL needs two consecutive sessions; until then it shows TRANSITIONAL with <code>*</code>.
+      <b>RIGHTS_BLOCK_ONLY</b>: the expected public-audit status while data rights are under review.</p>
+  </div></details>
+
+  <footer>Private Intelligence Blueprint · docs/PRIVATE_DESK_BLUEPRINT.html · for the owner's private use. Market Regime V1 is FROZEN / PROVISIONAL;
+    Desk Phase 1 is read-only. Nothing here is investment advice; every decision is yours.</footer>
+</section>
+</main>
+</div>
+
+<script>
+(function () {
+  var today = new Date();
+  var key = today.getFullYear() + "-" + String(today.getMonth() + 1).padStart(2, "0") + "-" + String(today.getDate()).padStart(2, "0");
+  var pill = document.getElementById("todayPill");
+  if (pill) pill.textContent = "Today " + key;
+
+  function load(k) { try { return JSON.parse(localStorage.getItem(k) || "{}"); } catch (e) { return {}; } }
+  function save(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* storage unavailable */ } }
+
+  document.querySelectorAll("[data-checklist]").forEach(function (box) {
+    var store = "dmb-blueprint:" + box.getAttribute("data-checklist") + ":" + key;
+    var state = load(store);
+    var inputs = box.querySelectorAll("input[type=checkbox]");
+    var prog = box.querySelector(".progress");
+    function refresh() {
+      var n = 0;
+      inputs.forEach(function (i) { i.closest("li").classList.toggle("done", i.checked); if (i.checked) n++; });
+      if (prog) prog.textContent = n + " / " + inputs.length;
+    }
+    inputs.forEach(function (i) {
+      i.checked = !!state[i.id];
+      i.addEventListener("change", function () { state[i.id] = i.checked; save(store, state); refresh(); });
+    });
+    refresh();
+  });
+
+  document.getElementById("resetBtn").addEventListener("click", function () {
+    document.querySelectorAll("[data-checklist]").forEach(function (box) {
+      try { localStorage.removeItem("dmb-blueprint:" + box.getAttribute("data-checklist") + ":" + key); } catch (e) {}
+      box.querySelectorAll("input[type=checkbox]").forEach(function (i) { i.checked = false; i.dispatchEvent(new Event("change")); });
+    });
+  });
+
+  document.querySelectorAll("pre.cmd").forEach(function (pre) {
+    var b = document.createElement("button");
+    b.type = "button"; b.textContent = "Copy";
+    b.addEventListener("click", function () {
+      var text = pre.firstChild.textContent;
+      if (navigator.clipboard) navigator.clipboard.writeText(text).then(function () { b.textContent = "Copied"; setTimeout(function () { b.textContent = "Copy"; }, 1200); });
+    });
+    pre.appendChild(b);
+  });
+
+  var root = document.documentElement;
+  try { var t = localStorage.getItem("dmb-blueprint:theme"); if (t) root.setAttribute("data-theme", t); } catch (e) {}
+  document.getElementById("themeBtn").addEventListener("click", function () {
+    var dark = root.getAttribute("data-theme") ? root.getAttribute("data-theme") === "dark"
+      : !window.matchMedia("(prefers-color-scheme: light)").matches;
+    var next = dark ? "light" : "dark";
+    root.setAttribute("data-theme", next);
+    try { localStorage.setItem("dmb-blueprint:theme", next); } catch (e) {}
+  });
+
+  var links = Array.prototype.slice.call(document.querySelectorAll("nav.toc li a"));
+  if ("IntersectionObserver" in window) {
+    var obs = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (en.isIntersecting) links.forEach(function (a) { a.classList.toggle("on", a.getAttribute("href") === "#" + en.target.id); });
+      });
+    }, { rootMargin: "-20% 0px -70% 0px" });
+    document.querySelectorAll("main section[id]").forEach(function (s) { obs.observe(s); });
+  }
+})();
+</script>
+</body>
+</html>

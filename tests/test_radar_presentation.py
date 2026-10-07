@@ -8,9 +8,12 @@ Radar-to-vertical-short presentation contract).
 """
 import copy
 import datetime as dt
+from pathlib import Path
 
 import radar.presentation as pmodels
 import radar.presentation_planner as pp
+
+ARTIFACT = str(Path(__file__).parent / "fixtures" / "radar" / "daily_radar_2026-09-21.json")
 
 SESSION = "2026-09-21"
 
@@ -390,7 +393,7 @@ def test_selector_version_retained_on_presentation():
 # --------------------------------------------------------------------------- real-artifact match
 def test_real_2026_09_21_artifact_produces_expected_five_symbols_in_order():
     import json
-    with open("output/radar/daily_radar_2026-09-21.json", encoding="utf-8") as fh:
+    with open(ARTIFACT, encoding="utf-8") as fh:
         data = json.load(fh)
     pres = pp.build_radar_presentation(data)
     story_scenes = [s for s in pres.scenes if s.role == "STORY"]

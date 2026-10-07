@@ -164,3 +164,30 @@ Only folders directly under `output\test_runs\` can be deleted. Run ids are vali
   the initial copy.
 - To check by hand, note the timestamps of `output\data\*.db` before a test and compare after.
   They do not change.
+
+## 18. Pytest suite: running from a clean checkout
+
+`python -m pytest tests/ -q` must pass from a freshly cloned checkout (or a clean
+`git worktree add`) with no `output\` directory and no local SQLite history - only tracked
+repository content plus whatever a test creates for itself (`tmp_path`, in-memory fixtures).
+
+**Frozen reference data lives under `tests/fixtures/`, never under `output\`.** `output\` is
+gitignored and holds only runtime artifacts from actually running the pipeline; a test that
+reads from it is reading un-tracked, developer-local state that a clean checkout does not
+have. If a test genuinely needs a real (not synthetic) artifact or dataset as a frozen
+reference, freeze a copy of it under `tests/fixtures/<area>/` and resolve the path with
+`Path(__file__).parent / "fixtures" / ...` so it doesn't depend on the working directory. Two
+examples, both added for PK-B (test reproducibility):
+- `tests/fixtures/radar/daily_radar_2026-09-21.json` - a real `radar/daily_pipeline.py`
+  artifact, used by `tests/test_radar_chart_scene.py`, `tests/test_radar_presentation.py`,
+  `tests/test_radar_video_renderer.py`.
+- `tests/fixtures/editorial_selector/ohlcv_60_session_2026-09-21.csv` - a real OHLCV slice used
+  by `tests/test_editorial_selector_equivalence.py`, seeded into a `tmp_path`-scoped
+  `OHLCVStore` at test time rather than opening `output\data\market_ohlcv.db`. See
+  `_generate_fixture.py` in the same folder for how it was produced (a manual, one-off script -
+  never run automatically by the suite).
+
+A test that is intentionally an exception to "fully offline" (rare - one test in the suite was,
+until PK-B) must say so in its own docstring, and should still not depend on anything a clean
+checkout lacks; prefer freezing real data into `tests/fixtures/` over leaving it dependent on
+local accumulated state or live network access.

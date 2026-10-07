@@ -5,6 +5,7 @@ radar/video_renderer.py. Offline only - visual evidence fixtures are built direc
 import ast
 import datetime as dt
 import inspect
+from pathlib import Path
 
 import radar.presentation_planner as pp
 import radar.video_renderer as vr
@@ -12,7 +13,7 @@ import radar.video_scenes as vs
 from radar.video_theme import MIN_FONT_SIZE, H, W
 from radar.visual_evidence import RadarVisualEvidence
 
-ARTIFACT = "output/radar/daily_radar_2026-09-21.json"
+ARTIFACT = str(Path(__file__).parent / "fixtures" / "radar" / "daily_radar_2026-09-21.json")
 
 
 def _load_real_presentation():

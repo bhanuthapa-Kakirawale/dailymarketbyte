@@ -1707,3 +1707,145 @@ def test_gsa_watch_line_is_status_aware_scheduled_vs_completed():
                             facts=[{"label": "cutoff_yield_pct", "value": 5.52}])
     assert "scheduled" in _line(scheduled) and "8000" in _line(scheduled)
     assert "completed" in _line(completed) and "5.52" in _line(completed)
+
+
+# ------------------------------------- GOVT_SECURITIES_AUCTION reschedule identity (P2F.1)
+# No RBI-stated identifier (press-release ref, GoI notification ref) was found that reliably
+# survives a reschedule, and no live reschedule example exists - these tests fixture-test the
+# reconciliation semantics using the exact live source schema already proven in the P2F section
+# above (`_TBILL_ANNOUNCE_HTML`/`_TBILL_RESULT_HTML`, both for the SAME real auction_date,
+# 2026-10-07).
+_TBILL_ANNOUNCE_RESCHEDULED_HTML = _TBILL_ANNOUNCE_HTML.replace(
+    "October 07, 2026", "October 14, 2026").replace("October 08, 2026", "October 15, 2026")
+
+
+def _gsa_prior(event_key, auction_date, status, facts=None):
+    from market_events.models import GOVT_SECURITIES_AUCTION, SCHEMA_VERSION, SUCCESS, MarketEvent
+    return MarketEvent(schema_version=SCHEMA_VERSION, family=GOVT_SECURITIES_AUCTION,
+                       event_key=event_key, symbol=None, company="Government of India",
+                       status=status, sub_type="TBILL_91", data_as_of=auction_date,
+                       source_name="rbi_govt_securities_auction_press_release",
+                       source_reference="x", first_retrieved_at="2026-10-01T19:30:00+05:30",
+                       status_capture=SUCCESS, facts=facts or [])
+
+
+def test_gsa_reconcile_no_prior_mints_direct_key():
+    """Item 1: baseline - no lookup match (bootstrap) uses the direct natural key, unchanged
+    from before this hardening."""
+    from market_events.sources.govt_securities_auction import group_events
+    rows = [(dt.date(2026, 10, 1), "Auction of 91-Day, 182-Day and 364-Day Treasury Bills",
+            "63712")]
+    http_get = _gsa_http_get({"prid=63712": _TBILL_ANNOUNCE_HTML})
+    events, notes = group_events(rows, http_get, _GSA_NOW_ISO, 21, lookup_fn=lambda f, s: None)
+    tbill_91 = [e for e in events if e.sub_type == "TBILL_91"][0]
+    assert tbill_91.event_key == "GOVT_SECURITIES_AUCTION:MARKET:TBILL_91:2026-10-07"
+    assert tbill_91.status == "SCHEDULED"
+
+
+def test_gsa_reconcile_revised_auction_date_reuses_key_as_revised_date():
+    """Item 2: an open (non-terminal) prior at a DIFFERENT date reuses its event_key, with
+    status REVISED_DATE recording the transition."""
+    from market_events.sources.govt_securities_auction import group_events
+    prior = _gsa_prior("GOVT_SECURITIES_AUCTION:MARKET:TBILL_91:2026-10-07", "2026-10-07",
+                       "SCHEDULED", facts=[{"label": "notified_amount_crore", "value": 8000}])
+    rows = [(dt.date(2026, 10, 3), "Auction of 91-Day, 182-Day and 364-Day Treasury Bills",
+            "63712")]
+    http_get = _gsa_http_get({"prid=63712": _TBILL_ANNOUNCE_RESCHEDULED_HTML})
+    events, notes = group_events(rows, http_get, _GSA_NOW_ISO, 21,
+                                 lookup_fn=lambda f, slug: prior if slug == "TBILL_91" else None)
+    tbill_91 = [e for e in events if e.sub_type == "TBILL_91"][0]
+    assert tbill_91.event_key == prior.event_key   # SAME key, not a second event
+    assert tbill_91.status == "REVISED_DATE"
+    assert tbill_91.data_as_of == "2026-10-14"
+
+
+def test_gsa_reconcile_same_date_amount_revision_keeps_key_and_scheduled_status():
+    """Item 3: a prior at the SAME date (e.g. a same-day amount correction) keeps the key and
+    stays SCHEDULED - the amount is simply overwritten by the newer fetch."""
+    from market_events.sources.govt_securities_auction import group_events
+    prior = _gsa_prior("GOVT_SECURITIES_AUCTION:MARKET:TBILL_91:2026-10-07", "2026-10-07",
+                       "SCHEDULED", facts=[{"label": "notified_amount_crore", "value": 7000}])
+    rows = [(dt.date(2026, 10, 1), "Auction of 91-Day, 182-Day and 364-Day Treasury Bills",
+            "63712")]
+    http_get = _gsa_http_get({"prid=63712": _TBILL_ANNOUNCE_HTML})   # states amount 8000
+    events, notes = group_events(rows, http_get, _GSA_NOW_ISO, 21,
+                                 lookup_fn=lambda f, slug: prior if slug == "TBILL_91" else None)
+    tbill_91 = [e for e in events if e.sub_type == "TBILL_91"][0]
+    assert tbill_91.event_key == prior.event_key
+    assert tbill_91.status == "SCHEDULED"
+    facts = {f["label"]: f["value"] for f in tbill_91.facts}
+    assert facts["notified_amount_crore"] == 8000
+
+
+def test_gsa_reconcile_result_only_fetch_merges_into_same_event_completed_carries_facts_forward():
+    """Item 4: a result-only fetch (no schedule row re-seen this pass) reuses the open prior's
+    key, becomes COMPLETED, and CARRIES FORWARD the prior's own schedule facts (settlement
+    date) rather than losing them, while adding this fetch's newly-observed result facts."""
+    from market_events.sources.govt_securities_auction import group_events
+    prior = _gsa_prior("GOVT_SECURITIES_AUCTION:MARKET:TBILL_91:2026-10-07", "2026-10-07",
+                       "SCHEDULED", facts=[{"label": "notified_amount_crore", "value": 8000},
+                                           {"label": "settlement_date", "value": "2026-10-08"}])
+    rows = [(dt.date(2026, 9, 30), "Treasury Bills: Full Auction Result", "63696")]
+    http_get = _gsa_http_get({"prid=63696": _TBILL_RESULT_HTML})   # its own Date: 2026-10-07
+    events, notes = group_events(rows, http_get, _GSA_NOW_ISO, 21,
+                                 lookup_fn=lambda f, slug: prior if slug == "TBILL_91" else None)
+    tbill_91 = [e for e in events if e.sub_type == "TBILL_91"][0]
+    assert tbill_91.event_key == prior.event_key
+    assert tbill_91.status == "COMPLETED"
+    facts = {f["label"]: f["value"] for f in tbill_91.facts}
+    assert facts["settlement_date"] == "2026-10-08"    # carried forward, not re-seen this fetch
+    assert facts["cutoff_yield_pct"] == 5.5199          # newly observed this fetch
+
+
+def test_gsa_reconcile_no_match_mints_fresh_key_for_genuinely_new_cycle():
+    """Item 5: when the lookup finds nothing open (the exact outcome once a prior cycle is
+    COMPLETED - proven directly by test_service_lookup_open_by_instrument_ignores_terminal_
+    events below), a genuinely new, later auction of the same instrument mints its OWN fresh
+    key, never reusing a stale one."""
+    from market_events.sources.govt_securities_auction import group_events
+    rows = [(dt.date(2026, 10, 1), "Auction of 91-Day, 182-Day and 364-Day Treasury Bills",
+            "63712")]
+    http_get = _gsa_http_get({"prid=63712": _TBILL_ANNOUNCE_HTML})
+    events, notes = group_events(rows, http_get, _GSA_NOW_ISO, 21, lookup_fn=lambda f, s: None)
+    tbill_91 = [e for e in events if e.sub_type == "TBILL_91"][0]
+    assert tbill_91.event_key == "GOVT_SECURITIES_AUCTION:MARKET:TBILL_91:2026-10-07"
+    assert tbill_91.event_key != "GOVT_SECURITIES_AUCTION:MARKET:TBILL_91:2026-09-30"
+
+
+def test_gsa_needs_instrument_lookup_marker_is_set():
+    from market_events.sources.govt_securities_auction import fetch_govt_securities_auction
+    assert fetch_govt_securities_auction.needs_instrument_lookup is True
+
+
+def test_service_lookup_open_by_instrument_matches_event_key_not_symbol(tmp_path):
+    """The new family-specific lookup matches by the event_key's own instrument-slug segment -
+    never `.symbol`, which is always None for this market-wide family."""
+    from market_events.models import GOVT_SECURITIES_AUCTION, SCHEMA_VERSION, SUCCESS, MarketEvent
+    from market_events.service import MarketEventsService
+    from market_events.store import write_revision
+    ev = MarketEvent(schema_version=SCHEMA_VERSION, family=GOVT_SECURITIES_AUCTION,
+                     event_key="GOVT_SECURITIES_AUCTION:MARKET:TBILL_91:2026-10-07", symbol=None,
+                     company="Government of India", status="SCHEDULED", sub_type="TBILL_91",
+                     data_as_of="2026-10-07", source_name="x", source_reference="x",
+                     first_retrieved_at="2026-10-01T19:30:00+05:30", status_capture=SUCCESS)
+    write_revision(str(tmp_path), ev)
+    svc = MarketEventsService(str(tmp_path))
+    found = svc._lookup_open_by_instrument(GOVT_SECURITIES_AUCTION, "TBILL_91")
+    assert found is not None and found.event_key == ev.event_key
+    assert svc._lookup_open_by_instrument(GOVT_SECURITIES_AUCTION, "TBILL_182") is None
+
+
+def test_service_lookup_open_by_instrument_ignores_terminal_events(tmp_path):
+    """A COMPLETED (terminal) prior is never found - the exact mechanism that lets a later,
+    genuinely new auction cycle for the same instrument mint its own fresh key (item 5)."""
+    from market_events.models import GOVT_SECURITIES_AUCTION, SCHEMA_VERSION, SUCCESS, MarketEvent
+    from market_events.service import MarketEventsService
+    from market_events.store import write_revision
+    ev = MarketEvent(schema_version=SCHEMA_VERSION, family=GOVT_SECURITIES_AUCTION,
+                     event_key="GOVT_SECURITIES_AUCTION:MARKET:TBILL_91:2026-09-30", symbol=None,
+                     company="Government of India", status="COMPLETED", sub_type="TBILL_91",
+                     data_as_of="2026-09-30", source_name="x", source_reference="x",
+                     first_retrieved_at="2026-09-25T19:30:00+05:30", status_capture=SUCCESS)
+    write_revision(str(tmp_path), ev)
+    svc = MarketEventsService(str(tmp_path))
+    assert svc._lookup_open_by_instrument(GOVT_SECURITIES_AUCTION, "TBILL_91") is None

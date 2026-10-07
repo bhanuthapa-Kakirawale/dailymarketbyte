@@ -72,9 +72,24 @@ def write_revision(out_dir: str, event: MarketEvent) -> str:
     return path
 
 
-def list_events(out_dir: str, family: str) -> list:
-    """Every event_key on disk for `family`, as (event_key, latest_path, latest_event). "Latest"
-    means the highest-numbered revision on disk for that key."""
+def list_events(out_dir: str, family: str, *, as_of: str | None = None) -> list:
+    """Every event_key on disk for `family`, as (event_key, path, event).
+
+    With `as_of` omitted (every caller except `load_latest`'s own point-in-time replay path),
+    "latest" means the highest-numbered revision on disk for that key - unchanged, one
+    `load_revision` per key, the cheap common case.
+
+    With `as_of` given (an ISO timestamp), "latest" instead means the highest-numbered revision
+    whose OWN `retrieved_at` is STRICTLY before `as_of` - the state that was genuinely on disk
+    at that moment - rather than today's absolute latest revision (strict, matching the
+    parameter's own pre-existing "before" contract: a revision retrieved at exactly `as_of`
+    does not yet count as known as of that instant). `retrieved_at` (unlike `first_retrieved_at`,
+    which is carried forward unchanged across every revision) is set fresh on each capture, so
+    this is the only field that can tell revisions apart in time. A key with NO revision at or
+    before `as_of` (not even revision 1) is excluded entirely - the same "not yet discovered"
+    exclusion the old first-seen-only gate provided, now also correct for a key that WAS known
+    before `as_of` but was revised again afterward (a reschedule, a result, a status change) -
+    that later revision must never leak backward into an earlier replay."""
     folder = _family_dir(out_dir, family)
     if not os.path.isdir(folder):
         return []
@@ -83,14 +98,24 @@ def list_events(out_dir: str, family: str) -> list:
         name = os.path.basename(path)[:-5]
         key = name.split(".r")[0]
         n = int(name.split(".r")[1]) if ".r" in name else 1
-        cur = by_key.get(key)
-        if cur is None or n > cur[0]:
-            by_key[key] = (n, path)
+        by_key.setdefault(key, []).append((n, path))
+
     out = []
-    for key, (_, path) in by_key.items():
-        ev = load_revision(path)
-        if ev is not None:
-            out.append((ev.event_key, path, ev))
+    for key, revs in by_key.items():
+        revs.sort(key=lambda t: t[0])
+        if as_of is None:
+            _n, path = revs[-1]
+            ev = load_revision(path)
+            if ev is not None:
+                out.append((ev.event_key, path, ev))
+            continue
+        chosen = None
+        for _n, path in revs:
+            ev = load_revision(path)
+            if ev is not None and ev.retrieved_at and ev.retrieved_at < as_of:
+                chosen = (ev.event_key, path, ev)
+        if chosen is not None:
+            out.append(chosen)
     out.sort(key=lambda t: t[0])
     return out
 
@@ -100,10 +125,13 @@ def load_latest(out_dir: str, family: str, *, symbol: str | None = None,
                 validated_only: bool = True) -> list:
     """Every event_key's latest qualifying revision for `family`: `symbol` filters to one
     security when given; `on_or_before` bounds `data_as_of`; `first_retrieved_before` is the
-    point-in-time replay gate - never an event discovered after its own cutoff, even if dated
-    on or before the session."""
+    point-in-time replay gate, passed straight through as `list_events`'s `as_of` - the revision
+    returned for each key is the one genuinely on disk at that timestamp (by its own
+    `retrieved_at`), so a later revision (a reschedule, a result, any change) never leaks
+    backward into an earlier replay, and a key not yet known at all as of this timestamp is
+    excluded entirely."""
     out = []
-    for event_key, _path, ev in list_events(out_dir, family):
+    for event_key, _path, ev in list_events(out_dir, family, as_of=first_retrieved_before):
         if validated_only and not ev.validated:
             continue
         if symbol is not None and ev.symbol != symbol:
@@ -114,9 +142,6 @@ def load_latest(out_dir: str, family: str, *, symbol: str | None = None,
                     continue
             except ValueError:
                 pass
-        if first_retrieved_before is not None and ev.first_retrieved_at:
-            if ev.first_retrieved_at >= first_retrieved_before:
-                continue
         out.append(ev)
     return out
 

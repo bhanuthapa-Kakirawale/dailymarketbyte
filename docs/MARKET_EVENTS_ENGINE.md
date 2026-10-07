@@ -151,18 +151,41 @@ avoid a redundant second parse of the same auction.
 symbol-keyed reconciliation EARNINGS/OFS/BUYBACK/OPEN_OFFER/DELISTING share cannot apply (and a
 pseudo-symbol would silently break `watch.select_market_events`'s "if it names a security, that
 security is in the tracked universe" check - never done).
-`event_key = f"GOVT_SECURITIES_AUCTION:MARKET:{instrument_slug}:{auction_date_iso}"` instead:
-`instrument_slug` is the security's own stated name (G-Sec, e.g. `7_06_GS_2041`) or the fixed
-tenor constant (T-Bill), `auction_date_iso` is the auction date the announcement itself states
-(or, for a result captured without its announcement in the same pass, the press release's own
-publication date - RBI states results are "announced on the same day" as the auction). A later
-notified-amount revision for the SAME instrument/date naturally keeps the SAME key and is picked
-up as an ordinary checksum-driven `REVISED` write - no new logic needed. **Known, accepted
-limitation:** a genuine auction-DATE revision (RBI rescheduling an already-announced auction)
-mints a new event_key rather than revising the original, because this feed gives no symbol or
-other cross-referencing field to reconcile it by (unlike EARNINGS' board-meeting reschedule,
-which reconciles via NSE's own stable `bm_symbol`). No live example of this was observed this
-pass.
+`event_key = f"GOVT_SECURITIES_AUCTION:MARKET:{instrument_slug}:{auction_date_iso}"` for a
+freshly-seen cycle: `instrument_slug` is the security's own stated name (G-Sec, e.g.
+`7_06_GS_2041`) or the fixed tenor constant (T-Bill), `auction_date_iso` is the auction date the
+announcement itself states (or, for a result captured without its announcement in the same
+pass, the press release's own publication date - RBI states results are "announced on the same
+day" as the auction).
+
+**Reschedule reconciliation (P2F.1, hardened):** no RBI-stated identifier was found that
+reliably survives a reschedule - a press-release reference (`"2026-2027/1252"`) and a GoI
+notification reference (`"F.No.4(1)-B(W&M)/2026..."`) are both per-filing, and a correction
+notice would plausibly get a new one of either (no live reschedule example exists to check
+against). Per the project's own fallback rule for "no stable ID survives a reschedule", this
+reuses that exact reconciliation PATTERN via a small, family-specific analogue:
+`MarketEventsService._lookup_open_by_instrument(family, instrument_slug)` matches the latest
+NON-TERMINAL stored event by its event_key's own instrument-slug segment instead of `.symbol`
+(since `.symbol` is always `None` here), reached through a new opt-in `needs_instrument_lookup`
+marker parallel to `needs_lookup` - zero change to `needs_lookup`'s own 5 existing callers. For
+each freshly-built `(instrument_slug, auction_date)` candidate: no open prior (none stored yet,
+or the only one is already terminal) -> mint the direct key above, exactly as before; an open
+(non-terminal) prior exists -> REUSE its event_key regardless of whether this candidate's own
+date matches it, with `status` = `COMPLETED` if this fetch has a result, else `REVISED_DATE` if
+the date actually changed (mirrors EARNINGS' identical `REVISED_DATE` logic exactly), else
+`SCHEDULED`; facts are merged label-by-label (a label this fetch doesn't re-observe - e.g. the
+original announcement's `settlement_date`, once only a bare result row is seen - is carried
+forward rather than dropped, mirroring OPEN_OFFER's `stage_evidence` philosophy). Since results
+publish same-day, a genuinely new, later auction of the same instrument is never mistaken for a
+reschedule - by the time it exists, the prior cycle is already `COMPLETED` (terminal), so the
+lookup correctly finds nothing and mints a fresh key. **Known, narrower residual limitation**
+(no live evidence either way): the per-fetch grouping that separates genuinely different,
+sequential cycles of the SAME instrument within one lookback window still keys by
+`(instrument_slug, auction_date)`, so if a stale original notice and its correction BOTH appear
+for the very first time within one single fetch (before either was ever stored), that one fetch
+still builds two momentary candidates under their own dates - the cross-fetch reconciliation
+above only kicks in once the original has actually been persisted by an earlier capture. Given
+reschedules are rare and results publish same-day, this is accepted as a narrow edge case.
 
 **Announcement + result merge:** a single fetch groups every qualifying row from a trailing
 `lookback_days = 21` window by `(instrument_slug, auction_date_iso)` BEFORE building any
@@ -519,13 +542,30 @@ attention_set_are_unchanged` / `test_market_regime_snapshot_is_unaffected` /
 (`live=False`) **never fetches** - nothing stored is `HISTORICAL_SNAPSHOT_UNAVAILABLE`, never
 today's page relabelled as the past. A live run may capture a missing family inside its own
 window (`CAPTURED_THIS_RUN`). The point-in-time gate (`first_retrieved_before`) excludes an
-event discovered after its own cutoff even if dated on or before the session - the same
-`institutional_flows` discipline, tested directly
+event not yet discovered as of its own cutoff even if dated on or before the session, tested
+directly
 (`tests/test_market_events_boundary.py::test_first_retrieved_before_cutoff_gate_excludes_report_
 discovered_after_cutoff`). `presentation/public_intelligence.py:load_public_intelligence()`
 passes a live run's cutoff as real "now" and a replay's cutoff as the END of the session being
-replayed (never real wall-clock "now", which would let a late-arriving revision leak into a
-replay of the past).
+replayed (never real wall-clock "now").
+
+**Per-revision correctness (P2F.1, hardened):** the gate above only ever answered "was this
+event_key known to exist yet" - `market_events/store.py`'s `list_events`/`load_latest` always
+returned the single absolute-LATEST on-disk revision for a key, because `first_retrieved_at` is
+set once at first sighting and carried forward unchanged on every later revision
+(`service.py::_store_one`). This meant a key first seen before a replay's cutoff but revised
+(rescheduled, resulted, any status change) AFTER it would still show the later revision's field
+values - a real, previously-untested gap that GOVT_SECURITIES_AUCTION's own reschedule fix (same
+event_key across a date change/result) made directly reachable in practice. Fixed generically:
+`list_events(out_dir, family, *, as_of=...)` now selects, for each key, the highest-numbered
+revision whose OWN `retrieved_at` is strictly before `as_of` (never carried forward, unlike
+`first_retrieved_at`), and `load_latest`'s `first_retrieved_before` passes straight through as
+`as_of` - every family's replay now reconstructs the exact revision active at the cutoff, not
+just whether the key existed yet. `as_of`/`first_retrieved_before` omitted (every other existing
+caller - `service.py::_store_one`/`_lookup_open_event`/`_lookup_open_by_instrument`,
+`private_desk/repository.py`) is byte-identical to before this fix. `institutional_flows/` has
+the identical latent gap (`first_retrieved_at` carried forward the same way) but is explicitly
+NOT fixed here - out of this task's scope.
 
 ## Rights
 

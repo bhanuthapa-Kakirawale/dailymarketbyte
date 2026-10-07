@@ -34,6 +34,24 @@ class MarketEventsService:
         open_evs.sort(key=lambda e: e.first_retrieved_at)
         return open_evs[-1]
 
+    def _lookup_open_by_instrument(self, family: str, instrument_slug: str) -> MarketEvent | None:
+        """Like `_lookup_open_event`, but for a market-wide family whose `symbol` is always
+        `None` by design (`models.MarketEvent`'s own documented invariant - GOVT_SECURITIES_
+        AUCTION only) and whose natural identity instead lives in its own `event_key`. Matches
+        the event_key's own instrument-slug segment (`f"{family}:MARKET:{instrument_slug}:"`)
+        rather than `.symbol`, so a reschedule of an open (non-terminal) auction cycle is found
+        without ever setting `.symbol` on a market-wide event - which would silently break
+        `watch.select_market_events`'s "if it names a security, that security is in the tracked
+        universe" check. Passed to any fetcher that declares `needs_instrument_lookup = True`,
+        mirroring `_lookup_open_event`'s own opt-in contract - never called otherwise."""
+        prefix = f"{family}:MARKET:{instrument_slug}:"
+        open_evs = [e for e in load_latest(self.out_dir, family, validated_only=False)
+                   if e.event_key.startswith(prefix) and e.status not in TERMINAL_STATUSES]
+        if not open_evs:
+            return None
+        open_evs.sort(key=lambda e: e.first_retrieved_at)
+        return open_evs[-1]
+
     def _store_one(self, family: str, ev, now: dt.datetime, mode: str) -> dict:
         now_iso = now.isoformat()
         existing = {k: (p, s) for k, p, s in list_events(self.out_dir, family)}
@@ -89,8 +107,12 @@ class MarketEventsService:
                 results[family] = {"family": family, "status": NOT_SUPPORTED_YET, "events": []}
                 continue
             try:
-                res = (fn(now_iso, lookup_fn=self._lookup_open_event)
-                      if getattr(fn, "needs_lookup", False) else fn(now_iso))
+                if getattr(fn, "needs_lookup", False):
+                    res = fn(now_iso, lookup_fn=self._lookup_open_event)
+                elif getattr(fn, "needs_instrument_lookup", False):
+                    res = fn(now_iso, lookup_fn=self._lookup_open_by_instrument)
+                else:
+                    res = fn(now_iso)
             except Exception as exc:
                 record_attempt(self.out_dir, family, mode, now,
                                {"family": family, "status": "EXCEPTION",

@@ -35,23 +35,46 @@ V1 SCOPE (owner-preferred, narrowest useful slice the evidence actually supports
     also skipped - only the Full Auction Result is read, to avoid a redundant second parse of
     the same auction.
 
-EVENT IDENTITY: this family is market-wide (`symbol=None`, per `models.MarketEvent`'s own
-documented invariant - never a security), so the `_lookup_open_event`/`needs_lookup` symbol-
-keyed reconciliation EARNINGS/OFS/BUYBACK/OPEN_OFFER/DELISTING share cannot apply here (and
-forcing it to, via a pseudo-symbol, would also silently break `watch.select_market_events`'s
-"if it names a security, that security is in the tracked universe" check - never done). Instead,
-`event_key = f"GOVT_SECURITIES_AUCTION:MARKET:{instrument_slug}:{auction_date_iso}"` is a direct
-natural key: `instrument_slug` is the security's own stated name (G-Sec, e.g. "7_06_GS_2041")
-or the fixed tenor constant (T-Bill: `TBILL_91`/`TBILL_182`/`TBILL_364`), `auction_date_iso` is
-the auction date stated by the announcement (or, for a result with no announcement captured
-this pass, the press release's own publication date - RBI states results are "announced on the
-same day" as the auction). A later notified-amount revision for the SAME instrument/auction date
-naturally keeps the SAME key and is picked up as a normal checksum-driven REVISED write by
-`MarketEventsService` - no new logic needed. A genuine AUCTION-DATE revision (RBI rescheduling
-an already-announced auction to a different date) is a KNOWN, ACCEPTED LIMITATION: it mints a
-new event_key rather than revising the original, because this feed gives no symbol or other
-cross-referencing field to reconcile it by (unlike EARNINGS' board-meeting reschedule, which
-reconciles via NSE's own stable `bm_symbol`). No live example of this was observed this pass.
+EVENT IDENTITY (P2F.1, hardened): this family is market-wide (`symbol=None`, per
+`models.MarketEvent`'s own documented invariant - never a security), so the `_lookup_open_event`/
+`needs_lookup` symbol-keyed reconciliation EARNINGS/OFS/BUYBACK/OPEN_OFFER/DELISTING share cannot
+apply here (and forcing it to, via a pseudo-symbol, would also silently break
+`watch.select_market_events`'s "if it names a security, that security is in the tracked
+universe" check - never done). No RBI-stated identifier was found that reliably survives a
+reschedule either - a press-release reference (`"2026-2027/1252"`) and a GoI notification
+reference (`"F.No.4(1)-B(W&M)/2026..."`) are both per-filing, and a correction notice would
+plausibly get a new one of either (no live example to check against). So, per the project's own
+fallback rule for "no stable ID survives a reschedule", this reuses that EXACT reconciliation
+PATTERN via a small, family-specific analogue:
+`MarketEventsService._lookup_open_by_instrument(family, instrument_slug)` (`service.py`) matches
+the latest NON-TERMINAL stored event by its event_key's own instrument-slug segment instead of
+`.symbol` (since `.symbol` is always `None` here), reached through a new opt-in
+`needs_instrument_lookup` marker parallel to `needs_lookup`. For a freshly-seen
+`(instrument_slug, auction_date)` group: no open prior (none stored yet, or the only one is
+already COMPLETED/terminal) -> mint the direct natural key
+`f"GOVT_SECURITIES_AUCTION:MARKET:{instrument_slug}:{auction_date_iso}"`, exactly as before; an
+open (non-terminal) prior exists -> REUSE its event_key regardless of whether this candidate's
+own auction_date matches it, with `status` = `COMPLETED` if this fetch has a result, else
+`REVISED_DATE` if the date actually changed (mirrors `sources/earnings.py`'s identical
+`REVISED_DATE` logic exactly), else `SCHEDULED`; facts are merged label-by-label via
+`_merge_facts()` so a label this fetch doesn't re-observe (e.g. the original announcement's
+`settlement_date`, once only a bare result row is seen) is carried forward rather than dropped,
+mirroring `open_offer.py`'s `stage_evidence` carry-forward philosophy. Since results publish
+same-day, a genuinely new, later auction of the same instrument is never mistaken for a
+reschedule of an old one - by the time it exists, the prior cycle is already COMPLETED
+(terminal), so the lookup correctly finds nothing and mints a fresh key.
+
+KNOWN, NARROWER RESIDUAL LIMITATION (no live evidence either way): the per-fetch grouping that
+separates genuinely different, sequential auction cycles of the SAME instrument within one
+lookback window still keys by `(instrument_slug, auction_date)` - dropping date from that
+WITHIN-FETCH grouping would wrongly merge e.g. last week's already-published result with next
+week's brand-new announcement, which legitimately differ only by date. This means the
+cross-fetch `_lookup_open_by_instrument` reconciliation above only kicks in once the ORIGINAL
+announcement has actually been persisted by an earlier capture; if a stale original notice and
+its correction both appear for the very FIRST time within one single fetch (before either was
+ever stored), that one fetch still builds two momentary candidates under their own dates. Given
+results publish same-day and a genuine reschedule is rare, this is accepted as a narrow,
+explicitly-documented edge case rather than built around.
 
 ANNOUNCEMENT + RESULT MERGE: a single fetch groups every qualifying row from the trailing
 `lookback_days` window by `(instrument_slug, auction_date_iso)` BEFORE building any `MarketEvent`
@@ -60,6 +83,14 @@ COMPLETED event carrying both sets of facts, never two separate events for one a
 `DEFAULT_LOOKBACK_DAYS = 21` is chosen generously against the real observed announcement-to-
 result gap (4-6 days) so a daily capture almost never sees a result without its announcement
 already in the same window.
+
+POINT-IN-TIME REPLAY (P2F.1): making a reschedule/result reuse the SAME event_key means a
+replay must show the exact revision that was active as of its own cutoff, not whatever the
+LATEST on-disk revision happens to be today - `market_events/store.py`'s `list_events`/
+`load_latest` were hardened generically (not just for this family) to select, for each
+event_key, the highest-numbered revision whose own `retrieved_at` is <= the cutoff, rather than
+always the absolute latest. See `docs/MARKET_EVENTS_ENGINE.md`'s "Replay / historical
+behaviour" section.
 """
 from __future__ import annotations
 
@@ -69,9 +100,9 @@ import re
 
 from core import sources as S
 
-from ..models import (COMPLETED, GSEC_REISSUE, PARSE_ERROR, SCHEDULED, SCHEMA_VERSION,
-                      SOURCE_UNAVAILABLE, SUCCESS, TBILL_91, TBILL_182, TBILL_364,
-                      GOVT_SECURITIES_AUCTION, FamilyFetchResult, MarketEvent)
+from ..models import (COMPLETED, GSEC_REISSUE, PARSE_ERROR, REVISED_DATE, SCHEDULED,
+                      SCHEMA_VERSION, SOURCE_UNAVAILABLE, SUCCESS, TBILL_91, TBILL_182,
+                      TBILL_364, GOVT_SECURITIES_AUCTION, FamilyFetchResult, MarketEvent)
 from institutional_flows.html_tables import extract_tables
 
 LISTING_URL = "https://www.rbi.org.in/scripts/FS_PressRelease.aspx?fn=2757"
@@ -402,11 +433,30 @@ def parse_listing(listing_html: str) -> list:
     return out
 
 
-def group_events(rows: list, http_get, now_iso: str, lookback_days: int) -> tuple:
+def _merge_facts(prior_facts: list, new_facts: list) -> list:
+    """Carries a prior revision's facts forward and overlays whatever this fetch newly
+    observed, keyed by `label` - a label this fetch re-states overwrites the prior value (e.g.
+    an amount revision); a label this fetch doesn't re-observe (e.g. the original
+    announcement's own facts, once a bare result row with no accompanying schedule row is all
+    that's seen this pass) is preserved rather than silently dropped. Mirrors
+    `open_offer.py`'s `stage_evidence` carry-forward philosophy."""
+    merged = {f["label"]: f["value"] for f in (prior_facts or []) if isinstance(f, dict)}
+    for f in new_facts or []:
+        if isinstance(f, dict):
+            merged[f["label"]] = f["value"]
+    return [{"label": k, "value": v} for k, v in merged.items()]
+
+
+def group_events(rows: list, http_get, now_iso: str, lookback_days: int,
+                 lookup_fn=None) -> tuple:
     """(events, notes). `rows` = parse_listing() output already filtered to the lookback
     window. One detail-page fetch per qualifying row; grouped by (instrument, auction date)
     before any MarketEvent is built, so one auction cycle with both its announcement and its
-    result in this pass becomes a single COMPLETED event."""
+    result in this pass becomes a single COMPLETED event. `lookup_fn` (when given - see
+    `MarketEventsService._lookup_open_by_instrument`) reconciles a reschedule: an open
+    (non-terminal) prior event for the SAME instrument reuses its event_key regardless of
+    whether this candidate's own auction_date matches it - see the module docstring's
+    "EVENT IDENTITY" section."""
     groups: dict = {}
     notes = []
     for date_, title, prid in rows:
@@ -434,13 +484,26 @@ def group_events(rows: list, http_get, now_iso: str, lookback_days: int) -> tupl
     for (instrument_slug, auction_date), g in groups.items():
         sched, res = g.get("schedule"), g.get("result")
         base = res or sched
-        facts = list((sched or {}).get("facts", [])) + list((res or {}).get("facts", []))
-        status = COMPLETED if res else SCHEDULED
-        event_key = f"{GOVT_SECURITIES_AUCTION}:MARKET:{instrument_slug}:{auction_date}"
+        new_facts = list((sched or {}).get("facts", [])) + list((res or {}).get("facts", []))
+        sub_type = (sched or {}).get("sub_type") or (res or {}).get("sub_type")
+        prior = (lookup_fn(GOVT_SECURITIES_AUCTION, instrument_slug) if lookup_fn else None)
+        if prior is not None:
+            event_key = prior.event_key
+            facts = _merge_facts(prior.facts, new_facts)
+            sub_type = sub_type or prior.sub_type
+            if res:
+                status = COMPLETED
+            elif prior.data_as_of != auction_date:
+                status = REVISED_DATE
+            else:
+                status = SCHEDULED
+        else:
+            event_key = f"{GOVT_SECURITIES_AUCTION}:MARKET:{instrument_slug}:{auction_date}"
+            facts = new_facts
+            status = COMPLETED if res else SCHEDULED
         events.append(MarketEvent(
             schema_version=SCHEMA_VERSION, family=GOVT_SECURITIES_AUCTION, event_key=event_key,
-            symbol=None, company=ISSUER, status=status,
-            sub_type=(sched or {}).get("sub_type") or (res or {}).get("sub_type"),
+            symbol=None, company=ISSUER, status=status, sub_type=sub_type,
             data_as_of=auction_date, source_name=S.SRC_RBI_AUCTIONS, source_reference=LISTING_URL,
             source_text=base.get("source_text", ""), retrieved_at=now_iso or "",
             status_capture=SUCCESS, facts=facts, parser_version=PARSER_VERSION))
@@ -467,13 +530,17 @@ def fetch_govt_securities_auction(now_iso: str, lookup_fn=None, http_get=None,
                                  reason="listing page shape changed - no press-release rows found")
     cutoff = today - dt.timedelta(days=lookback_days)
     candidates = [r for r in rows if r[0] >= cutoff]
-    events, notes = group_events(candidates, http_get, now_iso, lookback_days)
+    events, notes = group_events(candidates, http_get, now_iso, lookback_days,
+                                 lookup_fn=lookup_fn)
     qualifying = [r for r in candidates if _classify_title(r[1]) is not None]
     if qualifying and not events and notes and len(notes) >= len(qualifying):
         return FamilyFetchResult(status=PARSE_ERROR, events=[], connectivity="REACHABLE",
                                  reason="; ".join(notes)[:300])
     return FamilyFetchResult(status=SUCCESS, events=events, connectivity="REACHABLE",
                              reason="; ".join(notes)[:300])
+
+
+fetch_govt_securities_auction.needs_instrument_lookup = True
 
 
 __all__ = ["LISTING_URL", "DETAIL_URL_TMPL", "PARSER_VERSION", "DEFAULT_LOOKBACK_DAYS",

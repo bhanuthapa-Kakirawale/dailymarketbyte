@@ -20,6 +20,12 @@ The PRE Short tells the viewer, in order:
     -> [stock watch] -> WATCH AT THE OPEN (attention cues, never trades) -> CLOSE
 
 It never predicts the open, never links one market to another causally, never recommends.
+
+Editorial Planner V3: OVERNIGHT, SETUP and WATCH are the required structure. Every other section
+(previous-session flows / VIX / sectors / Market Structure, today's verified event, market
+events, IPO / exchange updates, stock watch) passes its own value test and then competes in ONE
+deterministic arbitration (`presentation.editorial_arbiter`, PRE_POLICY - relevance weighted
+toward what matters before the open). Every decision is in `editorial["trace"]`.
 """
 from __future__ import annotations
 
@@ -30,14 +36,18 @@ from config import fmt_in
 from core.event_calendar import ScheduledEvent
 from core.freshness import QuoteKind, clock_label
 
-from .post_plan import _structure_model, direction_phrase, session_support, structural_event
+from . import editorial_arbiter as ea
+from .editorial_candidates import (cards_cost, exchange_candidate, ipo_candidate, ipo_cost,
+                                   market_events_candidate, structure_candidate, structure_cost)
+from .post_plan import (_structure_model, direction_phrase, sector_grade, session_support,
+                        structural_event)
 
 try:
     from video import RS
 except Exception:   # pragma: no cover
     RS = "Rs "
 
-PRE_PLAN_VERSION = "pre-1.0"
+PRE_PLAN_VERSION = "pre-2.0"
 
 # --------------------------------------------------------------------------- policy
 QUIET_CUE_PCT = 0.50          # every fresh cue below this: "a quiet night"
@@ -55,16 +65,28 @@ SECTOR_SPREAD_PP = 1.0        # own scene: leader - laggard spread
 SECTOR_BIG_PCT = 1.5          # ... or any sector moved this much
 STOCK_WATCH_MAX = 2
 WATCH_MAX = 3
-OPTIONAL_BUDGET = 2
-OPTIONAL_PRIORITY = ("STOCK_WATCH", "FLOWS", "VIX", "SECTORS")
-SECTION_ORDER = ("OVERNIGHT", "SETUP", "FLOWS", "VIX", "SECTORS", "EVENT", "EXCHANGE", "IPO",
-                 "MARKET_EVENTS", "STRUCTURE", "STOCK_WATCH", "WATCH")
-# Public intelligence sections (PUBLIC V2): outside the previous-session optional budget, but the
-# first to go under the runtime ceiling after it. MARKET_EVENTS (Market Events Engine V1) and
-# STRUCTURE (Market Structure V2 - FIFTY_TWO_WEEK kind only, see presentation.pre_public) join
-# the same group - never a second, parallel budget.
-PUBLIC_OPTIONAL = ("IPO", "EXCHANGE", "MARKET_EVENTS", "STRUCTURE")
+VIX_MATERIAL_PCT = 15.0       # V3: an India VIX move this large is MATERIAL
+FLOW_REVERSAL_MATERIAL = 5    # V3: an NSE reversal of a run at least this long is MATERIAL
+# Editorial Planner V3 - the PRE edition policy ("what matters before the Indian open").
+# Narrative order: OVERNIGHT -> previous-session SETUP and structure -> institutional
+# positioning -> today's catalysts -> WATCH AT THE OPEN.
+SECTION_ORDER = ("OVERNIGHT", "SETUP", "STRUCTURE", "SECTORS", "VIX", "FLOWS", "EVENT",
+                 "MARKET_EVENTS", "IPO", "EXCHANGE", "STOCK_WATCH", "WATCH")
+REQUIRED_SECTIONS = ("OVERNIGHT", "SETUP", "WATCH")
+# PRE's required structure (overnight, setup, watch) already carries three scenes, so it keeps
+# fewer optional slots than POST and no quiet-edition floor: a quiet morning stays short.
+OPTIONAL_SLOTS = 3
+PRE_RELEVANCE = {ea.FLOWS: 2, ea.CALENDAR: 2, ea.IPO: 2, ea.VOLATILITY: 2, ea.SECTORS: 1,
+                 ea.BREADTH: 1, ea.EXCHANGE: 1, ea.STOCK_WATCH: 1}
+HOOK_ESTIMATE_S = 5.0
 MAX_RUNTIME = 65.0
+
+
+def pre_policy(previous_session: dt.date | None = None) -> ea.EditionPolicy:
+    return ea.EditionPolicy(name="PRE", relevance=PRE_RELEVANCE, play_order=SECTION_ORDER,
+                            anchor=("OVERNIGHT", "SETUP"), optional_slots=OPTIONAL_SLOTS,
+                            max_runtime=MAX_RUNTIME, fixed_cost_s=HOOK_ESTIMATE_S + 2.6,
+                            india_cutoff=previous_session, quiet_floor=False)
 
 # Seconds per scene - set by how much there is to read, never stretched to fill a budget.
 DUR = {"OVERNIGHT": 5.0, "OVERNIGHT_PER_CUE": 0.6, "GIFT": 0.8, "SETUP_PULSE": 5.6,
@@ -420,6 +442,7 @@ class PreSectionPlan:
     closing_line: str = "That's your setup before the bell."
     omitted: list = field(default_factory=list)
     synthetic: bool = False
+    editorial: dict | None = None                   # V3 arbitration record (trace)
 
     @property
     def total_duration(self) -> float:
@@ -803,6 +826,37 @@ def _flows(brief, reasons):
     return None, False
 
 
+def _flow_candidates(brief) -> list:
+    """V3: every FLOWS story this edition could tell, as (candidate_id, model, tier, why) - the
+    same candidates `_flows` tries in order, now graded so the arbiter can weigh them against
+    the rest of the edition (one FLOWS scene at most: the family cap). PRE still never repeats
+    POST's plain previous-session NSE number."""
+    out = []
+    for cid, (model, why) in (("PRE.FLOWS.CDSL", _flows_cdsl(brief)),
+                              ("PRE.FLOWS.NSDL", _flows_nsdl_sector(brief))):
+        if model is not None:
+            out.append((cid, model, ea.NOTABLE, why))
+    ctx_by_subject = brief.institutional_nse_context or {}
+    has_history = ctx_by_subject and all(
+        ctx.get("magnitude_state") != "INSUFFICIENT_HISTORY" for ctx in ctx_by_subject.values())
+    if not has_history:
+        r = {}
+        model, ok = _flows_nse_legacy(brief, r)
+        if model is not None:
+            fii, dii = abs(float(brief.flows["fii"])), abs(float(brief.flows["dii"]))
+            tier = (ea.NOTABLE if max(fii, dii) >= FLOW_BIG_CRORE else ea.ROUTINE) if ok else 0
+            out.append(("PRE.FLOWS.NSE_LEGACY", model, tier, r.get("FLOWS", "")))
+        return out
+    model, why = _flows_nse_context(brief)
+    if model is not None:
+        story = next((ctx for ctx in ctx_by_subject.values()
+                      if ctx.get("streak_state") == "DIRECTION_REVERSES"), None)
+        tier = (ea.MATERIAL if story and (story.get("prior_run_length") or 0)
+                >= FLOW_REVERSAL_MATERIAL else ea.NOTABLE)
+        out.append(("PRE.FLOWS.NSE_CONTEXT", model, tier, why))
+    return out
+
+
 def _event(brief, reasons, omitted):
     for e in brief.news_events:
         omitted.append({"section": "EVENT", "item": e.get("text"),
@@ -983,23 +1037,6 @@ class PreEditorialPlanner:
                                 "omitted: no qualifying Market Structure insight for the "
                                 "previous session")
 
-        show = {"OVERNIGHT": overnight is not None, "SETUP": True, "VIX": vix_ok,
-                "FLOWS": flows_ok, "SECTORS": sectors_ok, "EVENT": event is not None,
-                "EXCHANGE": exchange_m is not None, "IPO": ipo_m is not None,
-                "MARKET_EVENTS": market_events_m is not None,
-                "STRUCTURE": structure_m is not None,
-                "STOCK_WATCH": stocks_m is not None, "WATCH": True}
-        qualified = [k for k in OPTIONAL_PRIORITY if show[k]]
-        for k in qualified[OPTIONAL_BUDGET:]:
-            show[k] = False
-            reasons[k] = (f"omitted: qualified ({reasons[k].removeprefix('included: ')}), but the "
-                          f"Short already carries {OPTIONAL_BUDGET} optional sections of higher "
-                          f"priority ({', '.join(qualified[:OPTIONAL_BUDGET])})")
-        watch = _watch(brief, show, setup, overnight, vix_m, flows_m, event, sectors_m, stocks_m)
-        reasons["WATCH"] = ("core: attention cues for the open - " +
-                            "; ".join(f"{w.tag}: {w.title}" for w in watch))
-        reasons["CLOSING"] = "core: minimal sign-off"
-
         wd3 = brief.previous_session.strftime("%a").upper()
         labels = {"OVERNIGHT": "OVERNIGHT", "SETUP": setup.chip, "VIX": f"INDIA VIX · {wd3}",
                   "FLOWS": f"FII / DII · {wd3}", "SECTORS": f"SECTORS · {wd3}",
@@ -1016,28 +1053,93 @@ class PreEditorialPlanner:
             "EVENT": DUR["EVENT"],
             "STOCK_WATCH": round(DUR["STOCKS_BASE"] + DUR["STOCKS_PER"] * len(stocks_m.items), 2)
             if stocks_m else 0.0,
-            "WATCH": round(DUR["WATCH_BASE"] + DUR["WATCH_PER"] * len(watch), 2),
-            "EXCHANGE": round(DUR["EXCHANGE_BASE"] + DUR["EXCHANGE_PER"] * len(exchange_m["cards"]), 2)
-            if exchange_m else 0.0,
-            "IPO": (DUR["IPO_CARD"] if ipo_m["layout"] == "CARD" else
-                    round(DUR["IPO_BOARD_BASE"] + DUR["IPO_BOARD_PER"] * len(ipo_m["rows"]), 2))
-            if ipo_m else 0.0,
-            "MARKET_EVENTS": round(DUR["MARKET_EVENTS_BASE"]
-                                   + DUR["MARKET_EVENTS_PER"] * len(market_events_m["cards"]), 2)
-            if market_events_m else 0.0,
-            "STRUCTURE": round(DUR["STRUCTURE_BASE"]
-                               + DUR["STRUCTURE_PER"] * len(structure_m[0][0].rows), 2)
-            if structure_m else 0.0,
+            # the public sections' costs are their real scene durations (public_storyboard)
+            "EXCHANGE": cards_cost(exchange_m) if exchange_m else 0.0,
+            "IPO": ipo_cost(ipo_m) if ipo_m else 0.0,
+            "MARKET_EVENTS": cards_cost(market_events_m) if market_events_m else 0.0,
+            "STRUCTURE": structure_cost(structure_m[0][0]) if structure_m else 0.0,
         }
-        order = [k for k in SECTION_ORDER if show[k]]
-        # hard ceiling: drop optional sections, lowest priority first, never core ones
-        for k in tuple(reversed(OPTIONAL_PRIORITY)) + PUBLIC_OPTIONAL:
-            if sum(durations[o] for o in order) + DUR["CLOSING"] + 5.0 <= MAX_RUNTIME:
-                break
-            if k in order:
-                order.remove(k)
-                show[k] = False
-                reasons[k] = f"omitted: runtime ceiling {MAX_RUNTIME:.0f}s"
+
+        # ------------------------------------------------------------ V3 arbitration
+        prev = brief.previous_session
+        cands = [ea.EditorialCandidate("PRE.SETUP", "SETUP", ea.STRUCTURE_ANCHOR, ea.MATERIAL,
+                                       reasons["SETUP"], durations["SETUP"], role=ea.REQUIRED,
+                                       topics=frozenset({"index_direction"}), as_of=prev),
+                 ea.EditorialCandidate("PRE.WATCH", "WATCH", ea.STRUCTURE_ANCHOR, ea.MATERIAL,
+                                       "attention cues for the open",
+                                       round(DUR["WATCH_BASE"] + DUR["WATCH_PER"] * WATCH_MAX, 2),
+                                       role=ea.REQUIRED, as_of=brief.pre_date)]
+        if overnight is not None:
+            cands.append(ea.EditorialCandidate(
+                "PRE.OVERNIGHT", "OVERNIGHT", ea.STRUCTURE_ANCHOR, ea.MATERIAL,
+                reasons["OVERNIGHT"], durations["OVERNIGHT"], role=ea.REQUIRED,
+                topics=frozenset({"overnight"}), as_of=brief.pre_date))
+        if vix_m is not None:
+            a = abs(brief.vix.change_pct)
+            tier = (ea.MATERIAL if a >= VIX_MATERIAL_PCT else ea.NOTABLE if vix_ok else 0)
+            cands.append(ea.EditorialCandidate(
+                "PRE.VIX", "VIX", ea.VOLATILITY, tier, reasons["VIX"], DUR["VIX"],
+                topics=frozenset({"vix"}), as_of=getattr(brief.vix, "session", prev),
+                merge_target="WATCH"))
+        for cid, model, tier, why in _flow_candidates(brief):
+            cands.append(ea.EditorialCandidate(
+                cid, "FLOWS", ea.FLOWS, tier, why, DUR["FLOWS"], topics=frozenset({cid}),
+                payload=model, merge_target="WATCH" if cid.startswith("PRE.FLOWS.NSE") else None))
+        if sectors_m is not None:
+            tier, why, explains, topics = sector_grade(sectors_m["rows"], brief.nifty.get("pct"))
+            if not sectors_ok:          # PRE's own value test (unchanged): below it, no scene
+                tier, why = 0, reasons["SECTORS"].removeprefix("omitted: ")
+            cands.append(ea.EditorialCandidate(
+                "PRE.SECTORS", "SECTORS", ea.SECTORS, tier, why, durations["SECTORS"],
+                explains_headline=explains, topics=topics, as_of=prev, merge_target="WATCH"))
+        if event is not None:
+            imp = {"HIGH": ea.MATERIAL, "MEDIUM": ea.NOTABLE}.get(event.importance, ea.ROUTINE)
+            cands.append(ea.EditorialCandidate(
+                "PRE.EVENT", "EVENT", ea.CALENDAR, imp, reasons["EVENT"].removeprefix("core: "),
+                DUR["EVENT"], topics=frozenset({"scheduled_event"}), as_of=brief.pre_date,
+                merge_target="WATCH"))
+        if stocks_m is not None:
+            cands.append(ea.EditorialCandidate(
+                "PRE.STOCK_WATCH", "STOCK_WATCH", ea.STOCK_WATCH, ea.NOTABLE,
+                reasons["STOCK_WATCH"].removeprefix("included: "), durations["STOCK_WATCH"],
+                topics=frozenset({"stock_watch"}), as_of=prev, merge_target="WATCH"))
+        if structure_m:
+            ins, lines = structure_m[0]
+            cands.append(structure_candidate(ins, brief.nifty.get("pct"), "PRE", prev, lines))
+        if market_events_m:
+            cands.append(market_events_candidate(market_events_m, "PRE", brief.pre_date))
+        if ipo_m:
+            cands.append(ipo_candidate(ipo_m, "PRE", brief.pre_date))
+        if exchange_m:
+            cands.append(exchange_candidate(exchange_m, "PRE", brief.pre_date))
+        decision = ea.arbitrate(cands, pre_policy(prev))
+        shown = decision.sections_shown()
+        show = {k: k in shown for k in ("OVERNIGHT", "VIX", "FLOWS", "SECTORS", "EVENT",
+                                        "EXCHANGE", "IPO", "MARKET_EVENTS", "STRUCTURE",
+                                        "STOCK_WATCH")}
+        show.update(SETUP=True, WATCH=True)
+        flows_cid = next((c for c in decision.selected if c.startswith("PRE.FLOWS.")), None)
+        flows_m = decision.candidates[flows_cid].payload if flows_cid else None
+        for key in sorted({t["section"] for t in decision.trace} - set(REQUIRED_SECTIONS)):
+            reasons[key] = decision.section_reason(key, reasons.get(key))
+        event_shown = event if show["EVENT"] else None     # an unselected event: watch card only
+
+        watch = _watch(brief, show, setup, overnight, vix_m, flows_m, event, sectors_m, stocks_m)
+        reasons["WATCH"] = ("core: attention cues for the open - " +
+                            "; ".join(f"{w.tag}: {w.title}" for w in watch))
+        reasons["CLOSING"] = "core: minimal sign-off"
+        durations["WATCH"] = round(DUR["WATCH_BASE"] + DUR["WATCH_PER"] * len(watch), 2)
+        # a story not shown as a scene whose fact the watch card carries: MERGED, not lost
+        carried = {w.category for w in watch}
+        for cid, cat in (("PRE.VIX", "VIX"), ("PRE.SECTORS", "SECTOR"), ("PRE.EVENT", "EVENT"),
+                         ("PRE.STOCK_WATCH", "STOCK")):
+            if cat in carried:
+                ea.mark_merged(decision, cid, "WATCH")
+        if "FLOWS" in carried:
+            for c in decision.candidates:
+                if c.startswith("PRE.FLOWS.NSE"):
+                    ea.mark_merged(decision, c, "WATCH")
+        order = list(decision.order)
         return PreSectionPlan(
             version=PRE_PLAN_VERSION, pre_date=brief.pre_date.isoformat(),
             previous_session=brief.previous_session.isoformat(),
@@ -1048,7 +1150,7 @@ class PreEditorialPlanner:
             show_watch=True, show_closing=True, order=order, reasons=reasons, labels=labels,
             durations=durations, overnight=overnight, setup=setup,
             vix=vix_m if show["VIX"] else None, flows=flows_m if show["FLOWS"] else None,
-            event=event, sectors=sectors_m if show["SECTORS"] else None,
+            event=event_shown, sectors=sectors_m if show["SECTORS"] else None,
             stock_watch=stocks_m if show["STOCK_WATCH"] else None, watch=watch,
             exchange=exchange_m if show["EXCHANGE"] else None,
             ipo=ipo_m if show["IPO"] else None,
@@ -1056,7 +1158,7 @@ class PreEditorialPlanner:
             structure=structure_m if show["STRUCTURE"] else None,
             watch_subline=("Reference points from " + brief.prev_weekday +
                            (" and overnight" if overnight else "") + ", not trade signals"),
-            omitted=omitted, synthetic=brief.synthetic)
+            omitted=omitted, synthetic=brief.synthetic, editorial=decision.to_dict())
 
 
 def plan_pre_sections(brief: PreMarketBrief) -> PreSectionPlan:
@@ -1109,5 +1211,5 @@ __all__ = ["PreMarketBrief", "PreMarketBlocked", "PreSectionPlan", "PreEditorial
            "plan_pre_sections", "build_pre_brief", "pre_language_issues", "GlobalCueModel",
            "GiftNiftyModel", "OvernightModel", "PreviousSessionSetupModel", "VixModel",
            "FlowsModel", "EventCardModel", "StockWatchModel", "WatchItemModel",
-           "stock_fact_from_story", "non_ai_fact", "PRE_PLAN_VERSION", "OPTIONAL_BUDGET", "OPTIONAL_PRIORITY",
-           "SECTION_ORDER", "MAX_RUNTIME"]
+           "stock_fact_from_story", "non_ai_fact", "PRE_PLAN_VERSION", "OPTIONAL_SLOTS",
+           "SECTION_ORDER", "MAX_RUNTIME", "REQUIRED_SECTIONS", "pre_policy"]

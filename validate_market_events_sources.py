@@ -161,6 +161,28 @@ def _check_govt_securities_auction(now_iso: str) -> dict:
            "events_classified_count": len(res.events), "detail": res.reason[:200]}
 
 
+def _check_delisting(now_iso: str) -> dict:
+    """DELISTING is LIVE as of P2E (2026-10-07): the SAME general corporate-announcements feed
+    OPEN_OFFER/BUYBACK already read (`/api/corporate-announcements?index=equities`), filtered to
+    `desc in {"Delisting", "Voluntary Delisting"}` plus a text-level "delist" guard - see
+    docs/MARKET_EVENTS_ENGINE.md. (Omitted from CHECKS until this pass - it previously fell
+    through to `_check_skipped`, wrongly reporting a live family as NOT_SUPPORTED_YET.)"""
+    from operations.connectivity import classify_exception
+    try:
+        from market import NSE
+        nse = NSE()
+    except Exception as exc:
+        return {"check": "DELISTING", "status": "SOURCE_UNAVAILABLE",
+               "connectivity": classify_exception(exc), "detail": f"{type(exc).__name__}: {exc}"}
+    from market_events.sources.delisting import fetch_delisting
+    res = fetch_delisting(now_iso, nse=nse)
+    if res.status != "SUCCESS":
+        return {"check": "DELISTING", "status": res.status, "connectivity": res.connectivity,
+               "detail": res.reason}
+    return {"check": "DELISTING", "status": "REACHABLE", "connectivity": "REACHABLE",
+           "events_classified_count": len(res.events)}
+
+
 def _check_ipo() -> dict:
     return {"check": "IPO", "status": "N/A",
            "detail": "sourced via ipo_watch/official_snapshots by design - never fetched by "
@@ -173,7 +195,7 @@ def _check_skipped(family: str) -> dict:
 
 
 CHECKS = {"EARNINGS": _check_earnings, "OFS": _check_ofs, "BUYBACK": _check_buyback,
-         "OPEN_OFFER": _check_open_offer,
+         "OPEN_OFFER": _check_open_offer, "DELISTING": _check_delisting,
          "GOVT_SECURITIES_AUCTION": _check_govt_securities_auction}
 
 

@@ -174,3 +174,27 @@ def test_plan_public_sections_market_events_section_includes_ofs():
     out = plan_public_sections(FakeGate(), intel, DAY, "PRE", max_structure=0)
     families_shown = {c["tag"] for c in (out.market_events or {}).get("cards", [])}
     assert "OFS" in families_shown
+
+
+# --------------------------------------------------------------------------- BUYBACK reaches the scene (P2C)
+def test_plan_public_sections_market_events_section_includes_buyback():
+    from market_events.models import BUYBACK, SCHEMA_VERSION, SUCCESS, MarketEvent
+    from presentation.public_intelligence import PublicIntelligence, plan_public_sections
+
+    class FakeGate:
+        profile = type("P", (), {"value": "PRIVATE_ANALYTICS"})()
+
+        def admit(self, fact):
+            return True
+
+    ev = MarketEvent(schema_version=SCHEMA_VERSION, family=BUYBACK, event_key="BUYBACK:DEMOBB:x",
+                     symbol="DEMOBB", company="Demo Buyback Ltd", status="OPEN", sub_type=None,
+                     data_as_of=DAY.isoformat(), source_name="nse_corporate_actions",
+                     source_reference="https://x",
+                     facts=[{"label": "buyback_price", "value": "500"}], status_capture=SUCCESS)
+    intel = PublicIntelligence()
+    intel.market_events = {BUYBACK: [ev]}
+    intel.universe_symbols = {"DEMOBB"}
+    out = plan_public_sections(FakeGate(), intel, DAY, "PRE", max_structure=0)
+    families_shown = {c["tag"] for c in (out.market_events or {}).get("cards", [])}
+    assert "BUYBACK" in families_shown

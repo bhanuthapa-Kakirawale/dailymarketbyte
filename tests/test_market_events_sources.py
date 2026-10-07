@@ -142,21 +142,23 @@ def test_parse_error_is_recorded_and_never_written(tmp_path):
 
 
 def test_not_supported_yet_every_family_by_default(tmp_path):
-    """EARNINGS (P2A) and OFS (P2B) are now the two exceptions with real, live-calling
-    fetchers; IPO's stub stays NOT_SUPPORTED_YET-shaped by design (it is never acquired by
-    this engine - see its own reworded reason string) and every other family is still
-    genuinely unsupported. EARNINGS/OFS are excluded from this capture specifically so this
-    test never makes a live network call (tests/ stays fully offline) - see the EARNINGS/OFS
-    adapter tests further down this file for their own offline, fixture-based coverage."""
-    from market_events.models import ALL_FAMILIES, EARNINGS, OFS
+    """EARNINGS (P2A), OFS (P2B) and BUYBACK (P2C) are now the three exceptions with real,
+    live-calling fetchers; IPO's stub stays NOT_SUPPORTED_YET-shaped by design (it is never
+    acquired by this engine - see its own reworded reason string) and every other family is
+    still genuinely unsupported. EARNINGS/OFS/BUYBACK are excluded from this capture
+    specifically so this test never makes a live network call (tests/ stays fully offline) -
+    see each adapter's own section further down this file for its offline, fixture-based
+    coverage."""
+    from market_events.models import ALL_FAMILIES, BUYBACK, EARNINGS, OFS
     from market_events.service import MarketEventsService
     from market_events.sources import DEFAULT_FETCHERS
 
     assert not getattr(DEFAULT_FETCHERS[EARNINGS], "not_supported_yet", False)
     assert not getattr(DEFAULT_FETCHERS[OFS], "not_supported_yet", False)
+    assert not getattr(DEFAULT_FETCHERS[BUYBACK], "not_supported_yet", False)
 
     svc = MarketEventsService(str(tmp_path))
-    still_unsupported = tuple(f for f in ALL_FAMILIES if f not in (EARNINGS, OFS))
+    still_unsupported = tuple(f for f in ALL_FAMILIES if f not in (EARNINGS, OFS, BUYBACK))
     res = svc.capture(NOW, "REPORT_JOB", families=still_unsupported)
     for family in still_unsupported:
         assert res["results"][family]["status"] == "NOT_SUPPORTED_YET"
@@ -420,3 +422,226 @@ def test_ofs_source_defaults_to_review_required_rights():
     from core.sources import SRC_NSE_OFS
     from publication.rights import rights_for
     assert rights_for(SRC_NSE_OFS).status.value == "REVIEW_REQUIRED"
+
+
+# --------------------------------------------------------------------------- BUYBACK adapter (P2C)
+# Fixtures below are literal shapes from REAL rows pulled live from NSE's own
+# corporates-corporateActions / corporate-announcements / corporates-daily-buyback endpoints
+# this session (2026-10-07) - never re-fetched during a test run. Company/text details (Gandhi
+# Special Tubes' tender price/quantity, SIS's open-market route, PVR INOX's closure, SIS/Emami's
+# daily disclosure) are the real examples found during discovery; wording is trimmed to the
+# sentence that carries the explicit fact, never paraphrased into a different claim.
+_CA_ROW_FAIRCHEM = {
+    "comp": "Fairchem Organics Limited", "symbol": "FAIRCHEMOR", "isin": "INE0DNW01011",
+    "subject": "Buy Back", "recDate": "05-Jan-2026", "exDate": "05-Jan-2026", "faceVal": "10",
+    "series": "EQ", "bcStartDate": "-", "bcEndDate": "-",
+}
+_CA_ROW_NON_BUYBACK = {
+    "comp": "XYZ Corp Ltd", "symbol": "XYZCORP", "isin": "INE000X00011", "subject": "Dividend",
+    "recDate": "-", "exDate": "-", "faceVal": "-",
+}
+_ANN_ROW_GANDHI_TENDER = {
+    "symbol": "GANDHITUBE", "sm_name": "Gandhi Special Tubes Ltd",
+    "desc": "Public Announcement - Buyback of Shares",
+    "attchmntText": ("The Company proposes to buyback up to 8,68,100 Equity Shares through "
+                     "the tender offer route at a price of Rs. 900/- per Equity Share."),
+    "an_dt": "01-Jul-2026 18:00:00",
+}
+_ANN_ROW_SIS_OPEN_MARKET = {
+    "symbol": "SIS", "sm_name": "SIS Limited", "desc": "Buyback",
+    "attchmntText": "The Company announces a buyback through the open market route.",
+    "an_dt": "15-Jul-2026 10:00:00",
+}
+_ANN_ROW_PVRINOX_CLOSURE = {
+    "symbol": "PVRINOX", "sm_name": "PVR INOX Ltd", "desc": "Closure of Buy Back",
+    "attchmntText": "The buyback has closed; the extinguishment of shares is complete.",
+    "an_dt": "01-Oct-2026 10:00:00",
+}
+_ANN_ROW_WITHDRAWN = {
+    "symbol": "WDSTOCK", "sm_name": "Withdrawn Buyback Ltd", "desc": "Buyback",
+    "attchmntText": "The Company has decided to withdraw the proposed buyback of shares.",
+    "an_dt": "10-Aug-2026 10:00:00",
+}
+_DAILY_ROW_SIS = {"symbol": "SIS", "sm_name": "SIS Limited", "an_dt": "06-Oct-2026 18:00:00"}
+
+
+def _buyback_payload(ca_rows=(), ann_rows=(), daily_rows=()):
+    class FakeNSE:
+        def get(self, path):
+            if "corporateActions" in path:
+                return list(ca_rows)
+            if "daily-buyback" in path:
+                return {"data": list(daily_rows)}
+            return list(ann_rows)
+    return FakeNSE()
+
+
+def test_buyback_adapter_classifies_exact_subject_buy_back():
+    """`subject` is an exact categorical match - never a free-text search."""
+    from market_events.sources.buyback import fetch_buyback
+    res = fetch_buyback("2026-10-07T19:00:00+05:30",
+                        nse=_buyback_payload(ca_rows=[_CA_ROW_FAIRCHEM, _CA_ROW_NON_BUYBACK]))
+    assert res.status == "SUCCESS"
+    assert len(res.events) == 1
+    assert res.events[0].symbol == "FAIRCHEMOR"
+
+
+def test_buyback_adapter_normalizes_corporate_action_fields():
+    from market_events.sources.buyback import fetch_buyback
+    res = fetch_buyback("2026-10-07T19:00:00+05:30", nse=_buyback_payload(ca_rows=[_CA_ROW_FAIRCHEM]))
+    ev = res.events[0]
+    assert ev.company == "Fairchem Organics Limited" and ev.status == "ANNOUNCED"
+    assert ev.data_as_of == "2026-01-05"
+    facts = {f["label"]: f["value"] for f in ev.facts}
+    assert facts["record_date"] == "05-Jan-2026" and facts["ex_date"] == "05-Jan-2026"
+    assert facts["face_value"] == "10"
+
+
+def test_buyback_adapter_route_price_quantity_extracted_when_explicit():
+    from market_events.sources.buyback import fetch_buyback
+    res = fetch_buyback("2026-07-02T19:00:00+05:30",
+                        nse=_buyback_payload(ann_rows=[_ANN_ROW_GANDHI_TENDER]))
+    ev = res.events[0]
+    facts = {f["label"]: f["value"] for f in ev.facts}
+    assert facts["route"] == "TENDER"
+    assert facts["buyback_price"] == "900"
+    assert facts["shares_offered"] == "868100"
+
+
+def test_buyback_adapter_open_market_route_extracted_price_absent_when_not_stated():
+    from market_events.sources.buyback import fetch_buyback
+    res = fetch_buyback("2026-07-16T19:00:00+05:30",
+                        nse=_buyback_payload(ann_rows=[_ANN_ROW_SIS_OPEN_MARKET]))
+    ev = res.events[0]
+    facts = {f["label"]: f["value"] for f in ev.facts}
+    assert facts["route"] == "OPEN_MARKET"
+    assert "buyback_price" not in facts and "shares_offered" not in facts
+
+
+def test_buyback_adapter_closure_announcement_sets_completed_status():
+    from market_events.sources.buyback import fetch_buyback
+    res = fetch_buyback("2026-10-02T19:00:00+05:30",
+                        nse=_buyback_payload(ann_rows=[_ANN_ROW_PVRINOX_CLOSURE]))
+    assert res.events[0].status == "COMPLETED"
+
+
+def test_buyback_adapter_daily_disclosure_sets_open_status():
+    """An ongoing daily purchase disclosure is itself explicit proof of OPEN, not an inference."""
+    from market_events.sources.buyback import fetch_buyback
+    res = fetch_buyback("2026-10-06T19:00:00+05:30",
+                        nse=_buyback_payload(ann_rows=[_ANN_ROW_SIS_OPEN_MARKET],
+                                             daily_rows=[_DAILY_ROW_SIS]))
+    assert res.events[0].status == "OPEN"
+
+
+def test_buyback_adapter_withdrawn_status_from_explicit_text():
+    """No live example was seen during discovery - fixture-tested only, per the plan."""
+    from market_events.sources.buyback import fetch_buyback
+    res = fetch_buyback("2026-08-11T19:00:00+05:30",
+                        nse=_buyback_payload(ann_rows=[_ANN_ROW_WITHDRAWN]))
+    assert res.events[0].status == "WITHDRAWN"
+
+
+def test_buyback_adapter_event_key_reused_across_two_filings_same_cycle():
+    """Real example: TeamLease Services filed a Public Announcement (01-Jul-2026) then a Letter
+    of Offer (07-Jul-2026) for the SAME buyback - a second filing must reuse the open event's key."""
+    from market_events.models import BUYBACK, SCHEMA_VERSION, SUCCESS, MarketEvent
+    from market_events.sources.buyback import fetch_buyback
+    prior = MarketEvent(schema_version=SCHEMA_VERSION, family=BUYBACK,
+                        event_key="BUYBACK:TEAMLEASE:abc123", symbol="TEAMLEASE",
+                        company="TeamLease Services Ltd", status="ANNOUNCED", sub_type=None,
+                        data_as_of="2026-07-01", source_name="nse_corporate_actions",
+                        source_reference="x", first_retrieved_at="2026-07-01T19:00:00+05:30",
+                        status_capture=SUCCESS)
+
+    def lookup_fn(family, symbol):
+        return prior if symbol == "TEAMLEASE" else None
+
+    ann_row = {"symbol": "TEAMLEASE", "sm_name": "TeamLease Services Ltd",
+              "desc": "Public Announcement - Buyback of Shares",
+              "attchmntText": "Letter of Offer filed for the ongoing buyback.",
+              "an_dt": "07-Jul-2026 12:00:00"}
+    res = fetch_buyback("2026-07-07T19:00:00+05:30",
+                        nse=_buyback_payload(ann_rows=[ann_row]), lookup_fn=lookup_fn)
+    assert res.events[0].event_key == "BUYBACK:TEAMLEASE:abc123"
+
+
+def test_buyback_adapter_new_cycle_mints_new_key_when_no_open_event():
+    """Mirrors the EARNINGS/OFS terminal-filter behaviour: when `_lookup_open_event` finds no
+    non-terminal event (e.g. the prior cycle is COMPLETED), a fresh key is minted."""
+    from market_events.sources.buyback import fetch_buyback
+    res = fetch_buyback("2026-10-07T19:00:00+05:30",
+                        nse=_buyback_payload(ca_rows=[_CA_ROW_FAIRCHEM]),
+                        lookup_fn=lambda family, symbol: None)
+    assert res.events[0].event_key.startswith("BUYBACK:FAIRCHEMOR:")
+    assert res.events[0].event_key != "BUYBACK:TEAMLEASE:abc123"
+
+
+def test_buyback_adapter_duplicate_rows_same_symbol_collapsed():
+    from market_events.sources.buyback import fetch_buyback
+    res = fetch_buyback("2026-10-07T19:00:00+05:30",
+                        nse=_buyback_payload(ca_rows=[_CA_ROW_FAIRCHEM, dict(_CA_ROW_FAIRCHEM)]))
+    assert len(res.events) == 1
+
+
+def test_buyback_adapter_source_unavailable_on_network_exception():
+    from market_events.sources.buyback import fetch_buyback
+
+    class FailingNSE:
+        def get(self, path):
+            raise ConnectionError("blocked")
+
+    res = fetch_buyback("2026-10-07T19:00:00+05:30", nse=FailingNSE())
+    assert res.status == "SOURCE_UNAVAILABLE"
+
+
+def test_buyback_adapter_secondary_source_failure_does_not_fail_whole_fetch():
+    """The announcements/daily-buyback feeds are supplementary - a failure there never fails
+    the primary corporateActions-backed fetch."""
+    from market_events.sources.buyback import fetch_buyback
+
+    class PartialNSE:
+        def get(self, path):
+            if "corporateActions" in path:
+                return [_CA_ROW_FAIRCHEM]
+            raise ConnectionError("blocked")
+
+    res = fetch_buyback("2026-10-07T19:00:00+05:30", nse=PartialNSE())
+    assert res.status == "SUCCESS"
+    assert len(res.events) == 1
+
+
+def test_buyback_adapter_parse_error_on_non_list_payload():
+    from market_events.sources.buyback import fetch_buyback
+
+    class FakeNSE:
+        def get(self, path):
+            if "corporateActions" in path:
+                return {"unexpected": "shape"}
+            return []
+
+    res = fetch_buyback("2026-10-07T19:00:00+05:30", nse=FakeNSE())
+    assert res.status == "PARSE_ERROR"
+
+
+def test_buyback_adapter_parse_error_on_schema_drift():
+    """Every row missing the 'subject' key NSE's own frontend reads -> fails closed, never a
+    guessed mapping."""
+    from market_events.sources.buyback import fetch_buyback
+    res = fetch_buyback("2026-10-07T19:00:00+05:30",
+                        nse=_buyback_payload(ca_rows=[{"unexpected": "shape"}]))
+    assert res.status == "PARSE_ERROR"
+
+
+def test_buyback_adapter_empty_payload_is_healthy_success():
+    """Confirmed live reachable, zero-matching-row shape -> SUCCESS+[], never NOT_SUPPORTED_YET."""
+    from market_events.sources.buyback import fetch_buyback
+    res = fetch_buyback("2026-10-07T19:00:00+05:30", nse=_buyback_payload())
+    assert res.status == "SUCCESS"
+    assert res.events == []
+
+
+def test_buyback_source_defaults_to_review_required_rights():
+    from core.sources import SRC_NSE_CORPORATE_ACTIONS
+    from publication.rights import rights_for
+    assert rights_for(SRC_NSE_CORPORATE_ACTIONS).status.value == "REVIEW_REQUIRED"

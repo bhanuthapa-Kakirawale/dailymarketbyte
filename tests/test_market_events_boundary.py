@@ -134,15 +134,15 @@ def test_source_failure_never_invents_a_plausible_event(tmp_path):
 
 
 def test_not_supported_yet_family_records_attempt_without_counting_as_failure(tmp_path):
-    """BUYBACK (not EARNINGS - EARNINGS has a real, live-calling fetcher since P2A, and this
-    test must never make a network call)."""
+    """OPEN_OFFER (not EARNINGS/OFS/BUYBACK - each of those now has a real, live-calling
+    fetcher since P2A/P2B/P2C, and this test must never make a network call)."""
     from market_events.service import MarketEventsService
     from market_events.store import latest_attempts
 
-    svc = MarketEventsService(str(tmp_path))     # default fetchers - BUYBACK still NOT_SUPPORTED_YET
+    svc = MarketEventsService(str(tmp_path))     # default fetchers - OPEN_OFFER still NOT_SUPPORTED_YET
     res = svc.capture(dt.datetime(2026, 10, 5, 19, 30, tzinfo=IST), "REPORT_JOB",
-                      families=("BUYBACK",))
-    assert res["results"]["BUYBACK"]["status"] == "NOT_SUPPORTED_YET"
+                      families=("OPEN_OFFER",))
+    assert res["results"]["OPEN_OFFER"]["status"] == "NOT_SUPPORTED_YET"
     attempts = latest_attempts(str(tmp_path))
     assert any(a.get("status") == "NOT_SUPPORTED_YET" for a in attempts)
 
@@ -168,3 +168,26 @@ def test_ofs_replay_never_calls_capture_fn_and_respects_cutoff(tmp_path):
     assert calls == []
     assert ctx.events["OFS"] == []    # written AFTER the cutoff - never shown as available
     assert ctx.status["OFS"] == "HISTORICAL_SNAPSHOT_UNAVAILABLE"
+
+
+def test_buyback_replay_never_calls_capture_fn_and_respects_cutoff(tmp_path):
+    """Same generic replay/point-in-time mechanism, demonstrated explicitly for BUYBACK
+    (P2C) - a family-agnostic guarantee, not a per-family reimplementation."""
+    from market_events.models import BUYBACK, SCHEMA_VERSION, SUCCESS, MarketEvent
+    from market_events.store import write_revision
+
+    ev = MarketEvent(schema_version=SCHEMA_VERSION, family=BUYBACK,
+                     event_key="BUYBACK:DEMOBB:x", symbol="DEMOBB", company="Demo Buyback Ltd",
+                     status="ANNOUNCED", sub_type=None, data_as_of="2026-10-05",
+                     source_name="nse_corporate_actions", source_reference="x",
+                     first_retrieved_at="2026-10-05T23:00:00+05:30", status_capture=SUCCESS)
+    write_revision(str(tmp_path), ev)
+
+    from market_events.context import load_market_events
+    calls = []
+    ctx = load_market_events(str(tmp_path), cutoff=dt.datetime(2026, 10, 5, 7, 45, tzinfo=IST),
+                             live=False, on_or_before=dt.date(2026, 10, 5),
+                             families=("BUYBACK",), capture_fn=lambda f: calls.append(f))
+    assert calls == []
+    assert ctx.events["BUYBACK"] == []    # written AFTER the cutoff - never shown as available
+    assert ctx.status["BUYBACK"] == "HISTORICAL_SNAPSHOT_UNAVAILABLE"

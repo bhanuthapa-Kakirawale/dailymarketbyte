@@ -84,7 +84,15 @@ def _line(ev) -> str:
                (f", notified amount Rs {amount} cr" if amount else ""))
     if ev.family == BUYBACK:
         price = f.get("buyback_price")
-        return f"Buyback {ev.status.lower()}" + (f" at Rs {price}" if price else "")
+        if price:
+            return f"Buyback {ev.status.lower()} at Rs {price}"
+        route = f.get("route")
+        if route:
+            return f"Buyback {ev.status.lower()} ({route.replace('_', ' ').title()})"
+        record_date = f.get("record_date")
+        if record_date:
+            return f"Buyback {ev.status.lower()}, record date {record_date}"
+        return f"Buyback {ev.status.lower()}"
     if ev.family == OPEN_OFFER:
         acquirer = f.get("acquirer")
         return f"Open offer {ev.status.lower()}" + (f" from {acquirer}" if acquirer else "")

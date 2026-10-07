@@ -249,3 +249,41 @@ def test_ofs_source_rights_still_review_required_in_desk_data():
     from core.sources import SRC_NSE_OFS
     from publication.rights import rights_for
     assert rights_for(SRC_NSE_OFS).status.value == "REVIEW_REQUIRED"
+
+
+# --------------------------------------------------------------------------- BUYBACK UI propagation (P2C)
+def test_events_page_shows_buyback_family(client, desk_out_with_market_events):
+    r = client.get("/events")
+    assert r.status_code == 200
+    assert "BUYBACK" in r.text
+    assert "Company SYMA" in r.text
+
+
+def test_dashboard_panel_includes_buyback_in_today_counts(client, desk_out_with_market_events):
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "buyback" in r.text.lower()
+
+
+def test_stock_page_official_events_card_includes_buyback_not_a_second_card(client,
+                                                                             desk_out_with_market_events):
+    r = client.get("/stock/SYMA")
+    assert r.status_code == 200
+    assert "BUYBACK" in r.text
+    assert r.text.count("H · Official events") == 1
+
+
+def test_quality_rows_buyback_family_not_marked_not_supported_yet(svc, desk_out,
+                                                                   desk_out_with_market_events):
+    q = svc.quality(SESSION)
+    buyback_row = q["market_events"]["families"]["BUYBACK"]
+    assert buyback_row["not_supported_yet"] is False
+    assert buyback_row["status"] == "OK"
+
+
+def test_buyback_source_rights_still_review_required_in_desk_data():
+    """Rights classification is unaffected by the Desk's read-only views - re-confirms the
+    source-level guarantee already tested in test_market_events_sources.py."""
+    from core.sources import SRC_NSE_CORPORATE_ACTIONS
+    from publication.rights import rights_for
+    assert rights_for(SRC_NSE_CORPORATE_ACTIONS).status.value == "REVIEW_REQUIRED"

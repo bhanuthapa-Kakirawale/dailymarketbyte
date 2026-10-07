@@ -7,9 +7,9 @@ and the Private Desk's own, broader event calendar. One reusable
 acquisition→revision→replay→rights pipeline (`market_events/`), not seven independent hacks,
 mirroring `institutional_flows/`'s proven shape rather than duplicating it.
 
-**Status (P2B, 2026-10-06): EARNINGS and OFS are both live from NSE's own feeds. IPO is live as
-a read-only projection over the existing, already-live `ipo_watch` pipeline (never a second
-acquisition). Every other family still returns `NOT_SUPPORTED_YET`.**
+**Status (P2C, 2026-10-07): EARNINGS, OFS and BUYBACK are all live from NSE's own feeds. IPO is
+live as a read-only projection over the existing, already-live `ipo_watch` pipeline (never a
+second acquisition). Every other family still returns `NOT_SUPPORTED_YET`.**
 
 ## Purpose
 
@@ -87,21 +87,21 @@ official source is unreachable or unverified, the family returns `SOURCE_UNAVAIL
 | EARNINGS | NSE's board-meeting prior-intimation feed (`market_events/sources/earnings.py`) | **LIVE** - `/api/corporate-board-meetings?index=equities`, confirmed reachable and returning real data (verified 2026-10-06; a live pull classified 5 genuine results-qualifying board meetings, e.g. Asian Paints Limited, 29-Oct-2026) |
 | IPO | `ipo_watch`/`official_snapshots` (`market_events/sources/ipo_projection.py`) | **LIVE as a read-only projection** - never re-acquired; shown via the existing IPO WATCH scene in PRE/POST, and via this projection on the Private Desk's `/events`/dashboard/Data Quality only |
 | OFS | NSE's own OFS mechanism feed (`market_events/sources/ofs.py`) | **LIVE** - `/api/live-ofs-active-issues` + `/api/live-ofs-past-issues`, confirmed reachable 2026-10-06; every row IS an OFS by construction (no text classification needed, unlike EARNINGS) |
+| BUYBACK | NSE's structured corporate-actions feed + corporate-announcements + daily-buyback disclosure (`market_events/sources/buyback.py`) | **LIVE** - `/api/corporates-corporateActions?index=equities` (`subject == "Buy Back"`, an exact categorical match) is PRIMARY, confirmed reachable 2026-10-07; cross-referenced with `/api/corporate-announcements` and `/api/corporates-daily-buyback?` for lifecycle status and route/price/quantity when explicitly stated |
 | GOVT_SECURITIES_AUCTION | RBI's semi-annual G-Sec/T-Bill borrowing calendar | `NOT_SUPPORTED_YET` (planned: hand-maintained controlled file, see Known limitations) |
-| BUYBACK | Same corp-filings API family as EARNINGS | `NOT_SUPPORTED_YET` - deferred to P2C |
-| OPEN_OFFER | NSE/BSE announcements + SEBI SAST filings (often unstructured PDFs) | `NOT_SUPPORTED_YET` - deferred to P2C |
-| DELISTING | NSE/BSE delisting announcements | `NOT_SUPPORTED_YET` - deferred to P2C |
+| OPEN_OFFER | NSE/BSE announcements + SEBI SAST filings (often unstructured PDFs) | `NOT_SUPPORTED_YET` - deferred |
+| DELISTING | NSE/BSE delisting announcements | `NOT_SUPPORTED_YET` - deferred |
 
 Governing rule (already established via `official_snapshots.NOT_SUPPORTED`, and the project's
 "reliability over feature count" posture): **no live adapter is written against an endpoint
 that has not actually been verified reachable from this environment.** `market_events/sources/`
-holds `DEFAULT_FETCHERS`, one per family; EARNINGS and OFS now map to real adapters
-(`market_events.sources.earnings.fetch_earnings`, `market_events.sources.ofs.fetch_ofs`), IPO's
-stub carries an honest reason ("sourced via `ipo_watch` by design, never acquired by this
-engine" - not "unreachable", since it IS reachable, just intentionally out of this engine's
-scope), and every other family stays the generic `NOT_SUPPORTED_YET` stub carrying an explicit
-`not_supported_yet = True` marker (so Data Quality can tell "never attempted" apart from "has a
-real adapter").
+holds `DEFAULT_FETCHERS`, one per family; EARNINGS, OFS and BUYBACK now map to real adapters
+(`market_events.sources.earnings.fetch_earnings`, `market_events.sources.ofs.fetch_ofs`,
+`market_events.sources.buyback.fetch_buyback`), IPO's stub carries an honest reason ("sourced
+via `ipo_watch` by design, never acquired by this engine" - not "unreachable", since it IS
+reachable, just intentionally out of this engine's scope), and every other family stays the
+generic `NOT_SUPPORTED_YET` stub carrying an explicit `not_supported_yet = True` marker (so Data
+Quality can tell "never attempted" apart from "has a real adapter").
 
 `python validate_market_events_sources.py` is the manual, read-only connectivity diagnostic
 (mirrors `validate_pre_production.py --connectivity-only`) - one probe per family, never writes
@@ -191,6 +191,49 @@ since a completed record is terminal).
 OFS never uses Chittorgarh/Groww/Moneycontrol or any other third-party tracker - both endpoints
 are NSE's own.
 
+## BUYBACK semantics (`market_events/sources/buyback.py`)
+
+**Discovery (P2C, 2026-10-07):** found via the same evidence-based nav → page → script-tag
+methodology used for OFS. NSE's corporate-filings-actions page
+(`/companies-listing/corporate-filings-actions`) reads its own `/dist/js/sections/
+corporate-filings.js`, which calls `ensureSymbolAndDates("/api/corporates-corporateActions?
+index=equities", ...)`. Confirmed live: the default (no date-range) call already returns
+current rows with `subject: "Buy Back"` (an exact categorical field, not free text); a widened
+window returned 25 real `subject == "Buy Back"` rows over 2026, e.g. Fairchem Organics Limited
+(`FAIRCHEMOR`, record/ex-date 05-Jan-2026, face value 10). Three sources are combined, each
+contributing only what it explicitly states:
+
+* `/api/corporates-corporateActions?index=equities` - **PRIMARY**. `subject == "Buy Back"` is
+  the classification (never a text search); contributes `record_date`, `ex_date`, `face_value`
+  when stated (NSE's own `"-"` sentinel maps to "omit", never "zero"/"unknown").
+* `/api/corporate-announcements?index=equities` - **SECONDARY**, narrative/lifecycle. `desc` in
+  a fixed 4-value set (`"Buyback"`, `"Public Announcement - Buyback of Shares"`,
+  `"Post Buyback Public Announcement"`, `"Closure of Buy Back"`) drives `ANNOUNCED`/`COMPLETED`;
+  `route` (`TENDER`/`OPEN_MARKET`), `buyback_price` and `shares_offered` are read ONLY via a
+  narrow regex match on an explicit phrase in the filing's own text (e.g. Gandhi Special Tubes'
+  "tender offer... at a price of Rs 900/- per Equity Share... 8,68,100 Equity Shares"; SIS's
+  "open market route") - never inferred when the text doesn't state them.
+* `/api/corporates-daily-buyback?` - **SECONDARY**, explicit "currently open" proof. A symbol's
+  presence in this dedicated daily-purchase-disclosure feed (e.g. SIS Limited, Emami Limited,
+  06-Oct-2026) is itself official evidence the buyback is presently `OPEN`, upgrading from
+  `ANNOUNCED` - not an inference from silence.
+
+A debt-instrument sibling, `/api/corporates-buyback-redemption?` (bond/debenture redemption),
+exists and is explicitly out of scope - a different instrument class from an equity share
+buyback.
+
+**Event identity reuses EARNINGS/OFS's `needs_lookup`/`lookup_fn` contract with zero new shared
+code**: a symbol's latest non-terminal buyback event is reused across multiple filings for one
+cycle (a real example: TeamLease Services filed a Public Announcement on 01-Jul-2026 then a
+Letter of Offer on 07-Jul-2026 for the SAME buyback); once a cycle reaches `COMPLETED`
+(terminal), the existing `TERMINAL_STATUSES` filter in `_lookup_open_event` already makes the
+next genuinely new buyback for that symbol mint a fresh `event_key` - no new logic required.
+`WITHDRAWN` is reachable only via an explicit withdrawal/lapse phrase in a filing's own text;
+no live example was seen this pass, so it is fixture-tested only.
+
+BUYBACK never uses Chittorgarh/Groww/Moneycontrol or any other third-party tracker - all three
+endpoints are NSE's own.
+
 ## Revisions and change detection
 
 `market_events/store.py` mirrors `institutional_flows/store.py` exactly, keyed by
@@ -214,13 +257,16 @@ returning `NOT_SUPPORTED_YET`, is recorded as an attempt and never crashes the c
 
 ## Source conflicts
 
-Not yet exercised (no two sources for one family exist this pass), but the model is designed
-for it: a canonical `event_key` is meant to collapse NSE/BSE/SEBI/company duplicates of the
-same filing into one representation while every source's own reference is preserved in
+Multi-source MERGE (not conflict resolution) is now exercised: BUYBACK combines three NSE feeds
+(corporateActions/announcements/daily-buyback) per-symbol, but each field is contributed by
+exactly one source role (corporateActions owns record/ex-date/face-value; announcements own
+status/route/price/quantity; daily-buyback owns the open-today signal) - so there is no
+disagreement to adjudicate, only union. A genuine CONFLICT - two official sources stating
+different values for the SAME field - is not yet exercised for any family, but the model is
+designed for it: a canonical `event_key` is meant to collapse NSE/BSE/SEBI/company duplicates
+of the same filing into one representation while every source's own reference is preserved in
 `facts`/`source_reference`. A genuine conflict between two official sources must surface as
-`VALIDATION_FAILED` (public scene fails closed) rather than being silently resolved by guessing
-- this is a requirement on any adapter that reads more than one source per family, not yet
-implemented since no family does.
+`VALIDATION_FAILED` (public scene fails closed) rather than being silently resolved by guessing.
 
 ## Editorial ranking (`market_events/watch.py`)
 
@@ -310,10 +356,13 @@ owner-confirmed).
   (`/market-data/all-upcoming-issues-ofs`, served by the same frontend controller as the IPO
   page), found by reading that page's own script tags rather than guessing further endpoint
   names. See "OFS semantics" above for the full discovery path and adapter design.
-* **BUYBACK/OPEN_OFFER/DELISTING are explicitly deferred to P2C**, though note the
-  corporate-announcements taxonomy above already confirms `Buyback` and
-  `Public Announcement-Open Offer` categories exist and are reachable through the same feed -
-  a strong head start for that later packet, not re-investigated here.
+* **BUYBACK is now live (P2C, 2026-10-07).** Discovered via NSE's own structured
+  corporate-actions feed (`subject == "Buy Back"`, an exact categorical match - stronger
+  evidence than either EARNINGS or OFS's text/listing-based classification), cross-referenced
+  with the corporate-announcements and daily-buyback feeds. See "BUYBACK semantics" above.
+* **OPEN_OFFER/DELISTING remain deferred**, though note the corporate-announcements taxonomy
+  confirms a `Public Announcement-Open Offer` category exists and is reachable through the same
+  feed - a head start for that later packet, not re-investigated here.
 * **GOVT_SECURITIES_AUCTION** (P2B): RBI's own semi-annual G-Sec/T-Bill borrowing calendar is
   published as a document covering the whole half-year, making a hand-maintained controlled
   file (mirroring `data/official_events.json`'s fail-closed loader in `core/event_calendar.py`)

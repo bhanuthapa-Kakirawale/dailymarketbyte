@@ -1,5 +1,5 @@
-"""Per-family fetchers. EARNINGS (P2A) and OFS (P2B) have real, live adapters; IPO is a
-read-only projection over `ipo_watch` (never acquired here). GOVT_SECURITIES_AUCTION/BUYBACK/
+"""Per-family fetchers. EARNINGS (P2A), OFS (P2B) and BUYBACK (P2C) have real, live adapters;
+IPO is a read-only projection over `ipo_watch` (never acquired here). GOVT_SECURITIES_AUCTION/
 OPEN_OFFER/DELISTING still have no official source verified reachable from this environment,
 and "reliability over feature count" (docs/MARKET_EVENTS_ENGINE.md) means no adapter is written
 against an endpoint that was never actually probed - they return `NOT_SUPPORTED_YET`, a normal,
@@ -8,7 +8,8 @@ non-failure state (mirrors `official_snapshots`'s own `NOT_SUPPORTED` for ESM), 
 """
 from __future__ import annotations
 
-from ..models import ALL_FAMILIES, EARNINGS, IPO, OFS, FamilyFetchResult, NOT_SUPPORTED_YET
+from ..models import (ALL_FAMILIES, BUYBACK, EARNINGS, IPO, OFS, FamilyFetchResult,
+                      NOT_SUPPORTED_YET)
 
 
 def _not_supported(family: str, reason: str):
@@ -41,5 +42,8 @@ DEFAULT_FETCHERS[EARNINGS] = fetch_earnings
 
 from .ofs import fetch_ofs                  # noqa: E402 - same reason as above
 DEFAULT_FETCHERS[OFS] = fetch_ofs
+
+from .buyback import fetch_buyback          # noqa: E402 - same reason as above
+DEFAULT_FETCHERS[BUYBACK] = fetch_buyback
 
 __all__ = ["DEFAULT_FETCHERS"]

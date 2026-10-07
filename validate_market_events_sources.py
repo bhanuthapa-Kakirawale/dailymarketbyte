@@ -85,6 +85,35 @@ def _check_ofs(now_iso: str) -> dict:
            if isinstance(past, dict) and past.get("data") else []}
 
 
+def _check_buyback(now_iso: str) -> dict:
+    """BUYBACK is LIVE as of P2C (2026-10-07): NSE's own structured corporate-actions feed
+    (`/api/corporates-corporateActions?index=equities`, `subject == "Buy Back"` - an exact
+    categorical match) is PRIMARY, cross-referenced with the general corporate-announcements
+    feed (`desc` in a fixed 4-value set) for lifecycle status and the dedicated daily-buyback
+    disclosure feed (`/api/corporates-daily-buyback?`) for an explicit "currently open" signal -
+    see docs/MARKET_EVENTS_ENGINE.md."""
+    from operations.connectivity import classify_exception
+    try:
+        from market import NSE
+        nse = NSE()
+        ca_payload = nse.get("/api/corporates-corporateActions?index=equities")
+    except Exception as exc:
+        return {"check": "BUYBACK", "status": "SOURCE_UNAVAILABLE",
+               "connectivity": classify_exception(exc), "detail": f"{type(exc).__name__}: {exc}"}
+    if not isinstance(ca_payload, list):
+        return {"check": "BUYBACK", "status": "PARSE_ERROR", "connectivity": "REACHABLE",
+               "detail": "corporateActions payload is not a list"}
+    buyback_rows = [r for r in ca_payload if isinstance(r, dict)
+                   and str(r.get("subject", "")).strip() == "Buy Back"]
+    from market_events.sources.buyback import fetch_buyback
+    res = fetch_buyback(now_iso, nse=nse)
+    return {"check": "BUYBACK", "status": "REACHABLE", "connectivity": "REACHABLE",
+           "corporate_action_row_count": len(ca_payload),
+           "buyback_subject_row_count": len(buyback_rows),
+           "events_classified_count": len(res.events),
+           "sample_field_keys": sorted(buyback_rows[0].keys()) if buyback_rows else []}
+
+
 def _check_ipo() -> dict:
     return {"check": "IPO", "status": "N/A",
            "detail": "sourced via ipo_watch/official_snapshots by design - never fetched by "
@@ -96,7 +125,7 @@ def _check_skipped(family: str) -> dict:
            "detail": "no endpoint configured - NOT_SUPPORTED_YET by design this pass"}
 
 
-CHECKS = {"EARNINGS": _check_earnings, "OFS": _check_ofs}
+CHECKS = {"EARNINGS": _check_earnings, "OFS": _check_ofs, "BUYBACK": _check_buyback}
 
 
 def run_diagnostic(families=None, now: dt.datetime | None = None) -> dict:

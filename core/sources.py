@@ -126,6 +126,8 @@ SRC_NSDL_FPI_FORTNIGHTLY = "nsdl_fpi_fortnightly"  # NSDL's fortnightly sector-w
 SRC_NSE_BOARD_MEETINGS = "nse_corp_board_meetings"  # NSE's board-meeting prior intimations
 # Market Events Engine V1 (P2B - live OFS)
 SRC_NSE_OFS = "nse_ofs_live"                        # NSE's own Offer For Sale active/past feed
+# Market Events Engine V1 (P2C - live BUYBACK)
+SRC_NSE_CORPORATE_ACTIONS = "nse_corporate_actions"  # NSE's structured corporate-actions feed
 
 _REGISTRY: dict[str, SourceMetadata] = {
     SRC_NSE: SourceMetadata(
@@ -309,6 +311,20 @@ _REGISTRY: dict[str, SourceMetadata] = {
               "EARNINGS. Active-issues field shape taken from that script's own field reads, "
               "not observed live (no OFS was active when this was built) - the adapter fails "
               "closed on a row missing the fields that script expects."),
+    SRC_NSE_CORPORATE_ACTIONS: SourceMetadata(
+        source_name=SRC_NSE_CORPORATE_ACTIONS, source_type=SourceType.PRIMARY,
+        source_family=SourceFamily.EXCHANGE, independence_group=GROUP_NSE,
+        retrieval_method="https GET www.nseindia.com/api/corporates-corporateActions?"
+                         "index=equities | /api/corporate-announcements?index=equities | "
+                         "/api/corporates-daily-buyback",
+        reference="https://www.nseindia.com/companies-listing/corporate-filings-actions",
+        market_timestamp_available=False, display_rights_status="UNREVIEWED",
+        notes="NSE's own structured corporate-actions feed (`subject` is an exact category - "
+              "e.g. 'Buy Back' - not free text), cross-referenced with the general corporate-"
+              "announcements feed for lifecycle status (announced/closed) and the dedicated "
+              "daily-buyback disclosure feed for an explicit 'currently open' signal. Used for "
+              "BUYBACK (P2C); route/price/quantity are read only when a filing's own text "
+              "states them explicitly, never inferred."),
 }
 
 
@@ -370,6 +386,6 @@ __all__ = ["SourceMetadata", "SourceFamily", "source_metadata", "independence_gr
            "SRC_FED_CALENDAR", "SRC_NSE_CONSTITUENTS", "SRC_NSE_FO_BAN", "SRC_NSE_SURVEILLANCE",
            "SRC_NSE_IPO", "SRC_SEBI_OFFER_DOC", "SRC_MARKET_STRUCTURE", "SRC_NSE_FIIDII_API",
            "SRC_CDSL_FPI_DAILY", "SRC_NSDL_FPI_FORTNIGHTLY", "SRC_NSE_BOARD_MEETINGS",
-           "SRC_NSE_OFS", "GROUP_NSE", "GROUP_NSEIX",
+           "SRC_NSE_OFS", "SRC_NSE_CORPORATE_ACTIONS", "GROUP_NSE", "GROUP_NSEIX",
            "GROUP_RBI", "GROUP_FED", "GROUP_YAHOO", "GROUP_GEMINI", "GROUP_INTERNAL",
            "GROUP_DEMO", "GROUP_CDSL", "GROUP_NSDL", "GROUP_UNKNOWN", "NEWS_GROUP_PREFIX"]

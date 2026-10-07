@@ -513,3 +513,77 @@ def test_spine_case_e_clean_dataset_output_invariant(tmp_path, monkeypatch):
     snap_with_spine = technical.scan_technical_universe(
         list(universe), dataset_with_spine.series_by_symbol, recap_date)
     assert [s.to_dict() for s in snap_no_spine.flagged] == [s.to_dict() for s in snap_with_spine.flagged]
+
+
+# --------------------------------------------------------------------------- fetch_on_gap
+# Market Structure V2's 52-week metric asks for a much deeper `required_lookback` (253) than the
+# Radar's own detectors need (55). `fetch_on_gap=False` must make that read-only - never a Yahoo
+# top-up fetch for every under-depth symbol on every call - while still returning whatever the
+# store already has (never dropping a shallow symbol outright).
+def test_fetch_on_gap_false_never_fetches_a_tail_or_cold_symbol(tmp_path, monkeypatch):
+    import config
+    monkeypatch.setattr(config, "OUT_DIR", str(tmp_path))
+
+    universe = synthetic_universe(5)
+    idx, recap_date, prev_date = universe_sessions(100)  # well short of a 253 requirement
+    store = _store(tmp_path)
+    _seed_ok(store, universe, idx)
+    store.close()
+
+    monkeypatch.setattr(market, "_bulk_download_universe_ohlcv", _raise_if_called)
+
+    dataset = ohlcv_service.load_universe(universe, recap_date, prev_date, required_lookback=253,
+                                          fetch_on_gap=False)
+
+    assert dataset.coverage.network_call_count == 0
+    assert dataset.coverage.cache_miss == len(universe)      # correctly short of 253 - never hidden
+    for symbol in universe:
+        series = dataset.series_by_symbol.get(symbol)
+        assert series is not None and len(series) == 100     # still returned, never topped up
+        assert series[-1]["date"] == recap_date
+
+
+def test_fetch_on_gap_true_default_still_tops_up(tmp_path, monkeypatch):
+    """The default (`fetch_on_gap=True`, every existing caller) keeps topping up a short symbol -
+    confirms the new kwarg changed nothing for callers that never pass it."""
+    import config
+    monkeypatch.setattr(config, "OUT_DIR", str(tmp_path))
+
+    universe = synthetic_universe(2)
+    recap_date, prev_date = fake_bulk_ohlcv(monkeypatch, universe, sessions=300)
+    dataset = ohlcv_service.load_universe(universe, recap_date, prev_date,
+                                          required_lookback=253)
+    assert dataset.coverage.network_call_count == 1
+    for symbol in universe:
+        assert len(dataset.series_by_symbol[symbol]) >= 253
+
+
+def test_fetch_on_gap_false_never_leaks_a_future_dated_row(tmp_path, monkeypatch):
+    """Defense in depth (mirrors `tests/test_acquisition_lookahead.py`'s look-ahead pattern): a
+    future-dated row sitting in the store (however it got there) never reaches
+    `series_by_symbol` - `OHLCVStore.get_range`'s own `end_date=session_date` bound excludes it
+    before `_load_with_store` ever sees it, and `fetch_on_gap` changes none of that."""
+    import config
+    monkeypatch.setattr(config, "OUT_DIR", str(tmp_path))
+
+    universe = synthetic_universe(2)
+    idx, recap_date, prev_date = universe_sessions(60)
+    store = _store(tmp_path)
+    _seed_ok(store, universe, idx)
+    leader = next(iter(universe))
+    future_date = recap_date + dt.timedelta(days=1)
+    store.upsert_bars([OHLCVBar(symbol=leader, session_date=future_date, open=999.0, high=999.0,
+                                low=999.0, close=999.0, volume=1.0, source="yahoo",
+                                retrieved_at=dt.datetime(2026, 8, 3, 9, 0, tzinfo=dt.timezone.utc),
+                                quality_status=QualityStatus.OK)])
+    store.close()
+    monkeypatch.setattr(market, "_bulk_download_universe_ohlcv", _raise_if_called)
+
+    dataset = ohlcv_service.load_universe(universe, recap_date, prev_date, required_lookback=253,
+                                          fetch_on_gap=False)
+
+    assert dataset.coverage.network_call_count == 0
+    for symbol, rows in dataset.series_by_symbol.items():
+        assert all(r["date"] <= recap_date for r in rows)
+    assert all(r["date"] != future_date for r in dataset.series_by_symbol.get(leader, []))
+    assert len(dataset.series_by_symbol.get(leader, [])) == 60   # the 60 valid rows, never the 61st

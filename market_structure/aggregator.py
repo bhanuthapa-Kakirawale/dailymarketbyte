@@ -97,6 +97,8 @@ DEFINITIONS = {
     "RANGE_DOWN": "closed below the low of its prior 20 (or 50) sessions",
     "ADVANCES": "closed higher than on the previous canonical session",
     "DECLINES": "closed lower than on the previous canonical session",
+    "NEW_52W_HIGH": "closed above its highest close of the prior 252 sessions",
+    "NEW_52W_LOW": "closed below its lowest close of the prior 252 sessions",
 }
 
 
@@ -143,6 +145,10 @@ def aggregate(observations, universe_def, session_date: dt.date,
                             lambda o: (o.price_change_pct or 0) > 0, size),
         "DECLINES": _metric("DECLINES", obs, "breadth_covered",
                             lambda o: (o.price_change_pct or 0) < 0, size),
+        "NEW_52W_HIGH": _metric("NEW_52W_HIGH", obs, "fifty_two_week_covered",
+                               lambda o: o.new_52w_high, size),
+        "NEW_52W_LOW": _metric("NEW_52W_LOW", obs, "fifty_two_week_covered",
+                              lambda o: o.new_52w_low, size),
     }
     adv, dec = metrics["ADVANCES"], metrics["DECLINES"]
     if adv.denominator != dec.denominator or adv.numerator + dec.numerator > adv.denominator:

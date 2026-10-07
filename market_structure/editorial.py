@@ -5,10 +5,18 @@ Candidates, in priority order (at most `MAX_INSIGHTS` are kept):
 
     BREADTH     Nifty moved one way while most of the universe moved the other (divergence),
                 or at least BREADTH_EXTREME_SHARE of the covered universe moved the same way
+    FIFTY_TWO_WEEK
+                at least FIFTY_TWO_WEEK_MIN stocks closed at a new 252-session (close-based)
+                high or low; a descriptive index-vs-breadth divergence/alignment read is
+                layered on top when Nifty moved by DIVERGENCE_MIN_NIFTY_PCT or more - never
+                predictive, never "bullish"/"bearish"
     UNUSUAL_VOLUME
                 at least UNUSUAL_MIN stocks traded at >= 2x their usual volume; sector rows +
                 an exact concentration line when one sector holds a real share of them
     RANGE       at least RANGE_MIN stocks closed outside their 20-day range on one side
+
+`select_insights`'s `allowed_kinds` lets a caller (PRE) restrict which candidate kinds are even
+considered, without changing POST's behaviour (default None = every kind allowed).
 
 Every string is a fixed template over validated counts. No stock is ever named here.
 """
@@ -27,6 +35,10 @@ DIVERGENCE_MIN_NIFTY_PCT = 0.20
 CONCENTRATION_MIN_SHARE = 0.30
 CONCENTRATION_MIN_COUNT = 3
 SECTOR_ROWS = 4
+# 52-week extremes are rarer than a 20-day range break, so RANGE_MIN=10 is the wrong bar - the
+# same order of magnitude as UNUSUAL_MIN fits better. Checked (not tuned) against the bounded
+# historical validation run - see market_structure/historical_validation.py.
+FIFTY_TWO_WEEK_MIN = 5
 
 
 @dataclass
@@ -185,16 +197,65 @@ def _range(snap) -> StructureInsight | None:
         reason=f"{lead.numerator} range events {side} (>= {RANGE_MIN})")
 
 
-def select_insights(snapshot, nifty_pct: float | None = None, limit: int = MAX_INSIGHTS) -> tuple:
+def _fifty_two_week(snap, nifty_pct) -> StructureInsight | None:
+    """Stocks making NEW 52-WEEK HIGHS/LOWS, with a descriptive (never predictive) read against
+    the headline index when one is meaningful. The divergence/alignment label is derived here
+    only - the snapshot itself carries no `breadth_state` field, exactly like `_breadth()`'s own
+    divergence/broad-move read is never stored on `ADVANCES`/`DECLINES`."""
+    high, low = snap.metric("NEW_52W_HIGH"), snap.metric("NEW_52W_LOW")
+    if not (_usable(high) and _usable(low)):
+        return None
+    lead, other, word, oword = ((high, low, "high", "low") if high.numerator >= low.numerator
+                                else (low, high, "low", "high"))
+    if lead.numerator < FIFTY_TWO_WEEK_MIN:
+        return None
+    U = snap.universe_label
+    headline = f"{lead.numerator} {U} stocks closed at new 52-week {word}s"
+    reason = f"{lead.numerator} new 52-week {word}s (>= {FIFTY_TWO_WEEK_MIN})"
+    if nifty_pct is not None and abs(nifty_pct) >= DIVERGENCE_MIN_NIFTY_PCT:
+        nifty_word = "rose" if nifty_pct > 0 else "fell"
+        aligned = (word == "high" and nifty_pct > 0) or (word == "low" and nifty_pct < 0)
+        join = "and" if aligned else ("but" if word == "low" else "yet")
+        headline = (f"Nifty 50 {nifty_word} {abs(nifty_pct):.2f}%, {join} {lead.numerator} "
+                   f"{U} stocks closed at new 52-week {word}s")
+        if aligned and word == "high":
+            reason += "; INDEX_AND_BREADTH_ALIGNED_STRONG"
+        elif aligned and word == "low":
+            reason += "; INDEX_AND_BREADTH_ALIGNED_WEAK"
+        elif word == "low":
+            reason += "; INDEX_UP_BREADTH_WEAK"
+        else:
+            reason += "; INDEX_DOWN_BREADTH_RESILIENT"
+    top = lead.top_sector()
+    takeaway = f"{other.numerator} closed at new 52-week {oword}s."
+    if top and top[1] >= CONCENTRATION_MIN_COUNT and top[1] / lead.numerator >= CONCENTRATION_MIN_SHARE:
+        takeaway += f" {top[0]}: {top[1]} of the {lead.numerator}."
+    return StructureInsight(
+        kind="FIFTY_TWO_WEEK", headline=headline,
+        hero_value=lead.denominator_text.split(" (")[0] if lead.status == PUBLISHABLE
+        else f"{lead.numerator} / {lead.denominator}",
+        hero_label=f"{U} STOCKS · NEW 52-WEEK {word.upper()}S",
+        definition=(f"Closed {'above its highest' if word == 'high' else 'below its lowest'} "
+                   "close of the prior 252 sessions"),
+        rows=_rows(lead), takeaway=takeaway, universe_label=U,
+        denominator_text=lead.denominator_text, coverage_pct=lead.coverage_pct,
+        coverage_status=lead.status, metric_keys=[lead.key, other.key], reason=reason)
+
+
+def select_insights(snapshot, nifty_pct: float | None = None, limit: int = MAX_INSIGHTS,
+                    allowed_kinds: frozenset | None = None) -> tuple:
     """(insights, reasons) - the chosen observations in play order, and why each candidate was
     kept or not. An empty list means the section is omitted - never padded."""
     if snapshot is None:
         return [], {"MARKET_STRUCTURE": "omitted: no Market Structure snapshot for the session"}
-    cands = [("BREADTH", _breadth(snapshot, nifty_pct)), ("UNUSUAL_VOLUME", _unusual(snapshot)),
-             ("RANGE", _range(snapshot))]
+    cands = [("BREADTH", _breadth(snapshot, nifty_pct)),
+             ("FIFTY_TWO_WEEK", _fifty_two_week(snapshot, nifty_pct)),
+             ("UNUSUAL_VOLUME", _unusual(snapshot)), ("RANGE", _range(snapshot))]
     reasons, out = {}, []
     for key, ins in cands:
-        if ins is None:
+        if allowed_kinds is not None and key not in allowed_kinds:
+            reasons[key] = f"omitted: not in this product's allowed kinds ({sorted(allowed_kinds)})"
+        elif ins is None:
             reasons[key] = "omitted: below its threshold or coverage suppressed"
         elif len(out) >= limit:
             reasons[key] = f"omitted: qualified ({ins.reason}) but the section shows at most {limit}"
@@ -204,4 +265,5 @@ def select_insights(snapshot, nifty_pct: float | None = None, limit: int = MAX_I
     return out, reasons
 
 
-__all__ = ["StructureInsight", "select_insights", "MAX_INSIGHTS", "UNUSUAL_MIN", "RANGE_MIN"]
+__all__ = ["StructureInsight", "select_insights", "MAX_INSIGHTS", "UNUSUAL_MIN", "RANGE_MIN",
+           "FIFTY_TWO_WEEK_MIN"]

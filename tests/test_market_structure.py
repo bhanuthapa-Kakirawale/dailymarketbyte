@@ -45,14 +45,25 @@ def detectors(uni, unusual=(), up=(), down=(), missing_volume=(), missing_tech=(
     return vol, tech, series
 
 
-def snapshot(uni, nifty100=None, **kw):
+def snapshot(uni, nifty100=None, fiftytwo=None, **kw):
     vol, tech, series = detectors(uni, **kw)
-    obs = ms.build_observations(uni, D, P, vol, tech, series)
+    obs = ms.build_observations(uni, D, P, vol, tech, series, fiftytwo)
     return ms.aggregate(obs, uni, D, [nifty100] if nifty100 else []), obs
 
 
 def hc(n):   # the first n Healthcare constituents (every 5th symbol)
     return [f"STOCK-{i:03d}" for i in range(0, 5 * n, 5)]
+
+
+def fw_series(prior_closes, final_close, final_date=D, start=None):
+    """A deterministic oldest-first close series ending at `final_date`: `len(prior_closes)`
+    prior sessions (one calendar day apart, starting `start` or 253 days before `final_date`)
+    followed by the session being evaluated."""
+    n = len(prior_closes)
+    start = start or (final_date - dt.timedelta(days=n))
+    rows = [{"date": start + dt.timedelta(days=i), "close": c} for i, c in enumerate(prior_closes)]
+    rows.append({"date": final_date, "close": final_close})
+    return rows
 
 
 # --------------------------------------------------------------------------- universe
@@ -244,3 +255,269 @@ def test_private_radar_detectors_are_unchanged_by_aggregation():
     before = (list(vol.scanned), [a.instrument for a in vol.anomalies], len(tech.flagged))
     ms.aggregate(ms.build_observations(uni, D, P, vol, tech, series), uni, D)
     assert before == (list(vol.scanned), [a.instrument for a in vol.anomalies], len(tech.flagged))
+
+
+# --------------------------------------------------------------------------- fifty-two-week (calc)
+def test_exact_new_high_is_strict():
+    r = ms.classify_fifty_two_week(fw_series([100.0] * 252, 100.01), D)
+    assert r["status"] == "OK" and r["new_52w_high"] is True and r["new_52w_low"] is False
+
+
+def test_equal_to_prior_high_is_not_new_high():
+    r = ms.classify_fifty_two_week(fw_series([100.0] * 251 + [105.0], 105.0), D)
+    assert r["new_52w_high"] is False
+
+
+def test_exact_new_low_is_strict():
+    r = ms.classify_fifty_two_week(fw_series([100.0] * 252, 99.99), D)
+    assert r["status"] == "OK" and r["new_52w_low"] is True and r["new_52w_high"] is False
+
+
+def test_equal_to_prior_low_is_not_new_low():
+    r = ms.classify_fifty_two_week(fw_series([100.0] * 251 + [90.0], 90.0), D)
+    assert r["new_52w_low"] is False
+
+
+def test_current_bar_excluded_from_lookback():
+    """A single extreme ONLY on the current bar's own prior-session slot must not count twice -
+    the window is `series[:-1]`, never `series` itself."""
+    closes = [100.0] * 252
+    series = fw_series(closes, 100.0)             # flat window, flat close -> neither
+    assert ms.classify_fifty_two_week(series, D)["new_52w_high"] is False
+    # if the window wrongly included the current bar, a close of 100.01 would equal its own
+    # (wrongly self-included) max and still not register as "above" - so prove the window size
+    # itself: exactly 252 rows are consulted, a 253rd prior row is dropped (never widens it)
+    longer = fw_series([50.0] + closes, 100.01)    # 253 prior rows; the extra one is a low of 50
+    shorter = fw_series(closes, 100.01)            # 252 prior rows, all 100
+    assert ms.classify_fifty_two_week(longer, D) == ms.classify_fifty_two_week(shorter, D)
+
+
+def test_insufficient_history_is_classified_not_false():
+    r = ms.classify_fifty_two_week(fw_series([100.0] * 251, 200.0), D)   # only 251 prior sessions
+    assert r == {"status": "INSUFFICIENT_HISTORY", "new_52w_high": False, "new_52w_low": False}
+
+
+def test_missing_ohlcv_is_insufficient_history():
+    assert ms.classify_fifty_two_week([], D)["status"] == "INSUFFICIENT_HISTORY"
+    assert ms.classify_fifty_two_week(None, D)["status"] == "INSUFFICIENT_HISTORY"
+
+
+def test_duplicate_bars_never_satisfy_the_window():
+    closes = [100.0] * 251 + [100.0]   # 252 rows, but the last two share a date (duplicate)
+    series = fw_series(closes, 200.0)
+    series[-2] = dict(series[-2], date=series[-3]["date"])   # force a duplicate date in the window
+    assert ms.classify_fifty_two_week(series, D)["status"] == "INSUFFICIENT_HISTORY"
+
+
+def test_session_alignment_required():
+    """The series' own last row must be dated exactly `session_date` - never trusted
+    positionally (mirrors `observations.py::_dated_change`'s discipline)."""
+    series = fw_series([100.0] * 252, 200.0, final_date=P)   # ends at P, not D
+    assert ms.classify_fifty_two_week(series, D)["status"] == "INSUFFICIENT_HISTORY"
+
+
+def test_no_lookahead_a_future_row_is_never_used():
+    series = fw_series([100.0] * 252, 100.01, final_date=D)
+    series.append({"date": D + dt.timedelta(days=1), "close": 500.0})   # a future session
+    # the series' own last row is now the future one, not D - D's own classification must not
+    # silently use it
+    assert ms.classify_fifty_two_week(series, D)["status"] == "INSUFFICIENT_HISTORY"
+
+
+# --------------------------------------------------------------------------- fifty-two-week (aggregation)
+def fw_full(uni, highs=(), lows=()):
+    """A `fifty_two_week_series_by_symbol` covering EVERY constituent: `highs`/`lows` close
+    strictly outside a flat 252-session prior window, everyone else stays flat (covered, but
+    neither a new high nor a new low)."""
+    out = {}
+    for s in uni.constituents:
+        if s in highs:
+            out[s] = fw_series([100.0] * 252, 101.0)
+        elif s in lows:
+            out[s] = fw_series([100.0] * 252, 99.0)
+        else:
+            out[s] = fw_series([100.0] * 252, 100.0)
+    return out
+
+
+def test_fifty_two_week_eligible_count_and_high_low_counts():
+    uni = universe()
+    highs, lows = hc(6), ["STOCK-001", "STOCK-002", "STOCK-003"]
+    snap, obs = snapshot(uni, fiftytwo=fw_full(uni, highs=highs, lows=lows))
+    high_m, low_m = snap.metric("NEW_52W_HIGH"), snap.metric("NEW_52W_LOW")
+    assert high_m.numerator == 6 and high_m.denominator == 200 and high_m.status == ms.PUBLISHABLE
+    assert low_m.numerator == 3 and low_m.denominator_text == "3 / 200"
+    assert {o.symbol for o in obs if o.new_52w_high} == set(highs)
+    assert {o.symbol for o in obs if o.new_52w_low} == set(lows)
+
+
+def test_fifty_two_week_never_shows_a_rounded_share_next_to_the_count():
+    """2/200 = 1% is not an exact share (`ms.exact_share`) - the insight must never round one
+    in anyway, unlike `_breadth()`'s optional exact-share suffix."""
+    uni = universe()
+    assert ms.exact_share(2, 200) is None
+    snap, _ = snapshot(uni, fiftytwo=fw_full(uni, highs=hc(2) + ["STOCK-001", "STOCK-003",
+                                                                "STOCK-006"]))
+    ins, _ = ms.select_insights(snap, nifty_pct=0.05)
+    f = next(i for i in ins if i.kind == "FIFTY_TWO_WEEK")
+    assert "%" not in f.hero_value and "%" not in f.hero_label and "%" not in f.headline
+
+
+def test_fifty_two_week_partial_coverage_shows_the_real_denominator():
+    uni = universe()
+    fw = fw_full(uni, highs=hc(6))
+    for s in ("STOCK-199", "STOCK-198", "STOCK-197", "STOCK-196"):
+        del fw[s]
+    snap, _ = snapshot(uni, fiftytwo=fw)
+    m = snap.metric("NEW_52W_HIGH")
+    assert m.status == ms.PARTIAL and m.denominator == 196
+    assert m.denominator_text == "6 of 196 covered (200 in index)"
+
+
+def test_fifty_two_week_zero_eligible_is_never_a_valid_zero_reading():
+    uni = universe()
+    snap, _ = snapshot(uni)    # no `fiftytwo` at all -> every constituent uncovered
+    m = snap.metric("NEW_52W_HIGH")
+    assert m.numerator == 0 and m.denominator == 0 and m.status == ms.SUPPRESSED
+    ins, _ = ms.select_insights(snap, nifty_pct=0.5)
+    assert all(i.kind != "FIFTY_TWO_WEEK" for i in ins)
+
+
+# --------------------------------------------------------------------------- fifty-two-week (editorial/divergence)
+def test_fifty_two_week_below_threshold_is_omitted():
+    uni = universe()
+    snap, _ = snapshot(uni, fiftytwo=fw_full(uni, highs=hc(1)))   # 1 < FIFTY_TWO_WEEK_MIN
+    ins, reasons = ms.select_insights(snap, nifty_pct=0.5)
+    assert all(i.kind != "FIFTY_TWO_WEEK" for i in ins)
+    assert reasons["FIFTY_TWO_WEEK"].startswith("omitted")
+
+
+def test_fifty_two_week_plain_count_when_no_divergence_applies():
+    uni = universe()
+    snap, _ = snapshot(uni, fiftytwo=fw_full(uni, highs=hc(6)))
+    ins, _ = ms.select_insights(snap, nifty_pct=0.05)   # below DIVERGENCE_MIN_NIFTY_PCT
+    f = next(i for i in ins if i.kind == "FIFTY_TWO_WEEK")
+    assert f.headline == "6 NIFTY 200 stocks closed at new 52-week highs"
+    assert "Nifty" not in f.headline
+
+
+def test_fifty_two_week_index_up_breadth_weak():
+    uni = universe()
+    snap, _ = snapshot(uni, fiftytwo=fw_full(uni, lows=hc(6)))
+    ins, _ = ms.select_insights(snap, nifty_pct=0.5)
+    f = next(i for i in ins if i.kind == "FIFTY_TWO_WEEK")
+    assert f.headline == ("Nifty 50 rose 0.50%, but 6 NIFTY 200 stocks closed at new "
+                         "52-week lows")
+
+
+def test_fifty_two_week_index_down_breadth_resilient():
+    uni = universe()
+    snap, _ = snapshot(uni, fiftytwo=fw_full(uni, highs=hc(6)))
+    ins, _ = ms.select_insights(snap, nifty_pct=-0.5)
+    f = next(i for i in ins if i.kind == "FIFTY_TWO_WEEK")
+    assert f.headline == ("Nifty 50 fell 0.50%, yet 6 NIFTY 200 stocks closed at new "
+                         "52-week highs")
+
+
+def test_fifty_two_week_aligned_strong():
+    uni = universe()
+    snap, _ = snapshot(uni, fiftytwo=fw_full(uni, highs=hc(6)))
+    ins, _ = ms.select_insights(snap, nifty_pct=0.5)
+    f = next(i for i in ins if i.kind == "FIFTY_TWO_WEEK")
+    assert f.headline == ("Nifty 50 rose 0.50%, and 6 NIFTY 200 stocks closed at new "
+                         "52-week highs")
+
+
+def test_fifty_two_week_aligned_weak():
+    uni = universe()
+    snap, _ = snapshot(uni, fiftytwo=fw_full(uni, lows=hc(6)))
+    ins, _ = ms.select_insights(snap, nifty_pct=-0.5)
+    f = next(i for i in ins if i.kind == "FIFTY_TWO_WEEK")
+    assert f.headline == ("Nifty 50 fell 0.50%, and 6 NIFTY 200 stocks closed at new "
+                         "52-week lows")
+
+
+def test_fifty_two_week_omitted_when_below_threshold_even_with_a_big_index_move():
+    """Divergence framing never manufactures a story out of nothing - it only decorates an
+    already-qualifying count (>= FIFTY_TWO_WEEK_MIN), never lowers the bar."""
+    uni = universe()
+    snap, _ = snapshot(uni, fiftytwo=fw_full(uni, highs=hc(1)))   # 1 < FIFTY_TWO_WEEK_MIN
+    ins, _ = ms.select_insights(snap, nifty_pct=2.5)   # a large index move changes nothing here
+    assert all(i.kind != "FIFTY_TWO_WEEK" for i in ins)
+
+
+def test_fifty_two_week_never_bullish_bearish_buy_sell():
+    uni = universe()
+    snap, _ = snapshot(uni, fiftytwo=fw_full(uni, highs=hc(6)))
+    for nifty_pct in (None, 0.05, 0.5, -0.5):
+        ins, _ = ms.select_insights(snap, nifty_pct=nifty_pct)
+        f = next((i for i in ins if i.kind == "FIFTY_TWO_WEEK"), None)
+        if f is None:
+            continue
+        texts = {f"t{i}": s for i, s in enumerate(f.public_strings())}
+        result = scan_public_text(texts, uni.companies())
+        assert result.check_passed("recommendation_language")
+        assert result.check_passed("forecast_language")
+        assert result.check_passed("ranking_language")
+
+
+def test_fifty_two_week_rows_never_exceed_the_scene_row_cap():
+    uni = universe()
+    snap, _ = snapshot(uni, fiftytwo=fw_full(uni, highs=hc(20)))   # every sector represented
+    ins, _ = ms.select_insights(snap, nifty_pct=0.5)
+    f = next(i for i in ins if i.kind == "FIFTY_TWO_WEEK")
+    assert len(f.rows) <= ms.editorial.SECTOR_ROWS + 1
+    assert sum(r["n"] for r in f.rows) == snap.metric("NEW_52W_HIGH").numerator
+
+
+def test_fifty_two_week_structure_facts_pass_the_public_gate_and_name_no_stock():
+    uni = universe()
+    snap, _ = snapshot(uni, fiftytwo=fw_full(uni, highs=hc(6)))
+    ins, _ = ms.select_insights(snap, nifty_pct=0.5)
+    f = next(i for i in ins if i.kind == "FIFTY_TWO_WEEK")
+    gate = PublicationGate("PUBLIC_UNREGISTERED", uni.companies())
+    facts = structure_facts(f, snap, D)
+    assert all(gate.admit(fact) for fact in facts), gate.to_dict()["blocked"]
+    texts = {fact.fact_id: fact.text for fact in facts}
+    assert scan_public_text(texts, uni.companies()).check_passed("unapproved_named_security")
+
+
+def test_fifty_two_week_outranks_unusual_volume_and_range_but_not_breadth():
+    uni = universe()
+    moves = {f"STOCK-{i:03d}": (-1.0 if i < 130 else 1.0) for i in range(200)}
+    snap, _ = snapshot(uni, unusual=hc(6), up=[f"STOCK-{i:03d}" for i in range(12)],
+                       fiftytwo=fw_full(uni, highs=hc(6)), moves=moves)
+    ins, _ = ms.select_insights(snap, nifty_pct=0.42)
+    assert [i.kind for i in ins] == ["BREADTH", "FIFTY_TWO_WEEK"]   # at most MAX_INSIGHTS=2
+
+
+def test_allowed_kinds_restricts_pre_to_fifty_two_week_only():
+    uni = universe()
+    moves = {f"STOCK-{i:03d}": (-1.0 if i < 130 else 1.0) for i in range(200)}
+    snap, _ = snapshot(uni, fiftytwo=fw_full(uni, highs=hc(6)), moves=moves)
+    ins, reasons = ms.select_insights(snap, nifty_pct=0.42,
+                                      allowed_kinds=frozenset({"FIFTY_TWO_WEEK"}))
+    assert [i.kind for i in ins] == ["FIFTY_TWO_WEEK"]
+    assert reasons["BREADTH"].startswith("omitted: not in this product's allowed kinds")
+
+
+# --------------------------------------------------------------------------- fifty-two-week (private desk)
+def test_private_desk_market_structure_surfaces_new_metrics(tmp_path):
+    from private_desk.services.market import fifty_two_week_symbols, sector_table
+
+    uni = universe()
+    highs, lows = hc(6), ["STOCK-001", "STOCK-002"]
+    snap, obs = snapshot(uni, fiftytwo=fw_full(uni, highs=highs, lows=lows))
+    path = ms.save_snapshot(snap, obs, uni, str(tmp_path))
+    data = json.load(open(path, encoding="utf-8"))
+    desk_ms = {
+        "status": "OK", "metrics": data["snapshot"]["metrics"],
+        "constituents_by_sector": data["snapshot"]["sector_mapping"]["constituents_by_sector"],
+        "observations": data["observations"],
+    }
+    assert desk_ms["metrics"]["NEW_52W_HIGH"]["numerator"] == 6
+    assert set(fifty_two_week_symbols(desk_ms)["new_52w_high"]) == set(highs)
+    assert set(fifty_two_week_symbols(desk_ms)["new_52w_low"]) == set(lows)
+    rows = sector_table(desk_ms, [])
+    assert sum(r["new_52w_high"] or 0 for r in rows) == 6
+    assert sum(r["new_52w_low"] or 0 for r in rows) == 2

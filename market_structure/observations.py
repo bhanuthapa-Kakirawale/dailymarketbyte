@@ -33,6 +33,9 @@ class StructureObservation:
     range_down: bool
     breadth_covered: bool
     price_change_pct: float | None
+    fifty_two_week_covered: bool
+    new_52w_high: bool
+    new_52w_low: bool
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -69,19 +72,30 @@ def _dated_change(rows, session_date: dt.date, prev_date: dt.date | None):
 
 
 def build_observations(universe_def, session_date: dt.date, prev_date: dt.date | None,
-                       volume_snapshot, technical_snapshot, series_by_symbol: dict) -> list:
+                       volume_snapshot, technical_snapshot, series_by_symbol: dict,
+                       fifty_two_week_series_by_symbol: dict | None = None) -> list:
     """One observation per constituent of `universe_def` - and only for those. A symbol the
-    detectors read that is not a constituent is ignored here (never mixed in)."""
+    detectors read that is not a constituent is ignored here (never mixed in).
+
+    `fifty_two_week_series_by_symbol` is OPTIONAL (default None - every existing caller/test
+    keeps working unchanged, with every constituent simply `fifty_two_week_covered=False`,
+    never a false "no new high/low"): a separate, deeper (>= 253-session) per-symbol OHLC
+    series, independent of `series_by_symbol` (which only needs to be deep enough for the
+    Radar's own 20/50-day detectors) - see `market_structure.fifty_two_week`."""
+    from .fifty_two_week import STATUS_OK, classify_fifty_two_week
+
     vol_scanned = set(getattr(volume_snapshot, "scanned", []) or [])
     rvol = {a.instrument: a.relative_volume for a in getattr(volume_snapshot, "anomalies", []) or []}
     tech_scanned = set(getattr(technical_snapshot, "scanned", []) or [])
     events = {s.instrument: _event_names(s) for s in getattr(technical_snapshot, "flagged", []) or []}
+    fiftytwo = fifty_two_week_series_by_symbol or {}
     out = []
     for sym in sorted(universe_def.constituents):
         c = universe_def.constituents[sym]
         ev = events.get(sym, set())
         rv = rvol.get(sym)
         chg = _dated_change(series_by_symbol.get(sym), session_date, prev_date)
+        fw = classify_fifty_two_week(fiftytwo.get(sym) or [], session_date)
         out.append(StructureObservation(
             observation_id=f"{session_date.isoformat()}:{universe_def.index}:{sym}", symbol=sym,
             session_date=session_date.isoformat(), universe=universe_def.index, sector=c.sector,
@@ -92,7 +106,9 @@ def build_observations(universe_def, session_date: dt.date, prev_date: dt.date |
             range_up=sym in tech_scanned and bool(ev & set(RANGE_UP_EVENTS)),
             range_down=sym in tech_scanned and bool(ev & set(RANGE_DOWN_EVENTS)),
             breadth_covered=chg is not None,
-            price_change_pct=round(chg, 4) if chg is not None else None))
+            price_change_pct=round(chg, 4) if chg is not None else None,
+            fifty_two_week_covered=fw["status"] == STATUS_OK,
+            new_52w_high=fw["new_52w_high"], new_52w_low=fw["new_52w_low"]))
     return out
 
 

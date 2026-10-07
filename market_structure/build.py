@@ -20,7 +20,7 @@ def build_for_session(session: dt.date, universe_name: str = "NIFTY200",
                       subset_name: str | None = "NIFTY100", out_dir: str | None = None) -> dict:
     import market
     import market_structure as ms
-    from radar import relative_acquisition, session_alignment
+    from radar import ohlcv_service, relative_acquisition, session_alignment
     from radar.daily_pipeline import _run_detectors
 
     out_dir = out_dir or config.OUT_DIR
@@ -40,8 +40,16 @@ def build_for_session(session: dt.date, universe_name: str = "NIFTY200",
             subsets.append(sub)
     det = _run_detectors(session, prev, universe, spine, bench, out_dir=out_dir,
                          as_of=dt.datetime.now(dt.timezone.utc))
+    fiftytwo_series = {}
+    try:
+        fiftytwo_dataset = ohlcv_service.load_universe(
+            universe, session, prev, required_lookback=ms.FIFTY_TWO_WEEK_LOOKBACK_SESSIONS,
+            spine=spine, out_dir=out_dir, fetch_on_gap=False)
+        fiftytwo_series = fiftytwo_dataset.series_by_symbol
+    except Exception:
+        fiftytwo_series = {}
     obs = ms.build_observations(uni, session, prev, det.volume_snapshot, det.technical_snapshot,
-                                det.dataset.series_by_symbol)
+                                det.dataset.series_by_symbol, fiftytwo_series)
     snap = ms.aggregate(obs, uni, session, subsets)
     path = ms.save_snapshot(snap, obs, uni, out_dir, subsets)
     return {"status": "OK", "artifact": path, "universe": uni.label, "previous_session": str(prev),

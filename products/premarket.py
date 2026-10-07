@@ -212,7 +212,7 @@ def build_real_brief(pre_date: dt.date, as_of: dt.datetime, history_fn=None, gif
         from presentation.public_intelligence import load_public_intelligence
 
         def intel_fn(d, live_run):
-            return load_public_intelligence(None, d, config.OUT_DIR, fetch=live_run,
+            return load_public_intelligence(prev, d, config.OUT_DIR, fetch=live_run,
                                             now_iso=dt.datetime.now(dt.timezone.utc).isoformat(),
                                             snapshot_session=prev, replay=not live_run,
                                             now=now_ist() if live_run else as_of,

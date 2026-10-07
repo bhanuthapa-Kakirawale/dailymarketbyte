@@ -87,9 +87,11 @@ def apply_publication_profile(brief, profile=None) -> PublicationGate:
         gate.admit(_market_fact("pre.vix", f"India VIX {brief.vix.value:.2f}", [brief.vix.source],
                                 brief.vix.session))
 
-    ps = plan_public_sections(gate, intel, brief.pre_date, "PRE", max_structure=0)
+    ps = plan_public_sections(gate, intel, brief.pre_date, "PRE", max_structure=1,
+                              structure_allowed_kinds=frozenset({"FIFTY_TWO_WEEK"}))
     brief.exchange_watch, brief.ipo_watch = ps.exchange, ps.ipo
     brief.market_events = ps.market_events
+    brief.structure = ps.structure
     brief.public_audit = ps.audit
     brief.public_omitted += ps.omitted
     return gate

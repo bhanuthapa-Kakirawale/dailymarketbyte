@@ -14,7 +14,9 @@ See docs/MARKET_STRUCTURE.md.
 from .aggregator import (MIN_COVERAGE_PCT, PARTIAL, PUBLISHABLE, SUPPRESSED,
                          MarketStructureSnapshot, Metric, ReconciliationError, aggregate,
                          exact_share, subset_contrast)
-from .editorial import StructureInsight, select_insights
+from .editorial import FIFTY_TWO_WEEK_MIN, StructureInsight, select_insights
+from .fifty_two_week import (FIFTY_TWO_WEEK_LOOKBACK_SESSIONS, FIFTY_TWO_WEEK_WINDOW,
+                             classify_fifty_two_week)
 from .observations import StructureObservation, build_observations
 from .sectors import UNCLASSIFIED, sector_for
 from .store import load_snapshot, save_snapshot, structure_facts
@@ -26,4 +28,5 @@ __all__ = ["MarketStructureSnapshot", "Metric", "aggregate", "subset_contrast", 
            "UniverseDefinition", "Constituent", "UniverseError", "from_constituent_csv",
            "from_market_meta", "sector_for", "UNCLASSIFIED", "MIN_COVERAGE_PCT", "PUBLISHABLE",
            "PARTIAL", "SUPPRESSED", "ReconciliationError", "save_snapshot", "load_snapshot",
-           "structure_facts"]
+           "structure_facts", "classify_fifty_two_week", "FIFTY_TWO_WEEK_WINDOW",
+           "FIFTY_TWO_WEEK_LOOKBACK_SESSIONS", "FIFTY_TWO_WEEK_MIN"]

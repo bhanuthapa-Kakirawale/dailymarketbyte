@@ -488,10 +488,17 @@ def save_artifact(result: DailyRadarResult, out_dir: str = ARTIFACT_DIR) -> str:
 
 # ------------------------------------------------------------------ production entry point
 def _market_structure_step(universe_name, session_date, prev_date, detector_output,
-                           out_dir) -> dict:
+                           out_dir, universe=None, spine=None) -> dict:
     """Build + save the Market Structure snapshot from this run's detector output. Uses the
     constituent metadata `market.get_universe` recorded from its own download (NSE's
-    'Industry' column); a fallback list or a missing record means no snapshot, with a warning."""
+    'Industry' column); a fallback list or a missing record means no snapshot, with a warning.
+
+    `universe`/`spine`, when given, feed ONE additional, read-only OHLCV load (`fetch_on_gap=
+    False` - never a Yahoo re-fetch on top of what the Radar's own 55-session call already
+    deepens the store by) for the 52-week high/low metric's own >= 253-session requirement -
+    independent of `detector_output.dataset`, which only needs to be deep enough for the
+    existing 20/50-day detectors. Missing/failing is never fatal to Market Structure as a
+    whole: the 52-week metrics simply come back uncovered (INSUFFICIENT_HISTORY)."""
     try:
         import market_structure as ms
         meta = market.UNIVERSE_META.get(universe_name)
@@ -505,9 +512,19 @@ def _market_structure_step(universe_name, session_date, prev_date, detector_outp
                 sub = ms.from_market_meta(m)
                 if sub.symbols() < uni.symbols():
                     subsets.append(sub)
+        fiftytwo_series = {}
+        if universe:
+            try:
+                fiftytwo_dataset = ohlcv_service.load_universe(
+                    universe, session_date, prev_date,
+                    required_lookback=ms.FIFTY_TWO_WEEK_LOOKBACK_SESSIONS, spine=spine,
+                    out_dir=out_dir, fetch_on_gap=False)
+                fiftytwo_series = fiftytwo_dataset.series_by_symbol
+            except Exception:
+                fiftytwo_series = {}
         obs = ms.build_observations(uni, session_date, prev_date, detector_output.volume_snapshot,
                                     detector_output.technical_snapshot,
-                                    detector_output.dataset.series_by_symbol)
+                                    detector_output.dataset.series_by_symbol, fiftytwo_series)
         snap = ms.aggregate(obs, uni, session_date, subsets)
         path = ms.save_snapshot(snap, obs, uni, out_dir, subsets)
         return {"status": "OK", "artifact": path, "universe": uni.label,
@@ -599,7 +616,7 @@ def run_daily_radar(session_date: dt.date | None = None, *, universe_name: str =
     market_structure_status = {"status": "NOT_RUN", "reason": "dry run or empty universe"}
     if not dry_run and universe:
         market_structure_status = _market_structure_step(universe_name, session_date, prev_date,
-                                                         detector_output, out_dir)
+                                                         detector_output, out_dir, universe, spine)
 
     # ---- 9-11: novelty, from PERSISTED CANDIDATE HISTORY (never editorial history) ----
     # Auto-bootstrap preflight (Packet 5.4E, packet spec sections 16/17): a fresh deployment or

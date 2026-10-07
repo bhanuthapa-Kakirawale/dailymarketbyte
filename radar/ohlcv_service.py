@@ -150,7 +150,8 @@ def load_universe(universe: dict, session_date: dt.date, prev_date: dt.date, *,
                   required_lookback: int = REQUIRED_LOOKBACK_SESSIONS,
                   out_dir: str | None = None, source: str = "yahoo",
                   store: OHLCVStore | None = None,
-                  spine: frozenset | None = None) -> UniverseOHLCVDataset:
+                  spine: frozenset | None = None,
+                  fetch_on_gap: bool = True) -> UniverseOHLCVDataset:
     """Load one shared `UniverseOHLCVDataset` for `universe` as of `session_date`.
 
     Warm cache (every symbol already sufficiently covered through `session_date`): zero Yahoo
@@ -174,7 +175,18 @@ def load_universe(universe: dict, session_date: dt.date, prev_date: dt.date, *,
     here. A store that cannot be opened or read never fails this call - it falls back to a
     single direct Yahoo bulk fetch, exactly like Packet 5.2's own write-through failure
     isolation (docs/OHLCV_STORE.md).
-    """
+
+    `fetch_on_gap` (default True preserves every existing caller exactly): when False, a tail/
+    cold symbol is never topped up via a Yahoo fetch - the call is read-only against whatever
+    the store already has. For a caller asking for a much deeper `required_lookback` than the
+    store was ever asked to keep (e.g. a 253-session 52-week window, versus the Radar's own
+    55-session detector requirement), a naive top-up would otherwise re-fetch `COLD_FETCH_
+    PERIOD` (6 months) of Yahoo data for every under-depth symbol on EVERY run until the store
+    happens to accumulate enough history on its own - a real, unrelated cost increase for a
+    caller that only wants to read what is already there and classify the rest as
+    insufficient-history. `_finalize_symbol`'s own `market.MIN_TECHNICAL_SESSIONS` floor still
+    applies, so a shallow symbol is still returned (just correctly short of `required_lookback`),
+    never dropped outright."""
     symbols = list(universe)
     dataset = UniverseOHLCVDataset(session_date=session_date, requested_symbols=symbols,
                                    source=source)
@@ -192,7 +204,8 @@ def load_universe(universe: dict, session_date: dt.date, prev_date: dt.date, *,
             return _fallback_full_fetch(universe, session_date, prev_date, dataset)
 
     try:
-        _load_with_store(store, universe, session_date, prev_date, required_lookback, dataset, spine)
+        _load_with_store(store, universe, session_date, prev_date, required_lookback, dataset, spine,
+                         fetch_on_gap)
     except Exception as exc:
         print(f"[radar.ohlcv_service] store read failed ({exc}); falling back to direct Yahoo "
              "acquisition")
@@ -210,7 +223,8 @@ def load_universe(universe: dict, session_date: dt.date, prev_date: dt.date, *,
 
 def _load_with_store(store: OHLCVStore, universe: dict, session_date: dt.date,
                      prev_date: dt.date, required_lookback: int,
-                     dataset: UniverseOHLCVDataset, spine: frozenset | None = None) -> None:
+                     dataset: UniverseOHLCVDataset, spine: frozenset | None = None,
+                     fetch_on_gap: bool = True) -> None:
     symbols = list(universe)
     start = session_date - dt.timedelta(days=STORE_QUERY_WINDOW_DAYS)
     rows = store.get_range(symbols, start, session_date, source=dataset.source)
@@ -251,6 +265,11 @@ def _load_with_store(store: OHLCVStore, universe: dict, session_date: dt.date,
     dataset.coverage.cache_partial = len(tail_bucket)
     dataset.coverage.cache_miss = len(cold_bucket)
     dataset.cache_served_symbols = set(complete)
+
+    if not fetch_on_gap:
+        tail_bucket, cold_bucket = [], []
+        dataset.warnings.append("fetch_on_gap=False: tail/cold symbols read from the store "
+                                "as-is, never topped up via Yahoo")
 
     for bucket, period in ((tail_bucket, TAIL_FETCH_PERIOD), (cold_bucket, COLD_FETCH_PERIOD)):
         if not bucket:

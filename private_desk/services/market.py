@@ -20,7 +20,8 @@ import statistics
 
 from ..repository import DeskRepository
 
-METRICS = ("ADVANCES", "DECLINES", "UNUSUAL_VOLUME", "RANGE_UP", "RANGE_DOWN")
+METRICS = ("ADVANCES", "DECLINES", "UNUSUAL_VOLUME", "RANGE_UP", "RANGE_DOWN",
+          "NEW_52W_HIGH", "NEW_52W_LOW")
 
 
 def _fact_status(report: dict, metric: str, instrument: str) -> str | None:
@@ -85,6 +86,21 @@ def market_structure(repo: DeskRepository, session: dt.date) -> dict:
     }
 
 
+def fifty_two_week_symbols(ms: dict) -> dict:
+    """{"new_52w_high": [symbols...], "new_52w_low": [symbols...]}, sorted, straight from the
+    reconciled artifact's own per-constituent observations - Private Desk only, never public
+    (the public UNDER THE SURFACE scene shows counts/sectors only, never a name)."""
+    if ms.get("status") == "UNAVAILABLE":
+        return {"new_52w_high": [], "new_52w_low": []}
+    obs = ms.get("observations") or []
+    return {
+        "new_52w_high": sorted(o["symbol"] for o in obs
+                               if o.get("fifty_two_week_covered") and o.get("new_52w_high")),
+        "new_52w_low": sorted(o["symbol"] for o in obs
+                              if o.get("fifty_two_week_covered") and o.get("new_52w_low")),
+    }
+
+
 def sector_table(ms: dict, candidate_views: list) -> list:
     """One row per NIFTY 200 industry sector. Counts come straight from the reconciled
     artifact's `by_sector`; the median 1D change is desk-derived from the same artifact's
@@ -112,6 +128,7 @@ def sector_table(ms: dict, candidate_views: list) -> list:
             "breadth_covered": len(changes),
             "unusual_volume": cnt("UNUSUAL_VOLUME"), "range_up": cnt("RANGE_UP"),
             "range_down": cnt("RANGE_DOWN"),
+            "new_52w_high": cnt("NEW_52W_HIGH"), "new_52w_low": cnt("NEW_52W_LOW"),
             "median_change_pct": statistics.median(changes) if changes else None,
             "radar_candidates": len(radar_by_sector.get(sector, [])),
             "radar_symbols": sorted(radar_by_sector.get(sector, [])),

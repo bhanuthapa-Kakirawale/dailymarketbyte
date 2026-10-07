@@ -56,8 +56,16 @@ def load_snapshot(path: str):
     obs = [StructureObservation.from_dict(o) for o in d["observations"]]
     session = dt.date.fromisoformat(d["snapshot"]["session_date"])
     snap = aggregate(obs, uni, session, subs)
+    stored_metrics = d["snapshot"]["metrics"]
     for k, m in snap.metrics.items():
-        stored = d["snapshot"]["metrics"].get(k) or {}
+        if k not in stored_metrics:
+            # a metric added after this file was written (e.g. Market Structure V2's
+            # NEW_52W_HIGH/NEW_52W_LOW) - the file never claimed a count for it, so there is
+            # nothing to reconcile; its observations correctly carry no fact for it either
+            # (StructureObservation.from_dict leaves an unknown field None/falsy, i.e. "not
+            # covered") - never raise for a key the file predates.
+            continue
+        stored = stored_metrics[k]
         if (stored.get("numerator"), stored.get("denominator")) != (m.numerator, m.denominator):
             raise ReconciliationError(f"{path}: stored {k} does not reproduce from observations")
     return snap, uni, obs

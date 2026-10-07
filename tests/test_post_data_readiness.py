@@ -66,6 +66,7 @@ def test_zero_coverage_market_structure_is_omitted_not_forced():
     snap = _zero_coverage_snapshot()
     assert select_insights(snap, nifty_pct=0.6) == ([], {
         "BREADTH": "omitted: below its threshold or coverage suppressed",
+        "FIFTY_TWO_WEEK": "omitted: below its threshold or coverage suppressed",
         "UNUSUAL_VOLUME": "omitted: below its threshold or coverage suppressed",
         "RANGE": "omitted: below its threshold or coverage suppressed"})
 

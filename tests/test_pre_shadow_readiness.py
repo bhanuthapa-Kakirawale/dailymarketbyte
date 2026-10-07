@@ -482,8 +482,13 @@ FROZEN = {
     # Re-pinned 2026-10-05 with owner approval: Institutional Flow Intelligence V1
     # (feature/institutional-flow-intelligence-v1) - pre_provenance() reads a CDSL/NSDL FLOWS
     # candidate's own provenance when set, and the FLOWS scene spec carries its fact ids /
-    # sources via `data` for publication.scene_claims. No other frozen file changed.
-    "daily_video/pre_storyboard.py": "eb750f52913074a4b8b268753c65130ec21c32a9070511724e1de7b8171c24b9",
+    # sources via `data` for publication.scene_claims.
+    # Re-pinned (feature/market-structure-v2, owner-approved plan): PRE gains its first-ever
+    # UNDER THE SURFACE content - a "STRUCTURE" builder (`_public_structure`, imports
+    # `structure_spec` from `.public_storyboard`) appended to the existing EXCHANGE/IPO/
+    # MARKET_EVENTS `builders` dict, plus "STRUCTURE" added to the omitted-sections tuple. No
+    # other frozen file changed.
+    "daily_video/pre_storyboard.py": "306791b996b9737c22e56463ee2e92131b23217ce2b039cba59c4a7305f2a1f5",
     "daily_video/radar_scenes.py": "ecda846e8012b64794641568023fa3582d256b2456c6ff805171cb76738b9647",
     "daily_video/radar_story_scene.py": "e544e5b3d224e6fcd194b9c5602a26749bda5f6c7a1a0228cb9e2ba38b53c64a",
     # Re-pinned 2026-10-07 with owner approval: `diverging_rows` (SECTORS/FLOWS) now reserves

@@ -66,7 +66,8 @@ class PublicSections:
 
 def plan_public_sections(gate, intel: PublicIntelligence | None, day: dt.date, mode: str,
                          nifty_pct: float | None = None, max_structure: int = 2,
-                         include_ipo_listed: bool = False) -> PublicSections:
+                         include_ipo_listed: bool = False,
+                         structure_allowed_kinds: frozenset | None = None) -> PublicSections:
     import market_structure as ms
     from exchange_watch import build_model, exchange_facts, select_events
     from ipo_watch import build_model as ipo_model, ipo_audit, ipo_facts, select_ipos
@@ -78,7 +79,8 @@ def plan_public_sections(gate, intel: PublicIntelligence | None, day: dt.date, m
 
     # ------------------------------------------------------------ UNDER THE SURFACE
     snap = intel.structure
-    insights, reasons = ms.select_insights(snap, nifty_pct, limit=max_structure)
+    insights, reasons = ms.select_insights(snap, nifty_pct, limit=max_structure,
+                                           allowed_kinds=structure_allowed_kinds)
     out.reasons.update({f"STRUCTURE.{k}": v for k, v in reasons.items()})
     session = dt.date.fromisoformat(snap.session_date) if snap is not None else day
     for ins in insights:

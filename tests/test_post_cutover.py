@@ -24,8 +24,9 @@ from test_pipeline import _Args, offline_pipeline  # noqa: F401  (fixture re-exp
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRIDAY, THURSDAY, MONDAY = dt.date(2026, 9, 18), dt.date(2026, 9, 17), dt.date(2026, 9, 21)
-EXPECTED_24_SEP = ["DYNAMIC_HOOK", "NIFTY", "SECTORS", "FLOWS", "STRUCTURE", "STRUCTURE",
-                   "CLOSING"]
+# Editorial Planner V3: the aligned "broad move" breadth scene restates the headline (Nifty
+# -1.64%) and is suppressed; one UNDER THE SURFACE story per edition; structure before flows.
+EXPECTED_24_SEP = ["DYNAMIC_HOOK", "NIFTY", "SECTORS", "STRUCTURE", "FLOWS", "CLOSING"]
 
 
 def _run_source() -> str:
@@ -121,7 +122,8 @@ def test_market_structure_is_supported(offline_pipeline, monkeypatch, tmp_path):
 
 
 # 4 ------------------------------------------------------------------------------------------
-def test_exchange_watch_is_supported(offline_pipeline, monkeypatch, tmp_path):
+def test_exchange_watch_is_supported(offline_pipeline, monkeypatch, tmp_path, editorial_select):
+    editorial_select("EXCHANGE")          # V3: a routine list change is plumbing-tested here
     _inject_intel(monkeypatch, exchange_scenario="FNO_BAN")
     assert main.run(_Args())
     m = _manifest(tmp_path)
@@ -130,7 +132,8 @@ def test_exchange_watch_is_supported(offline_pipeline, monkeypatch, tmp_path):
 
 
 # 5 ------------------------------------------------------------------------------------------
-def test_ipo_watch_is_supported(offline_pipeline, monkeypatch, tmp_path):
+def test_ipo_watch_is_supported(offline_pipeline, monkeypatch, tmp_path, editorial_select):
+    editorial_select("IPO")               # V3: a bidding milestone is ROUTINE; plumbing here
     _inject_intel(monkeypatch, ipo_scenario="CLOSES_TODAY")
     assert main.run(_Args())
     m = _manifest(tmp_path)
@@ -225,7 +228,7 @@ def test_real_24_sep_scene_sequence_is_unchanged(monkeypatch):
     sb, _ = PU.build_post_storyboard(report, plan, profile=prof, intelligence=intel,
                                      radar_dir=os.path.join(ROOT, "output", "radar"))
     assert [s.kind for s in sb.scenes] == EXPECTED_24_SEP
-    assert 36.0 <= sb.total_duration <= 38.5
+    assert 30.5 <= sb.total_duration <= 32.0
 
 
 def test_post_unified_sequence_shape_offline(offline_pipeline, monkeypatch, tmp_path):
@@ -236,8 +239,10 @@ def test_post_unified_sequence_shape_offline(offline_pipeline, monkeypatch, tmp_
     kinds = _manifest(tmp_path)["scenes"]
     assert kinds[0] == "DYNAMIC_HOOK" and kinds[-1] == "CLOSING"
     assert "RADAR_STORY" not in kinds and "MOVERS" not in kinds
-    assert max(i for i, k in enumerate(kinds) if k in ("SECTORS", "FLOWS", "NIFTY", "PULSE")) \
+    # Editorial Planner V3 narrative: headline -> sectors -> UNDER THE SURFACE -> flows
+    assert max(i for i, k in enumerate(kinds) if k in ("SECTORS", "NIFTY", "PULSE")) \
         < kinds.index("STRUCTURE")
+    assert "FLOWS" not in kinds or kinds.index("STRUCTURE") < kinds.index("FLOWS")
 
 
 # 12 -----------------------------------------------------------------------------------------

@@ -286,19 +286,28 @@ def test_stock_watch_can_disappear():
     assert "no speculative overnight stock selection" in plan.reasons["STOCK_WATCH"]
 
 
+def _stock_watch_brief(kind="RISK_OFF"):
+    """A brief whose stock watch wins a V3 slot: RISK_OFF's NOTABLE VIX / sector stories are
+    removed so the (secondary-relevance) stock watch is not displaced."""
+    b = synthetic_brief(kind)
+    return dataclasses.replace(b, vix=None, sectors=[]) if kind == "RISK_OFF" else b
+
+
 def test_at_most_two_stock_watch_items():
-    base = synthetic_brief("RISK_OFF")
+    base = _stock_watch_brief()
     many = [dict(base.stock_facts[0], symbol=f"STOCK-{c}") for c in "ABCDE"]
     plan = plan_pre_sections(dataclasses.replace(base, stock_facts=many))
     assert len(plan.stock_watch.items) == 2
     assert [i["symbol"] for i in plan.stock_watch.items] == ["STOCK-A", "STOCK-B"]
 
 
-def test_optional_budget_is_two():
+def test_optional_slots_are_limited():
+    # Editorial Planner V3: one slot budget for every optional PRE section (previous-session
+    # context and public intelligence alike) - was a budget of 2 plus an uncapped public group
     brief = dataclasses.replace(synthetic_brief("RISK_OFF"))
     plan = plan_pre_sections(brief)
-    optional = [k for k in plan.order if k in pre_plan.OPTIONAL_PRIORITY]
-    assert len(optional) <= pre_plan.OPTIONAL_BUDGET
+    optional = [k for k in plan.order if k not in pre_plan.REQUIRED_SECTIONS]
+    assert len(optional) <= pre_plan.OPTIONAL_SLOTS
 
 
 def test_watch_cards_are_two_or_three_facts_never_actions():
@@ -414,10 +423,10 @@ def test_live_quote_from_a_closed_market_is_not_shown():
 # --------------------------------------------------------------------------- 14. POST unchanged
 def test_post_storyboard_contract_unchanged():
     from daily_video.storyboard import RADAR_PUBLISH_LIMIT, SECTION_LABELS, SceneSpec, Storyboard
-    from presentation.post_plan import OPTIONAL_BUDGET, POST_PLAN_VERSION
-    # post-3.1: FLOWS materiality now reads institutional-flow history (Institutional Flow
-    # Intelligence V1) - version bumped deliberately, contract shape otherwise unchanged.
-    assert POST_PLAN_VERSION == "post-3.1" and OPTIONAL_BUDGET == 2 and RADAR_PUBLISH_LIMIT == 3
+    from presentation.post_plan import OPTIONAL_SLOTS, POST_PLAN_VERSION
+    # post-4.0: Editorial Planner V3 - every optional section (public intelligence included)
+    # competes for OPTIONAL_SLOTS in one arbitration; version bumped deliberately.
+    assert POST_PLAN_VERSION == "post-4.0" and OPTIONAL_SLOTS == 4 and RADAR_PUBLISH_LIMIT == 3
     assert SECTION_LABELS["PULSE"] == "MARKET PULSE" and SECTION_LABELS["FLOWS"] == "FII / DII"
     sb = Storyboard(dt.date(2026, 9, 24), "THU 24 SEP 2026", "SESSION RECAP",
                     [SceneSpec("PULSE", "PULSE", 5.4), SceneSpec("FLOWS", "FLOWS", 5.5)])
@@ -586,9 +595,12 @@ def test_pre_summary_follows_the_plan_order():
     brief = dataclasses.replace(_live_lead_brief())
     plan, sheet, hp = _hook(brief)
     assert plan.order.index("OVERNIGHT") < plan.order.index("SETUP") < plan.order.index("FLOWS")
+    # V3 plays the previous session's sector story before flows (SETUP -> STRUCTURE/SECTORS ->
+    # FLOWS), and the summary names the first three sections in that play order
     assert hp.summary_line == ("Before the bell: overnight cues, the previous session and "
-                               "FII/DII flows.")
-    pos = _phrase_positions(hp.summary_line, ["overnight cues", "the previous session", "FII/DII"])
+                               "the sector check.")
+    pos = _phrase_positions(hp.summary_line, ["overnight cues", "the previous session",
+                                              "the sector check"])
     assert pos == sorted(pos) and len(pos) == 3
     for kind in SCENARIOS:
         plan, sheet, hp = _hook(synthetic_brief(kind))
@@ -622,13 +634,17 @@ def test_quiet_pre_may_be_short_and_is_not_padded():
 
 
 def test_sector_watch_card_kept_when_it_carries_a_real_move():
+    # a real sector move is never lost: V3 shows it as the SECTORS scene when it wins a slot,
+    # else the watch card carries it (MERGED_INTO WATCH in the trace)
     plan = plan_pre_sections(dataclasses.replace(synthetic_brief("RISK_OFF")))
-    assert any(w.category == "SECTOR" and "-1.92%" in w.title for w in plan.watch)
+    in_scene = plan.sectors is not None and any(r["value"] == "-1.92%"
+                                                for r in plan.sectors["rows"])
+    assert in_scene or any(w.category == "SECTOR" and "-1.92%" in w.title for w in plan.watch)
 
 
 def test_every_stock_card_names_the_previous_session():
     for kind in ("RISK_OFF", "EVENT"):
-        brief = synthetic_brief(kind)
+        brief = _stock_watch_brief(kind)
         sb = _storyboard(brief)
         sc = next(s for s in sb.scenes if s.kind == "PRE_STOCKS")
         wd = brief.prev_weekday

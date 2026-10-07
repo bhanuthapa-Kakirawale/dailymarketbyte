@@ -43,9 +43,11 @@ def test_pre_market_events_section_omitted_cleanly_when_absent():
     assert "omitted" in plan.reasons["MARKET_EVENTS"]
 
 
-def test_pre_market_events_is_a_public_optional_section_trimmed_under_runtime_ceiling():
-    from presentation.pre_plan import PUBLIC_OPTIONAL
-    assert "MARKET_EVENTS" in PUBLIC_OPTIONAL
+def test_pre_market_events_is_an_optional_section_that_competes_for_a_slot():
+    # Editorial Planner V3: no longer an uncapped "public optional" group trimmed only at the
+    # runtime ceiling - MARKET_EVENTS competes in the one PRE arbitration
+    from presentation.pre_plan import REQUIRED_SECTIONS, SECTION_ORDER
+    assert "MARKET_EVENTS" in SECTION_ORDER and "MARKET_EVENTS" not in REQUIRED_SECTIONS
 
 
 def test_pre_duration_is_zero_when_market_events_absent():

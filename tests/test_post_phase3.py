@@ -25,7 +25,7 @@ from daily_video.market_scenes import MarketPulseScene, SectorBoardScene
 from daily_video.typography import Recorder
 from editorial.models import EditorialItem, ScenePlan, SceneType, ShortsPlan
 from hooks.validation import _COMPILED
-from presentation.post_plan import (OPTIONAL_BUDGET, direction_phrase, plan_post_sections,
+from presentation.post_plan import (OPTIONAL_SLOTS, direction_phrase, plan_post_sections,
                                     session_support, structural_event)
 from presentation.radar_story import build_radar_story_model
 
@@ -154,7 +154,17 @@ def test_global_context_is_rare_and_never_overnight():
     opposite = plan_post_sections(_pres(pct=1.6), _plan(globals_=(("NASDAQ", -2.4),)), _stories())
     assert not opposite.show_global_context                   # not the same side
     same = plan_post_sections(_pres(pct=-1.6), _plan(globals_=(("NASDAQ", -2.4),)), _stories())
-    assert same.show_global_context and same.global_context["headline"] == "Global context"
+    # V3: it qualifies, but same-day global context is ROUTINE in POST - it loses to a NOTABLE
+    # sector story, and is shown only when nothing in the session reached NOTABLE
+    assert not same.show_global_context
+    assert "BELOW_EDITION_THRESHOLD" in same.reasons["GLOBAL"]
+    flat = plan_post_sections(_pres(pct=-1.6, sectors=(("Metal", -0.2), ("IT", -0.4))),
+                              _plan(globals_=(("NASDAQ", -2.4),)), _stories())
+    assert flat.show_sectors and not flat.show_global_context   # the floor keeps ONE story
+    quiet = plan_post_sections(_pres(pct=-1.6, sectors=()), _plan(globals_=(("NASDAQ", -2.4),)),
+                               _stories())
+    assert quiet.show_global_context and quiet.global_context["headline"] == "Global context"
+    assert "QUIET_FLOOR" in quiet.reasons["GLOBAL"]
 
 
 def test_overnight_cues_never_appear_in_post(real):
@@ -188,10 +198,14 @@ def test_optional_budget_keeps_the_short_a_story():
                                     flows=(("FII", -3200.0), ("DII", 2900.0)),
                                     events=(("RBI policy decision", "RBI"),)),
                               _stories("STOCK-A", "STOCK-B", "STOCK-C"))
-    optional = [k for k in post.order if k not in ("PULSE", "SECTORS", "RADAR")]
-    assert optional == ["NIFTY", "FLOWS"] and len(optional) == OPTIONAL_BUDGET
-    for k in ("MOVERS", "EVENT", "GLOBAL"):
-        assert "higher priority" in post.reasons[k]
+    # Editorial Planner V3: every qualifying story competes for OPTIONAL_SLOTS; the MATERIAL
+    # policy day leads (played straight after the headline - the pulse and its Nifty chart),
+    # the NOTABLE stories that explain the move follow, the rest are dropped with their reason.
+    optional = [k for k in post.order if k not in ("PULSE", "RADAR")]
+    assert optional == ["NIFTY", "EVENT", "SECTORS", "FLOWS"]
+    assert len(optional) == OPTIONAL_SLOTS
+    assert "DROPPED_SLOTS" in post.reasons["MOVERS"]
+    assert "BELOW_EDITION_THRESHOLD" in post.reasons["GLOBAL"]
 
 
 # --------------------------------------------------------------------------- 6 no AI

@@ -135,7 +135,8 @@ def test_no_meaningful_structure_means_no_section():
     assert all(s.kind != "STRUCTURE" for s in sb.scenes)
 
 
-def test_exchange_watch_names_only_officially_listed_securities():
+def test_exchange_watch_names_only_officially_listed_securities(editorial_select):
+    editorial_select("EXCHANGE")
     sb = _post()
     ex = next(s for s in sb.scenes if s.kind == "EXCHANGE_WATCH")
     names = [c["name"] for c in ex.texts["cards"]]
@@ -147,7 +148,8 @@ def test_exchange_watch_names_only_officially_listed_securities():
     assert all("EXCHANGE_EVENT" in why[0] for why in named.values())
 
 
-def test_radar_stock_with_an_official_event_appears_only_as_that_event():
+def test_radar_stock_with_an_official_event_appears_only_as_that_event(editorial_select):
+    editorial_select("EXCHANGE")
     sb = _post(radar=("STOCK-011",))
     assert all(s.kind != "RADAR_STORY" for s in sb.scenes)
     ex = next(s for s in sb.scenes if s.kind == "EXCHANGE_WATCH")
@@ -272,12 +274,14 @@ def test_gemini_never_sees_blocked_stock_facts():
 
 
 # --------------------------------------------------------------------------- PRE
-def _pre(profile=None, **kw):
+def _pre(profile=None, reduce=False, **kw):
     from daily_video.pre_storyboard import build_pre_storyboard
     from presentation.pre_plan import plan_pre_sections
     from presentation.pre_public import apply_publication_profile
     from products.pre_fixtures import AS_OF, PRE_DATE, PREV as PPREV, synthetic_brief
     brief = synthetic_brief("RISK_OFF")
+    if reduce:      # drop RISK_OFF's NOTABLE VIX / sector stories (V3 slot competition)
+        brief.vix, brief.sectors = None, []
     brief.publication_profile = profile or "PUBLIC_UNREGISTERED"
     brief.public_intelligence = PF.intelligence(PPREV, PPREV - dt.timedelta(days=3), PRE_DATE,
                                                 structure_scenario=None,
@@ -288,8 +292,9 @@ def _pre(profile=None, **kw):
     return brief, plan, build_pre_storyboard(brief, plan, gate=gate)
 
 
-def test_public_pre_has_no_stock_watch_and_carries_exchange_and_ipo_watch():
-    brief, plan, sb = _pre()
+def test_public_pre_has_no_stock_watch_and_carries_exchange_and_ipo_watch(editorial_select):
+    editorial_select("EXCHANGE", "IPO")
+    brief, plan, sb = _pre(reduce=True)
     assert "STOCK_WATCH" not in plan.order
     assert not any(w.category == "STOCK" for w in plan.watch)
     assert "EXCHANGE" in plan.order and "IPO" in plan.order
@@ -302,7 +307,12 @@ def test_public_pre_has_no_stock_watch_and_carries_exchange_and_ipo_watch():
 
 
 def test_private_pre_keeps_stock_watch():
-    _, plan, sb = _pre(profile="PRIVATE_ANALYTICS")
+    # the capability is kept: it competes for a V3 slot (never refused by the profile) ...
+    _, busy, _ = _pre(profile="PRIVATE_ANALYTICS")
+    row = next(r for r in busy.editorial["trace"] if r["candidate_id"] == "PRE.STOCK_WATCH")
+    assert row["decision"] != "PUBLICATION_BLOCKED"
+    # ... and is shown when it wins one
+    _, plan, sb = _pre(profile="PRIVATE_ANALYTICS", reduce=True)
     assert "STOCK_WATCH" in plan.order
     assert any(s.kind == "PRE_STOCKS" for s in sb.scenes)
 
@@ -331,7 +341,8 @@ def test_public_pre_audit_passes_and_overnight_shows_fetched_time():
         assert qa["passed"], (spec.kind, qa["issues"])
 
 
-def test_missing_ipo_subscription_is_omitted_not_inferred():
+def test_missing_ipo_subscription_is_omitted_not_inferred(editorial_select):
+    editorial_select("IPO")
     _, plan, sb = _pre(ipo="MISSING_SUBSCRIPTION")
     ipo = next(s for s in sb.scenes if s.kind == "IPO_WATCH")
     labels = [r["label"] for r in ipo.texts["rows"]]

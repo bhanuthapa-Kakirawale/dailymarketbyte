@@ -297,3 +297,35 @@ def declare_nse_holiday(monkeypatch):
             hol.setdefault(d.year, set()).add(d)
         monkeypatch.setattr(tc, "NSE_TRADING_HOLIDAYS", {y: frozenset(v) for y, v in hol.items()})
     return _declare
+
+
+@pytest.fixture
+def editorial_select(monkeypatch):
+    """Editorial Planner V3 grades routine public sections (EXCHANGE WATCH, an SME/bidding-only
+    IPO WATCH, a T-Bill-only MARKET EVENTS) as ROUTINE, so they rarely win a slot - by design
+    (tests/test_editorial_planner_v3.py). A PLUMBING test that checks how such a section is
+    captured, gated, rendered or audited once the plan selects it calls
+    `editorial_select("EXCHANGE", ...)`: the named sections' candidates are graded NOTABLE (POST
+    and PRE planners alike) and the slot cap is lifted, so the plan selects them and the rest
+    of the path is exercised exactly as in production."""
+    import dataclasses
+
+    import presentation.post_plan as post_plan
+    import presentation.pre_plan as pre_plan
+    builders = {"EXCHANGE": "exchange_candidate", "IPO": "ipo_candidate",
+                "MARKET_EVENTS": "market_events_candidate"}
+
+    def force(*sections):
+        # ... and the edition has room for them (a slot is never the thing under test here)
+        monkeypatch.setattr(post_plan, "OPTIONAL_SLOTS", 8)
+        monkeypatch.setattr(pre_plan, "OPTIONAL_SLOTS", 8)
+        for section in sections:
+            name = builders[section]
+            for mod in (post_plan, pre_plan):
+                orig = getattr(mod, name)
+
+                def graded(*a, _o=orig, **k):
+                    c = _o(*a, **k)
+                    return dataclasses.replace(c, tier=max(2, c.tier))
+                monkeypatch.setattr(mod, name, graded)
+    return force

@@ -492,9 +492,46 @@ def pulse_is_redundant(order, pulse, dynamic_hook: bool) -> bool:
 
 # --------------------------------------------------------------------------- entry point
 POST_MAX_RUNTIME = 62.0
-# Dropped first when a public POST would run past POST_MAX_RUNTIME (never a core section).
+# Safety net only (the V3 arbiter budgets runtime first): dropped in this order if a planned
+# POST would still run past POST_MAX_RUNTIME (never the headline).
 POST_TRIM_ORDER = ("GLOBAL", "EVENT", "MOVERS", "FLOWS", "NIFTY", "IPO", "MARKET_EVENTS",
                    "EXCHANGE")
+# Every qualifying UNDER THE SURFACE observation is a candidate (the arbiter keeps the best).
+STRUCTURE_CANDIDATES = 4
+PUBLIC_AUDIT_KEY = {"EXCHANGE": "EXCHANGE_WATCH", "IPO": "IPO_WATCH",
+                    "MARKET_EVENTS": "MARKET_EVENTS", "STRUCTURE": "MARKET_STRUCTURE"}
+
+
+def _editorial_cap(ps, post) -> None:
+    """A public section (or Market Structure observation) that qualified but was not selected
+    by the V3 arbiter is an EDITORIAL decision - recorded as such in the public audit, with the
+    arbiter's own reason, never as missing data."""
+    trace = (post.editorial or {}).get("trace") or []
+    secs = ps.audit.setdefault("omitted_sections", {})
+    for section, key in PUBLIC_AUDIT_KEY.items():
+        rows = [t for t in trace if t["section"] == section]
+        if not rows:
+            continue
+        shown = [t for t in rows if t["decision"] in ("SELECTED", "QUIET_FLOOR")]
+        if shown:
+            if section == "STRUCTURE":
+                secs[key] = dict(secs.get(key) or {}, rendered=True, code="RENDERED",
+                                 detail=f"{len(shown)} scene(s)", editorial_status="SELECTED")
+            continue
+        secs[key] = dict(secs.get(key) or {}, rendered=False, code="EDITORIAL_CAP",
+                         editorial_status="EDITORIAL_CAP",
+                         detail="; ".join(f"{t['candidate_id']}: {t['decision']}" for t in rows)
+                         + " - " + (post.reasons.get(section) or ""))
+    kinds = [ins.kind for ins, _ in post.public.get("STRUCTURE", [])]
+    for ins, _ in ps.structure:
+        if ins.kind not in kinds:
+            row = next((t for t in trace if t["candidate_id"] == f"POST.STRUCTURE.{ins.kind}"), {})
+            ps.omitted.append({"section": "UNDER THE SURFACE", "item": ins.kind,
+                               "reason": f"editorial V3: {row.get('decision', 'not selected')}"})
+    ms_audit = ps.audit.get("market_structure") or {}
+    if ms_audit.get("present") is not None and "shown" in ms_audit:
+        ms_audit["shown"] = [i.to_dict() for i, _ in post.public.get("STRUCTURE", [])]
+        ms_audit["present"] = bool(ms_audit["shown"])
 
 
 def _report_facts(pres, key):
@@ -607,94 +644,118 @@ def build_storyboard(plan, pres, radar_presentation: dict | None = None,
     if gated_out:
         radar_closing = ""
 
-    # POST editorial plan (Phase 3): a deterministic planner decides which sections earn screen
-    # time and what each says; the storyboard only lays them out in the plan's order.
-    post = plan_post_sections(pres, plan, stories, universe_label)
-    gate_reasons = {}
-    if post.movers:
-        cards = post.movers["cards"]
-        admitted = [gate.admit(mover_fact(c["name"], f"{c['name']} {c['value']}", session))
-                    for c in cards]
-        if not all(admitted):
-            gate_reasons["MOVERS"] = (f"omitted: publication profile {gate.profile.value} - "
-                                      "named single-stock moves are a security ranking")
+    # Public intelligence sections (UNDER THE SURFACE, MARKET EVENTS, IPO, EXCHANGE): each fact
+    # admitted by the gate here, BEFORE the editorial plan, so they compete for the same slots.
+    ps = plan_public_sections(gate, intelligence, session, "POST",
+                              nifty_pct=(getattr(pres, "m", None) or {}).get("pct"),
+                              include_ipo_listed=True, max_structure=STRUCTURE_CANDIDATES)
+
+    # Report-backed sections go through the gate BEFORE arbitration (Editorial Planner V3): a
+    # refused section never takes a slot. Verdicts are cached so each is asked once.
     flows_scene = _plan_scene(plan, "FLOWS")
-    section_texts = {
-        "PULSE": lambda: [post.pulse["headline"],
-                          f"NIFTY 50 {post.pulse['value']} {post.pulse['change']}"],
-        "NIFTY": lambda: [post.structure["model"]["takeaway"]],
-        "SECTORS": lambda: ([post.sectors["headline"], post.sectors["tone"]]
-                            + [f"{r['name']} {r['value']}" for r in post.sectors["rows"]]),
-        "FLOWS": lambda: [f"{it.title} {it.value}" for it in
-                          (flows_scene.items if flows_scene else [])],
-        "GLOBAL": lambda: ([f"{post.global_context['lead']['name']} "
-                            f"{post.global_context['lead']['value']}"]
-                           + [f"{o['name']} {o['value']}"
-                              for o in post.global_context.get("others", [])]),
-        "EVENT": lambda: [post.special_event["title"], post.special_event["tag"]],
-    }
+    verdicts = {}
+
+    def section_texts(key, post):
+        return {
+            "PULSE": lambda: [post.pulse["headline"],
+                              f"NIFTY 50 {post.pulse['value']} {post.pulse['change']}"],
+            "NIFTY": lambda: [post.structure["model"]["takeaway"]],
+            "SECTORS": lambda: ([post.sectors["headline"], post.sectors["tone"]]
+                                + [f"{r['name']} {r['value']}" for r in post.sectors["rows"]]),
+            "FLOWS": lambda: [f"{it.title} {it.value}" for it in
+                              (flows_scene.items if flows_scene else [])],
+            "GLOBAL": lambda: ([f"{post.global_context['lead']['name']} "
+                                f"{post.global_context['lead']['value']}"]
+                               + [f"{o['name']} {o['value']}"
+                                  for o in post.global_context.get("others", [])]),
+            "EVENT": lambda: [post.special_event["title"], post.special_event["tag"]],
+        }[key]()
+
+    def admit(key, post):
+        if key not in verdicts:
+            if key == "MOVERS":
+                ok = all([gate.admit(mover_fact(c["name"], f"{c['name']} {c['value']}", session))
+                          for c in post.movers["cards"]])
+                verdicts[key] = (ok, None)
+            else:
+                verdicts[key] = _admit_section(gate, pres, key, section_texts(key, post), session)
+        return verdicts[key][0]
+
+    # POST editorial plan (Phase 3 + V3): a deterministic planner decides which sections earn
+    # screen time and what each says; the storyboard only lays them out in the plan's order.
+    post = plan_post_sections(pres, plan, stories, universe_label, public=ps, admit=admit,
+                              symbol_sectors=getattr(intelligence, "symbol_sectors", None),
+                              max_runtime=POST_MAX_RUNTIME)
+    gate_reasons = {}
+    for key, (ok, _) in verdicts.items():
+        if not ok:
+            gate_reasons[key] = (
+                f"omitted: publication profile {gate.profile.value} - named single-stock moves "
+                "are a security ranking" if key == "MOVERS" else
+                f"omitted: publication profile {gate.profile.value} refused the section's facts "
+                "(see publication audit)")
     provenance = {}
     for key in list(post.order):
-        if key in gate_reasons or key not in section_texts:
-            continue
-        ok, prov = _admit_section(gate, pres, key, section_texts[key](), session)
-        provenance[key] = prov
-        if not ok:
-            gate_reasons[key] = (f"omitted: publication profile {gate.profile.value} refused "
-                                 "the section's facts (see publication audit)")
+        if key in ("PULSE",) and key not in verdicts:
+            admit(key, post)
+        if key in verdicts:
+            ok, prov = verdicts[key]
+            provenance[key] = prov
+            if not ok:
+                gate_reasons.setdefault(key, f"omitted: publication profile {gate.profile.value} "
+                                             "refused the section's facts (see publication audit)")
     for key, why in gate_reasons.items():
         if key in post.order:
             post.order.remove(key)
         post.reasons[key] = why
 
-    builders = {"PULSE": lambda: _pulse_scene(post.pulse),
-                "NIFTY": lambda: _structure_scene(post.structure),
-                "SECTORS": lambda: _sectors_scene(post.sectors),
-                "MOVERS": lambda: _movers_scene(post.movers),
-                "FLOWS": lambda: _flows(plan),
-                "GLOBAL": lambda: _global_scene(post.global_context),
-                "EVENT": lambda: _event_scene(post.special_event)}
+    builders = {"PULSE": lambda: [_pulse_scene(post.pulse)],
+                "NIFTY": lambda: [_structure_scene(post.structure)],
+                "SECTORS": lambda: [_sectors_scene(post.sectors)],
+                "MOVERS": lambda: [_movers_scene(post.movers)],
+                "FLOWS": lambda: [_flows(plan)],
+                "GLOBAL": lambda: [_global_scene(post.global_context)],
+                "EVENT": lambda: [_event_scene(post.special_event)],
+                "STRUCTURE": lambda: [structure_spec(ins, lines)
+                                      for ins, lines in post.public.get("STRUCTURE", [])],
+                "MARKET_EVENTS": lambda: [market_events_spec(post.public["MARKET_EVENTS"], "POST")],
+                "IPO": lambda: [ipo_spec(post.public["IPO"])],
+                "EXCHANGE": lambda: [exchange_spec(post.public["EXCHANGE"], "POST")]}
     main = []
     for k in post.order:
-        spec = builders[k]() if k in builders else None
-        if spec is None:
-            continue
-        if provenance.get(k):
-            spec.texts["provenance"] = provenance[k]
-        main.append(spec)
+        for spec in (builders[k]() if k in builders else []):
+            if spec is None:
+                continue
+            if provenance.get(k):
+                spec.texts["provenance"] = provenance[k]
+            main.append(spec)
 
-    # Public intelligence sections: EXCHANGE WATCH, IPO WATCH, UNDER THE SURFACE.
-    ps = plan_public_sections(gate, intelligence, session, "POST",
-                              nifty_pct=(getattr(pres, "m", None) or {}).get("pct"),
-                              include_ipo_listed=True)
-    if ps.exchange:
-        main.append(exchange_spec(ps.exchange, "POST"))
-    if ps.ipo:
-        main.append(ipo_spec(ps.ipo))
-    if ps.market_events:
-        main.append(market_events_spec(ps.market_events, "POST"))
-    main += [structure_spec(ins, lines) for ins, lines in ps.structure]
-
-    # Runtime ceiling - content-driven: nothing is stretched; optional sections go first.
-    def _total(ms):
-        return sum(x.duration for x in ms) + 2.6 + 5.0
+    # Public sections the arbiter did not select: an editorial decision, not "no data".
     sections_audit = ps.audit.setdefault("omitted_sections", {})
+    _editorial_cap(ps, post)
+
+    # Runtime ceiling - a SAFETY NET only: the V3 arbiter already budgets runtime, so this never
+    # fires on a planned Short (tested); if it ever does, it is recorded.
+    def _total(ms_):
+        return sum(x.duration for x in ms_) + 2.6 + 5.0
     for key in POST_TRIM_ORDER:
         if _total(main) <= POST_MAX_RUNTIME:
             break
         for x in [x for x in main if x.section == key]:
             main.remove(x)
             post.reasons[key] = f"omitted: POST runtime ceiling {POST_MAX_RUNTIME:.0f}s"
+            post.notes.append(f"runtime safety net removed {key}")
             if key in post.order:
                 post.order.remove(key)
             pub_key = {"EXCHANGE": "EXCHANGE_WATCH", "IPO": "IPO_WATCH",
-                      "MARKET_EVENTS": "MARKET_EVENTS"}.get(key)
+                       "MARKET_EVENTS": "MARKET_EVENTS"}.get(key)
             if pub_key:
                 sections_audit[pub_key] = {"rendered": False, "code": "EDITORIAL_CAP",
                                            "detail": f"runtime ceiling {POST_MAX_RUNTIME:.0f}s"}
     while _total(main) > POST_MAX_RUNTIME and sum(1 for x in main if x.kind == "STRUCTURE") > 1:
         last = [x for x in main if x.kind == "STRUCTURE"][-1]
         main.remove(last)
+        post.notes.append("runtime safety net removed a STRUCTURE scene")
         ps.omitted.append({"section": "UNDER THE SURFACE", "item": last.data["kind"],
                            "reason": f"runtime ceiling {POST_MAX_RUNTIME:.0f}s"})
     present = list(dict.fromkeys(s.section for s in main)) + (["RADAR"] if stories else [])
@@ -712,7 +773,14 @@ def build_storyboard(plan, pres, radar_presentation: dict | None = None,
                                   universe_label, snapshot)
         restrict_sheet(sheet, gate)
         shown = {x.data["kind"] for x in main if x.kind == "STRUCTURE"}
-        add_structure_facts(sheet, [ins for ins, _ in ps.structure if ins.kind in shown])
+        add_structure_facts(sheet, [ins for ins, _ in ps.structure if ins.kind in shown],
+                            nifty_pct=(getattr(pres, "m", None) or {}).get("pct"))
+        # Hook V3: a MATERIAL lead story steers the hook (a small, deterministic bonus for the
+        # candidates that pay it off - hooks.candidates.LEAD_STORY_BONUS)
+        ed = post.editorial or {}
+        sheet.metadata = dict(sheet.metadata, play_order=True)   # summary in play order
+        if ed.get("lead_tier", 0) >= 3 and ed.get("lead_section") in hook_present:
+            sheet.metadata = dict(sheet.metadata, lead_section=ed["lead_section"])
         kwargs = {"client": hook_client} if hook_client is not None else {}
         hp = plan_hook(sheet, use_ai=hook_ai, **kwargs)
         hook_scene = dynamic_hook_spec(hp, sheet)
@@ -750,7 +818,7 @@ def build_storyboard(plan, pres, radar_presentation: dict | None = None,
                  "reason": f"publication profile {gate.profile.value}: our own technical "
                            "analysis of a named security stays PRIVATE (it can only count "
                            "anonymously in UNDER THE SURFACE)"} for sym in gated_out]
-    for key in ("PULSE", "NIFTY", "MOVERS", "FLOWS", "GLOBAL", "EVENT"):
+    for key in ("PULSE", "NIFTY", "SECTORS", "MOVERS", "FLOWS", "GLOBAL", "EVENT"):
         if key not in post.order and post.reasons.get(key, "").startswith("omitted"):
             omitted.append({"section": SECTION_LABELS.get(key, key) or key,
                             "reason": post.reasons.get(key, "")})

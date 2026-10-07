@@ -98,7 +98,9 @@ def summary_line(sheet: HookFactSheet, archetype: Archetype) -> str:
     the archetype's pay-off first, written in the order the video plays them."""
     lead = SUMMARY_LEAD[sheet.mode]
     present = [s for s in sheet.sections]
-    chosen = [s for s in SUMMARY_PRIORITY[archetype] if s in present]
+    first = (sheet.metadata or {}).get("lead_section")
+    chosen = [first] if first in present else []
+    chosen += [s for s in SUMMARY_PRIORITY[archetype] if s in present and s not in chosen]
     chosen += [s for s in present if s not in chosen]
     phrases = []
     for sec in chosen:
@@ -107,8 +109,9 @@ def summary_line(sheet: HookFactSheet, archetype: Archetype) -> str:
             phrases.append((sec, ph))
         if len(phrases) == 3:
             break
-    if sheet.mode is HookMode.PRE_MARKET:
-        # PRE: `sheet.sections` IS the PreSectionPlan's play order - say them in that order
+    if sheet.mode is HookMode.PRE_MARKET or (sheet.metadata or {}).get("play_order"):
+        # `sheet.sections` IS the edition's play order (PRE always; POST once the V3 planner
+        # set it) - say them in the order the viewer will see them
         phrases.sort(key=lambda p: present.index(p[0]))
     else:
         phrases.sort(key=lambda p: SECTION_ORDER.index(p[0]) if p[0] in SECTION_ORDER else 99)
@@ -259,6 +262,28 @@ def _post(sheet):
                   [f"Nifty moved just {nifty.display}. {n} {U} stocks saw unusual volume.",
                    f"{n} {U} stocks saw unusual volume."],
                   f"Nifty moved only {nifty.display} (quiet); {st.statement}")
+        out.append(c)
+
+    # CONTRAST, index vs breadth (Hook V3): the index finished one way while most of the named
+    # universe finished the other - a count over a universe, never a stock name
+    div = sheet.fact("structure.divergence")
+    if nifty and div and div.polarity is not None and (div.polarity > 0) != (nifty.value > 0):
+        U = div.entity
+        cov = int(sheet.metadata.get("divergence_cov") or 0)
+        share = float(sheet.metadata.get("divergence_share") or 0.5)
+        word = "rose" if div.polarity > 0 else "fell"
+        c = _cand(sheet, "post-breadth-divergence", Archetype.CONTRAST,
+                  0.62 + 0.10 * min(max(share - 0.5, 0.0) / 0.3, 1.0),
+                  ["nifty.move", "structure.divergence"],
+                  {HeroVisual.HEADLINE_NUMBER: {
+                      "label": f"{U} · CLOSED {'HIGHER' if div.polarity > 0 else 'LOWER'}",
+                      "value": f"{int(div.value)} / {cov}", "positive": div.polarity > 0,
+                      "sub": "", "context": f"NIFTY 50 {nifty.display}"}},
+                  pick_beats(sheet, ["NIFTY_CLOSE", ("SECTOR_CONTRAST", "SECTOR_LEADER", "FLOWS")]),
+                  [f"Nifty {_verb(nifty.value)} {_abs_display(nifty.display)}. "
+                   f"{int(div.value)} of {cov} {U} stocks {word}.",
+                   f"{int(div.value)} of {cov} {U} stocks {word}."],
+                  f"Nifty {nifty.display} while {div.statement}")
         out.append(c)
 
     # BIG MOVE
@@ -591,11 +616,31 @@ def _custom(sheet):
 
 
 # --------------------------------------------------------------------------- entry point
+# Hook V3: which edition section each candidate's hook pays off. When the editorial arbiter's
+# lead story is MATERIAL (presentation.editorial_arbiter), the storyboard names its section in
+# `sheet.metadata["lead_section"]` and those candidates get a small, fixed bonus - the hook
+# opens on the edition's strongest story without a second hook engine. The POST freeze rules
+# (major_index_priority, beat diversity) still apply afterwards, unchanged.
+LEAD_STORY_BONUS = 0.05
+PAYS_OFF = {"post-breadth-divergence": ("STRUCTURE",), "post-quiet-structure": ("STRUCTURE",),
+            "post-flow-contrast": ("FLOWS",), "post-sector-contrast": ("SECTORS",),
+            "post-big-move": ("NIFTY", "PULSE"), "post-event": ("EVENT", "MARKET_EVENTS"),
+            "pre-event": ("EVENTS",), "pre-overnight": ("GLOBAL",)}
+
+
+def _lead_bonus(sheet: HookFactSheet, found: list) -> list:
+    lead = (sheet.metadata or {}).get("lead_section")
+    if not lead:
+        return found
+    return [replace(c, score=round(c.score + LEAD_STORY_BONUS, 4))
+            if lead in PAYS_OFF.get(c.candidate_id, ()) else c for c in found]
+
+
 def build_candidates(sheet: HookFactSheet) -> list:
     """3-5 approved candidates (fewer only when the day supports fewer), strongest first."""
     builder = {HookMode.POST_MARKET: _post, HookMode.PRE_MARKET: _pre,
                HookMode.CUSTOM_SINGLE_STOCK: _custom}[sheet.mode]
-    found = [c for c in builder(sheet) if c is not None]
+    found = _lead_bonus(sheet, [c for c in builder(sheet) if c is not None])
     if sheet.mode is HookMode.POST_MARKET:
         found = major_index_priority(sheet, found)
     found.sort(key=lambda c: (-c.score, ORDER[c.archetype], c.candidate_id))
@@ -675,4 +720,5 @@ def emergency_candidate(sheet: HookFactSheet) -> HookCandidate:
                          hero_strings={HeroVisual.NUMBERED_LIST: strings_of(payload)})
 
 
-__all__ = ["major_index_priority", "exceptional_stock_event", "build_candidates", "emergency_candidate", "summary_line", "pick_beats"]
+__all__ = ["major_index_priority", "exceptional_stock_event", "build_candidates", "emergency_candidate", "summary_line", "pick_beats",
+           "LEAD_STORY_BONUS", "PAYS_OFF"]

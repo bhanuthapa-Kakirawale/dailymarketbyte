@@ -53,9 +53,14 @@ def restrict_sheet(sheet, gate) -> list:
     return sorted(removed)
 
 
-def add_structure_facts(sheet, insights) -> None:
-    """One count fact per chosen UNDER THE SURFACE insight that has a hook form."""
+def add_structure_facts(sheet, insights, nifty_pct=None) -> None:
+    """One count fact per chosen UNDER THE SURFACE insight that has a hook form: unusual volume,
+    and (Hook V3) a breadth divergence - most of the universe closed against the index."""
+    from presentation.editorial_candidates import structure_state
     for ins in insights or []:
+        if ins.kind == "BREADTH" and structure_state(ins, nifty_pct) == "DIVERGENT":
+            _add_divergence(sheet, ins, nifty_pct)
+            continue
         if ins.kind != "UNUSUAL_VOLUME":
             continue
         n = int(ins.hero_value.split(" /")[0].split(" of")[0])
@@ -67,6 +72,27 @@ def add_structure_facts(sheet, insights) -> None:
             claims={"unusual_volume"}, refs=tuple(ins.metric_keys)))
         sheet.metadata = dict(sheet.metadata, structure_universe=U,
                               structure_denominator=ins.denominator_text)
+
+
+def _add_divergence(sheet, ins, nifty_pct) -> None:
+    """`structure.divergence`: the count of universe stocks that closed AGAINST Nifty's direction
+    on the session, over the covered denominator - the insight's own split, nothing recomputed."""
+    split = {s["label"]: int(s["value"]) for s in ins.split if str(s["value"]).isdigit()}
+    lower = nifty_pct > 0
+    n = split.get("LOWER" if lower else "HIGHER", 0)
+    cov = sum(split.values())
+    if not n or not cov or sheet.fact("structure.divergence") is not None:
+        return
+    U = ins.universe_label
+    word = "lower" if lower else "higher"
+    sheet.facts.append(fact(
+        "structure.divergence", "BREADTH_MOVE", U,
+        f"{n} of {cov} {U} stocks closed {word} on the session, while Nifty 50 closed "
+        f"{'higher' if lower else 'lower'} ({ins.denominator_text}).", f"{n} of {cov}",
+        value=float(n), polarity=-1 if lower else 1, aliases=(U,),
+        claims={"divergence"}, refs=tuple(ins.metric_keys), extra_numbers=(str(cov),)))
+    sheet.metadata = dict(sheet.metadata, structure_universe=U,
+                          divergence_share=round(n / cov, 4), divergence_cov=cov)
 
 
 __all__ = ["restrict_sheet", "add_structure_facts", "SECURITY_KINDS"]

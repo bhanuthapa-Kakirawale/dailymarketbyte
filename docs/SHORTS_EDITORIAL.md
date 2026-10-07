@@ -303,9 +303,11 @@ analytical section and the 2.6 s close follows it directly.
 | Special event | optional, rare | Only a high-impact scheduled event (RBI/FED/BUDGET/POLICY); forward-looking "watch next" items are not POST facts. |
 | Radar | core | The 3 published stories (Phase 2, unchanged; no-event stories use the VOLUME / SESSION presentation below). |
 
-At most `OPTIONAL_BUDGET` (2) optional sections per Short, in priority Nifty chart > flows >
-movers > event > global; a qualifying section beyond the budget is recorded as omitted with the
-reason.
+Since Editorial Planner V3 (below) the fixed `OPTIONAL_BUDGET` (2) and its priority list are
+gone: the rules in this table are each section's VALUE TEST (qualification), and every
+qualifying section - the public-intelligence ones included - competes in one arbitration. The
+Sectors board is no longer core: it is the strongest routine candidate (PRIMARY relevance,
+explains the headline) and usually wins, but a flat sector day can lose to a stronger story.
 
 Transitions (`daily_video/composer.py`): the outgoing scene stays whole until the cut, then lifts
 away while the incoming scene rises in. Its headline zone clears almost at once, so two
@@ -415,8 +417,9 @@ the Dynamic Hook cites Nifty's move (`nifty.move` in the hook's fact ids) AND a 
 pulse carries a DISTINCT fact: an intraday reversal the chart does not state (a down day that
 closed near the day's high, an up day near the low). The hook is planned without the pulse
 first, so its summary can never promise a dropped scene; with no chart scene, or a hook that does
-not state the move, the pulse stays. Real 24 Sep: HOOK -> NIFTY CHART -> SECTORS -> FII/DII ->
-UNDER THE SURFACE x2 -> CLOSE (37.2 s, was 42.6 s).
+not state the move, the pulse stays. Real 24 Sep (V2): HOOK -> NIFTY CHART -> SECTORS -> FII/DII ->
+UNDER THE SURFACE x2 -> CLOSE (37.2 s, was 42.6 s); V3: HOOK -> NIFTY CHART -> SECTORS ->
+UNDER THE SURFACE -> FII/DII -> CLOSE (31.2 s).
 
 **Wording (final review).** Flows are net: "FIIs were net sellers; DIIs were net buyers", with
 "(provisional)" always visible (legacy scene title "FII / DII FLOWS · PROVISIONAL"); the hook's
@@ -424,3 +427,165 @@ flow contrast says "were net sellers / buyers". Sector counts say "tracked": "Al
 sector indices fell" (one line - the FELL LEAST / LEADER card names the leader) and "0 of 3
 tracked indices closed higher". Breadth may add an EXACT share next to the count ("179 / 200",
 label "... CLOSED LOWER · 89.5%") - never a rounded one, never instead of the count.
+
+
+## Editorial Planner V3 (P4): stories compete for slots
+
+DMB has more validated intelligence than one Short can hold (index, sectors, FII/DII and
+Institutional Flow, Market Structure V2, Market Events, IPO / Exchange Watch, Radar, global
+cues). V3 makes them COMPETE for a small number of slots instead of each family getting its own
+scene. It is not a second planner: `presentation/post_plan.py` and `presentation/pre_plan.py`
+still build every section model and still apply each section's own value test. They then
+describe each qualifying story as an `EditorialCandidate`, and ONE deterministic arbiter
+(`presentation/editorial_arbiter.py`, pure, no I/O) decides which win.
+`presentation/editorial_candidates.py` grades the public-intelligence sections the same way for
+both editions.
+
+**Candidate components** (all in the trace; no opaque score):
+
+| Component | Meaning |
+|---|---|
+| `tier` | 0 NOT_MATERIAL (fails the section's existing value test - never shown, as before V3), 1 ROUTINE, 2 NOTABLE, 3 MATERIAL |
+| `quality` | OK; PARTIAL / STALE demote one tier; SOURCE_FAILURE / EMPTY / PUBLICATION_BLOCKED exclude |
+| `relevance` | the edition policy's weight for the family: 2 PRIMARY, 1 SECONDARY |
+| `tension` | the story CONTRADICTS the headline (index up, most stocks down) |
+| `explains_headline` | the story says why the headline moved |
+| `topics` | the facts it states, for redundancy |
+| `cost_s` | estimated scene seconds - equal to the built scene's duration (test-pinned) |
+| `as_of` | the session/date it describes (PRE temporal check) |
+
+**Priority** (lexicographic): effective tier, relevance, tension, explains the headline, earlier
+in the edition's narrative order, candidate id.
+
+**Greedy arbitration.** REQUIRED structure is taken first and charged to the runtime. Then each
+optional candidate, in priority order, is checked in this order:
+
+1. publication gate (`PUBLICATION_BLOCKED` - asked BEFORE arbitration, so a refused section never
+   takes a slot) and data quality (`DATA_QUALITY`);
+2. value test (`NOT_MATERIAL`);
+3. PRE temporal cutoff: an India-session story dated after the previous completed session is
+   `TEMPORAL_EXCLUDED`;
+4. **redundancy**: every topic it states is already owned by a selected story ->
+   `SUPPRESSED_DUPLICATE` (`duplicate_of`);
+5. **diversity**: one story per family -> `DROPPED_DIVERSITY` (`displaced_by`), unless both are
+   MATERIAL (significance overrides diversity; nothing else does);
+6. edition threshold: effective tier below NOTABLE -> `BELOW_EDITION_THRESHOLD`;
+7. slots -> `DROPPED_SLOTS` (`displaced_by` = the lowest selected story);
+8. runtime -> `DROPPED_BUDGET`, and cheaper stories further down are still tried.
+
+**Quiet edition.** When nothing reaches NOTABLE, POST keeps the single best ROUTINE story
+(`QUIET_FLOOR`) so the Short explains something and stays above `MIN_SHORT_DURATION`. Nothing
+else is added to fill time. PRE has no floor: its required overnight / setup / watch already
+carry three scenes, so a quiet morning stays short.
+
+**Narrative order.** Selected sections play in the edition's narrative order. A MATERIAL lead
+story moves to straight after the headline (POST: after PULSE / the NIFTY chart; PRE: after
+OVERNIGHT / SETUP).
+
+### Edition policies
+
+| | POST - what changed in the completed session | PRE - what matters before the open |
+|---|---|---|
+| Required | hook, MARKET PULSE, close (+ Radar, PRIVATE only, outside the public runtime) | hook, OVERNIGHT, SETUP, WATCH AT THE OPEN, close |
+| PRIMARY | sectors, Market Structure, flows, Nifty chart, policy event | flows (NSE / CDSL / NSDL), today's calendar (verified event, market events), IPO, India VIX |
+| SECONDARY | movers, market events, IPO, exchange, same-day global | sectors, Market Structure, exchange, stock watch |
+| Optional slots / runtime | 4 / 62 s | 3 / 65 s |
+| Order | PULSE, NIFTY, SECTORS, STRUCTURE, FLOWS, MOVERS, GLOBAL, EVENT, MARKET_EVENTS, IPO, EXCHANGE, RADAR | OVERNIGHT, SETUP, STRUCTURE, SECTORS, VIX, FLOWS, EVENT, MARKET_EVENTS, IPO, EXCHANGE, STOCK_WATCH, WATCH |
+
+### Tiers (existing thresholds and labels; nothing tuned from results)
+
+- **Nifty chart:** range break MATERIAL; 20-day-average cross NOTABLE.
+- **Sectors:**
+  - MATERIAL: spread or a single move >= 2.5 pts.
+  - NOTABLE: PRE's long-standing value test (spread >= 1 pt or a move >= 1.5%).
+  - ROUTINE otherwise (in PRE, below the value test = tier 0).
+  - Topics: the leader's and laggard's mapped sector buckets.
+- **Flows (POST, NSE):** large net buy/sell (`flow_materiality`) MATERIAL; streak milestone,
+  reversal or a legacy-rule pass NOTABLE; normal range tier 0. AI-only facts are PARTIAL.
+- **Flows (PRE):** CDSL and NSDL new reports and the NSE context story are separate candidates
+  of one family, so at most one is shown.
+  - New CDSL or NSDL report: NOTABLE.
+  - NSE reversal of a run of >= 5 sessions: MATERIAL; other milestone or reversal: NOTABLE.
+  - Legacy rule: NOTABLE when large, ROUTINE when only a contrast.
+- **Movers:** the 7% / 12-pt freeze test passed = NOTABLE, never MATERIAL (one stock is
+  isolated).
+  - Each card's topic is its stock's Market Structure sector (`PublicIntelligence.symbol_sectors`),
+    so a mover list that repeats the leading/lagging sector is a duplicate of the sector story.
+  - Public profile: refused by the gate before arbitration.
+- **Market Structure:**
+  - BREADTH divergence: MATERIAL, tension.
+  - BREADTH broad move aligned with a >= 0.6% index move: ROUTINE, topic `index_direction`. It
+    restates the headline, so it is suppressed as a duplicate of PULSE.
+  - BREADTH broad move on a smaller index move: NOTABLE.
+  - FIFTY_TWO_WEEK `INDEX_UP_BREADTH_WEAK` / `INDEX_DOWN_BREADTH_RESILIENT`: MATERIAL, tension.
+  - FIFTY_TWO_WEEK aligned: NOTABLE.
+  - FIFTY_TWO_WEEK with no index read: NOTABLE at >= 10, else ROUTINE.
+  - UNUSUAL_VOLUME: NOTABLE when concentrated, else ROUTINE.
+  - RANGE: NOTABLE at >= 20, else ROUTINE.
+  - Partial coverage demotes one tier.
+- **Market events:**
+  - Earnings, buyback, open offer, delisting or OFS on a tracked security: NOTABLE.
+  - A T-Bill / G-Sec auction: ROUTINE (market-wide, no symbol, never attached to a stock).
+  - IPO stays excluded upstream (IPO WATCH only, never twice).
+- **IPO WATCH:** a MAINBOARD listing (POST) or listing/opening (PRE) is NOTABLE; SME and
+  bidding/allotment milestones are ROUTINE.
+- **Exchange watch:** ROUTINE.
+- **Policy event (POST, report headline tagged RBI/FED/BUDGET/POLICY):** MATERIAL. In public it
+  is refused by the gate (news is never a public fact source).
+- **PRE verified event:** HIGH MATERIAL, MEDIUM (weekly expiry) NOTABLE, LOW ROUTINE.
+- **India VIX (PRE):** >= 15% MATERIAL, >= 8% NOTABLE.
+- **Stock watch (PRE, private only):** NOTABLE.
+
+### Redundancy and merging
+
+- Redundancy is the topic subset rule above. It removes the repeated scene; it does not hide it
+  visually, and the trace names what it repeated.
+- PRE's existing watch-at-the-open cards still carry an unselected VIX / sector / flow / event /
+  stock fact. Such a candidate is traced `MERGED_INTO: WATCH` only once the card really exists.
+
+### Decision trace
+
+`PostSectionPlan.editorial` / `PreSectionPlan.editorial` hold `{version, policy, selected,
+order, lead, lead_section, lead_tier, runtime_estimate, trace}`. Each trace row carries the
+components above plus `decision`, `reason`, `duplicate_of`, `displaced_by`, `merged_into` and
+`runtime_after`.
+
+- The POST manifest carries it as `editorial_trace`.
+- PRE carries it in `pre_section_plan_<date>.json`.
+- Every section's existing `reasons[key]` line keeps the planner's words, with a `[V3 DECISION,
+  TIER]` tag appended.
+- Unselected public sections are `EDITORIAL_CAP` in the public audit, never "no data".
+- Private Desk shows the latest POST and PRE traces on the Data Quality page ("Editorial
+  decisions"). It is read-only JSON.
+- The storyboard's runtime trim loop remains a safety net only. It is never reached on a
+  planned Short (tested) and would be recorded in `post_plan.notes`.
+
+### Hook V3
+
+The hook engine is unchanged in role (deterministic candidates; Gemini only chooses and words).
+See docs/HOOK_ENGINE.md:
+
+- a breadth divergence now has a hook form (`post-breadth-divergence`);
+- a MATERIAL lead story gives the candidates that pay it off a small fixed bonus;
+- the POST summary line names sections in play order.
+
+### Historical shadow validation
+
+`python validate_editorial_v3.py [--label L] [--out DIR]` is manual and read-only. It reads the
+history DB through a byte copy and fingerprints the output tree before and after. It replays
+every stored POST report and PRE shadow brief through the production path. The same script run
+in a pre-V3 checkout gives the V2 baseline over identical inputs.
+
+Stored history (10 POST, 6 PRE editions, 2026-09-21..10-07):
+
+| | V2 POST | V3 POST | V2 PRE | V3 PRE |
+|---|---|---|---|---|
+| Avg scenes | 7.4 | 5.5 | 9.17 | 7.67 |
+| Avg optional sections | 4.6 | 2.7 | 4.17 | 2.67 |
+| Avg duration | 41.7 s | 27.8 s | 55.1 s | 43.7 s |
+| Duplicate scenes | 8 | 0 | 0 | 0 |
+
+The removed scenes were routine Exchange Watch and SME/bidding IPO boards, second UNDER THE
+SURFACE scenes, and aligned "broad move" breadth scenes on big index days. V3 POST now averages
+below the 45-60 s band the project normally targets. That follows from the policy (no padding);
+it is not a threshold result. The owner may revisit how routine sections fill quiet sessions.

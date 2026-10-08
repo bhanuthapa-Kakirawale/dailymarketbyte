@@ -79,10 +79,21 @@ def write_revision(out_dir: str, snapshot: InstitutionalFlowSnapshot) -> str:
     return path
 
 
-def list_snapshots(out_dir: str, source: str) -> list:
-    """Every report_key on disk for `source`, newest first, as (report_key, latest_path,
-    latest_snapshot). "Latest" means the highest-numbered revision - the current validated one
-    once a VALIDATED revision exists, since no revision is ever written after that."""
+def list_snapshots(out_dir: str, source: str, *, as_of: str | None = None) -> list:
+    """Every report_key on disk for `source`, newest first, as (report_key, path, snapshot).
+
+    `as_of` omitted (every caller except `load_latest`'s own point-in-time path): "latest"
+    means the highest-numbered revision on disk per key - unchanged, the cheap common case
+    every current/live caller relies on.
+
+    `as_of` given (an ISO timestamp): "latest" instead means the highest-numbered revision
+    whose OWN `retrieved_at` is STRICTLY before `as_of` - the revision genuinely on disk at
+    that moment, never today's absolute latest. `retrieved_at` (unlike `first_retrieved_at`,
+    which `service.py` pins to the FIRST revision's capture time and carries forward unchanged
+    on every REVISED write) is set fresh on each capture, so it is the only field that can tell
+    revisions apart in time. A report_key with no revision yet at `as_of` is excluded entirely -
+    a later restatement must never leak backward into an earlier replay. Mirrors
+    `market_events.store.list_events`."""
     folder = _source_dir(out_dir, source)
     if not os.path.isdir(folder):
         return []
@@ -91,14 +102,24 @@ def list_snapshots(out_dir: str, source: str) -> list:
         name = os.path.basename(path)[:-5]
         key = name.split(".r")[0]
         n = int(name.split(".r")[1]) if ".r" in name else 1
-        cur = by_key.get(key)
-        if cur is None or n > cur[0]:
-            by_key[key] = (n, path)
+        by_key.setdefault(key, []).append((n, path))
+
     out = []
-    for key, (_, path) in by_key.items():
-        snap = load_revision(path)
-        if snap is not None:
-            out.append((snap.report_key, path, snap))
+    for key, revs in by_key.items():
+        revs.sort(key=lambda t: t[0])
+        if as_of is None:
+            _n, path = revs[-1]
+            snap = load_revision(path)
+            if snap is not None:
+                out.append((snap.report_key, path, snap))
+            continue
+        chosen = None
+        for _n, path in revs:
+            snap = load_revision(path)
+            if snap is not None and snap.retrieved_at and snap.retrieved_at < as_of:
+                chosen = (snap.report_key, path, snap)
+        if chosen is not None:
+            out.append(chosen)
     out.sort(key=lambda t: t[0], reverse=True)
     return out
 
@@ -107,10 +128,11 @@ def load_latest(out_dir: str, source: str, *, on_or_before: dt.date | None = Non
                 first_retrieved_before: str | None = None,
                 validated_only: bool = True) -> InstitutionalFlowSnapshot | None:
     """The newest snapshot for `source` whose report_key (parsed as a date where possible) is
-    `<= on_or_before`, and whose `first_retrieved_at` is `< first_retrieved_before` when given -
-    the point-in-time constraint a PRE replay needs (never a report discovered after its own
-    cutoff, even if that report is dated on or before the session)."""
-    candidates = list_snapshots(out_dir, source)
+    `<= on_or_before`, selected as of `first_retrieved_before` (passed straight through to
+    `list_snapshots` as `as_of`) - the revision genuinely on disk at that timestamp by its own
+    `retrieved_at`, so a later restatement never leaks backward into an earlier replay, and a
+    report_key not yet known at all as of this timestamp is excluded entirely."""
+    candidates = list_snapshots(out_dir, source, as_of=first_retrieved_before)
     for report_key, _path, snap in candidates:
         if validated_only and not snap.validated:
             continue
@@ -120,9 +142,6 @@ def load_latest(out_dir: str, source: str, *, on_or_before: dt.date | None = Non
                     continue
             except ValueError:
                 pass
-        if first_retrieved_before is not None and snap.first_retrieved_at is not None:
-            if snap.first_retrieved_at >= first_retrieved_before:
-                continue
         return snap
     return None
 

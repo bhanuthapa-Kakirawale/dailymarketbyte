@@ -249,6 +249,111 @@ def test_store_round_trip_and_tamper_detection(tmp_path):
         ms.load_snapshot(path)
 
 
+# ------------------------------------------ point-in-time revisioning (mirrors institutional_
+# flows'/market_events' P2F.1 pattern, extended to a store that previously had no revisioning
+# at all): the mutable "current" file keeps its unchanged path/semantics for every existing
+# live reader; an immutable `.revN.json` chain alongside it is the only thing a replay may trust.
+def test_save_snapshot_same_content_rebuild_is_a_true_noop(tmp_path):
+    from market_structure.store import _existing_revisions
+
+    uni1 = universe()
+    snap1, obs1 = snapshot(uni1, unusual=hc(6))
+    path = ms.save_snapshot(snap1, obs1, uni1, str(tmp_path))
+    before = json.load(open(path, encoding="utf-8"))
+
+    uni2 = universe()
+    uni2.retrieved_at = "2026-09-25T20:15:00+05:30"   # rebuilt later, identical constituents
+    snap2, obs2 = snapshot(uni2, unusual=hc(6))        # identical content
+    ms.save_snapshot(snap2, obs2, uni2, str(tmp_path))
+    after = json.load(open(path, encoding="utf-8"))
+
+    assert len(_existing_revisions(str(tmp_path), D)) == 1   # no new revision created
+    assert before == after                                    # current file untouched
+
+
+def test_save_snapshot_changed_content_writes_a_new_revision(tmp_path):
+    from market_structure.store import _existing_revisions
+
+    uni1 = universe()
+    snap1, obs1 = snapshot(uni1, unusual=hc(6))
+    path = ms.save_snapshot(snap1, obs1, uni1, str(tmp_path))
+    rev1_path = _existing_revisions(str(tmp_path), D)[0]
+    rev1_before = json.load(open(rev1_path, encoding="utf-8"))
+
+    uni2 = universe()
+    uni2.retrieved_at = "2026-09-25T20:15:00+05:30"
+    snap2, obs2 = snapshot(uni2, unusual=hc(3))        # genuinely different content
+    ms.save_snapshot(snap2, obs2, uni2, str(tmp_path))
+
+    revs = _existing_revisions(str(tmp_path), D)
+    assert len(revs) == 2
+    rev1_after = json.load(open(revs[0], encoding="utf-8"))
+    assert rev1_after == rev1_before                   # the original revision is byte-unchanged
+
+    current = json.load(open(path, encoding="utf-8"))
+    assert current["snapshot"]["metrics"]["UNUSUAL_VOLUME"]["numerator"] == 3   # the rebuild
+
+
+def test_load_revision_as_of_replay_never_leaks_a_post_cutoff_rebuild(tmp_path):
+    from market_structure.store import load_revision_as_of
+
+    uni1 = universe()
+    snap1, obs1 = snapshot(uni1, unusual=hc(6))
+    ms.save_snapshot(snap1, obs1, uni1, str(tmp_path))
+
+    uni2 = universe()
+    uni2.retrieved_at = "2026-09-26T09:00:00+05:30"
+    snap2, obs2 = snapshot(uni2, unusual=hc(3))
+    ms.save_snapshot(snap2, obs2, uni2, str(tmp_path))
+
+    between = load_revision_as_of(str(tmp_path), D, "2026-09-26T00:00:00+05:30")
+    assert between["snapshot"]["metrics"]["UNUSUAL_VOLUME"]["numerator"] == 6   # rev 1, not 2
+
+    after = load_revision_as_of(str(tmp_path), D, "2026-09-27T00:00:00+05:30")
+    assert after["snapshot"]["metrics"]["UNUSUAL_VOLUME"]["numerator"] == 3     # rev 2 now active
+
+    before_any = load_revision_as_of(str(tmp_path), D, "2026-09-25T19:30:00+05:30")
+    assert before_any is None   # strictly before rev 1's own retrieved_at - not yet known at all
+
+
+def test_load_revision_as_of_falls_back_to_the_bare_legacy_file_when_no_chain_exists(tmp_path):
+    import os as _os
+    from market_structure.store import artifact_path, load_revision_as_of
+
+    path = artifact_path(str(tmp_path), D)
+    _os.makedirs(_os.path.dirname(path), exist_ok=True)
+    art = {"snapshot": {"session_date": D.isoformat(),
+                        "universe_source": {"retrieved_at": "2026-09-25T19:30:00+05:30"}}}
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(art, fh)
+
+    assert load_revision_as_of(str(tmp_path), D, "2026-09-25T20:00:00+05:30") == art
+    assert load_revision_as_of(str(tmp_path), D, "2026-09-25T19:30:00+05:30") is None
+
+
+def test_save_snapshot_seeds_rev1_from_a_preexisting_legacy_bare_file(tmp_path):
+    import os as _os
+    from market_structure.store import _existing_revisions, artifact_path
+
+    path = artifact_path(str(tmp_path), D)
+    _os.makedirs(_os.path.dirname(path), exist_ok=True)
+    legacy = {"snapshot": {"session_date": D.isoformat(), "metrics": {},
+                          "universe_source": {"retrieved_at": "2026-09-25T19:30:00+05:30"}},
+             "universe": {}, "subset_universes": [], "observations": []}
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(legacy, fh)
+
+    uni2 = universe()
+    uni2.retrieved_at = "2026-09-26T09:00:00+05:30"
+    snap2, obs2 = snapshot(uni2, unusual=hc(3))
+    ms.save_snapshot(snap2, obs2, uni2, str(tmp_path))
+
+    revs = _existing_revisions(str(tmp_path), D)
+    assert len(revs) == 2
+    rev1 = json.load(open(revs[0], encoding="utf-8"))
+    assert rev1 == legacy   # seeded byte-identical from the pre-existing legacy file, not discarded
+
+
 def test_private_radar_detectors_are_unchanged_by_aggregation():
     uni = universe()
     vol, tech, series = detectors(uni, unusual=hc(3))

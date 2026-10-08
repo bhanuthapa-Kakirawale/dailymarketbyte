@@ -203,11 +203,17 @@ and its on-screen wording is always "net buyers/sellers" - including the previou
 card fallback, which previously said "bought"/"sold" and has been corrected to match POST.
 
 Replay (`institutional_flows.context.load_institutional(..., live=False)`) never fetches: a
-candidate counts only if its snapshot's `first_retrieved_at` was strictly before the brief's
-`as_of` cutoff, so a report fetched later can never appear to have been available earlier, even
-if its own date is on or before the session. A live PRE run may capture a missing CDSL/NSDL
-snapshot (`CAPTURED_THIS_RUN`, persisted for next time); a replay of a past morning only ever
-reads what was already on disk and reports `HISTORICAL_SNAPSHOT_UNAVAILABLE` otherwise.
+candidate counts only if it was genuinely on disk, by its own revision's `retrieved_at`,
+strictly before the brief's `as_of` cutoff, so a report fetched later can never appear to have
+been available earlier, even if its own date is on or before the session - enforced at the
+store layer (`institutional_flows.store.list_snapshots`/`load_latest`, `as_of`), not by
+`first_retrieved_at` alone, which is pinned to a report_key's FIRST revision and carried
+forward unchanged on every later restatement, so it cannot by itself tell a restated revision
+apart from the one it replaced (fixed in `feature/point-in-time-provenance-hardening-v1`,
+mirroring `market_events.store`'s identical earlier fix). A live PRE run may capture a missing
+CDSL/NSDL snapshot (`CAPTURED_THIS_RUN`, persisted for next time); a replay of a past morning
+only ever reads what was already on disk and reports `HISTORICAL_SNAPSHOT_UNAVAILABLE`
+otherwise.
 
 ## Private Desk use
 

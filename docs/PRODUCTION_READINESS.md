@@ -153,8 +153,8 @@ Every reader is bounded by the **cutoff**. Something that came into existence af
 | Canonical report | `generated_at` | must be ≤ cutoff |
 | REPORT capture record (events, institutional capture status) | `completed_at` | newest record completed ≤ cutoff |
 | Market event | revision `retrieved_at` | `list_events(as_of=cutoff)`: the revision current then (a later correction never leaks backward) |
-| Institutional snapshot | `first_retrieved_at` | `< cutoff`; NSE must be the expected session |
-| Market Structure | `universe_source.retrieved_at` | ≤ cutoff, `session_date` = expected session |
+| Institutional snapshot | revision `retrieved_at` | `institutional_flows.store.list_snapshots(as_of=cutoff)`: the revision genuinely on disk at the cutoff, by its own capture time - never `first_retrieved_at`, which is pinned to the first revision and so cannot tell a later restatement apart; NSE must be the expected session |
+| Market Structure | revision `universe_source.retrieved_at` | `market_structure.store.load_revision_as_of(cutoff)`: the revision genuinely on disk at the cutoff (an immutable `.revN.json` chain alongside the always-current file); a session with no chain yet falls back to its single legacy file, `session_date` = expected session |
 | Official snapshots | per-kind `retrieved_at` | ≤ cutoff |
 | Overnight cues (PRE, LIVE only) | bar dates / timestamps | `core.freshness` (US close final; Asia live bar ≤ 30 min old; nothing on/after the PRE date read as a close) |
 | PRE edition | cutoff | before 09:15 IST on the PRE date, and after the previous session's 15:40 final |
@@ -172,9 +172,9 @@ Every reader is bounded by the **cutoff**. Something that came into existence af
   - REPLAY never fetches: overnight cues and India VIX are SKIP.
   - The verdict is identical whatever the wall clock says (tested).
 
-**Known upstream limits.** These are reported, not fixed in PK-C. The gate only asks about availability at the cutoff, so neither leaks into its verdict.
-- `institutional_flows.store.load_latest` can surface a post-cutoff `.r2` revision's content.
-- Market Structure artifacts are overwritten in place, so a rebuilt snapshot's `retrieved_at` is its rebuild time.
+**Point-in-time provenance hardening (`feature/point-in-time-provenance-hardening-v1`).** Two upstream gaps PK-C surfaced but did not fix are now closed at the store layer, not in the gate itself:
+- `institutional_flows.store.list_snapshots`/`load_latest` gained an `as_of` parameter (mirroring `market_events.store.list_events`'s own prior fix): a report's revision chain is now scanned by each revision's own `retrieved_at`, not the chain-wide `first_retrieved_at` a restatement used to inherit, so a later restatement can no longer leak into an earlier replay.
+- Market Structure gained an immutable `.revN.json` revision chain alongside its existing mutable "current" file (`market_structure.store.save_snapshot`/`load_revision_as_of`); a rebuild that changes nothing is a true no-op, a rebuild that changes something gets its own revision, and replay reads the revision genuinely on disk as of the cutoff instead of blindly re-reading whatever the file currently holds. A session with no revision chain (built before this change) falls back to its single legacy file.
 
 ## Stages
 

@@ -285,19 +285,30 @@ def check_market_structure(edition, out_dir, ref_session, cutoff, intel=None) ->
     52-week coverage is the expected P3 state (recent listings lack 252 sessions and count as
     uncovered, never as a zero) - noted, not degraded. PRE only ever shows FIFTY_TWO_WEEK."""
     req = requirement("MARKET_STRUCTURE", edition)
-    art, path = ev.structure_artifact(out_dir, ref_session)
+    art, path = ev.structure_artifact(out_dir, ref_session, cutoff)
     if art is None:
+        raw, _path = ev.structure_artifact_unbounded(out_dir, ref_session)
+        if raw is not None and raw.get("_unreadable"):
+            return mk(edition, "MARKET_STRUCTURE", "MARKET_STRUCTURE", "MARKET_STRUCTURE",
+                      unmet(req), "Market Structure snapshot unreadable",
+                      source_health=SOURCE_FAILURE, source=path)
+        if raw is None:
+            return mk(edition, "MARKET_STRUCTURE", "MARKET_STRUCTURE", "MARKET_STRUCTURE",
+                      unmet(req), f"no Market Structure snapshot for {ref_session} - UNDER "
+                      "THE SURFACE is omitted", source_health=MISSING, source=path,
+                      remediation="the REPORT job's Radar step builds it; "
+                                  f"python -m market_structure.build --session {ref_session}")
+        avail = ev.structure_available_at(raw)
         return mk(edition, "MARKET_STRUCTURE", "MARKET_STRUCTURE", "MARKET_STRUCTURE", unmet(req),
-                  f"no Market Structure snapshot for {ref_session} - UNDER THE SURFACE is "
-                  "omitted", source_health=MISSING, source=path,
-                  remediation="the REPORT job's Radar step builds it; "
-                              f"python -m market_structure.build --session {ref_session}")
+                  f"Market Structure snapshot for {ref_session} did not exist at the cutoff "
+                  f"(built {avail.isoformat() if avail else 'at an unknown time'})",
+                  source_health=MISSING, source=path, as_of=avail.isoformat() if avail else None)
     if art.get("_unreadable"):
         return mk(edition, "MARKET_STRUCTURE", "MARKET_STRUCTURE", "MARKET_STRUCTURE", unmet(req),
                   "Market Structure snapshot unreadable", source_health=SOURCE_FAILURE,
                   source=path)
     avail = ev.structure_available_at(art)
-    if avail is None or avail > cutoff:
+    if avail is None or avail > cutoff:   # defensive belt-and-suspenders; load_revision_as_of
         return mk(edition, "MARKET_STRUCTURE", "MARKET_STRUCTURE", "MARKET_STRUCTURE", unmet(req),
                   f"Market Structure snapshot for {ref_session} did not exist at the cutoff "
                   f"(built {avail.isoformat() if avail else 'at an unknown time'})",

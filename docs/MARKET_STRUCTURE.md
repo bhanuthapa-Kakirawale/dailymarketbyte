@@ -157,6 +157,40 @@ Verified 2026-09-26 on the real 24 Sep 2026 session (Nifty -1.64%): 100% coverag
 metric; unusual volume 18 / 200 (Financials 14); 30 / 200 below the 20-day range; 179 / 200
 lower.
 
+## Point-in-time revisioning (replay, `feature/point-in-time-provenance-hardening-v1`)
+
+`market_structure.store.save_snapshot` previously overwrote `market_structure_<session>.json`
+in place on every rebuild, so a historical replay reading that one file could not tell "built
+before the cutoff, never touched since" apart from "rebuilt after the cutoff, content now
+different" - the file's one embedded timestamp always described the latest rebuild. This is
+now backed by an immutable revision chain in the same directory:
+
+- `market_structure_<session>.json` is still the mutable "current" file every existing live
+  reader (`presentation.public_intelligence`, `private_desk.services.market`) depends on,
+  unchanged path, unchanged content-is-always-current semantics.
+- `market_structure_<session>.rev1.json`, `.rev2.json`, ... are exclusively-created, never
+  overwritten. A rebuild whose content is unchanged (`_content_checksum`, which excludes every
+  volatile universe-download `retrieved_at` - it is independently embedded in FOUR places:
+  `universe.retrieved_at`, each `subset_universes[i].retrieved_at`,
+  `snapshot.universe_source.retrieved_at` and `snapshot.sector_mapping.retrieved_at`) is a true
+  no-op: no new revision, current file not even touched. A rebuild whose content genuinely
+  changed gets the next revision, and the current file is refreshed as before.
+- `market_structure.store.load_revision_as_of(out_dir, session, cutoff_iso)` is the replay read:
+  the highest-numbered revision whose own `universe_source.retrieved_at` is strictly before the
+  cutoff, never today's possibly-since-rebuilt current file. `readiness.evidence.
+  structure_artifact` uses it; `check_market_structure` keeps a second, diagnostic-only,
+  cutoff-unbounded read (`structure_artifact_unbounded`) purely to word a MISSING verdict
+  precisely ("never built" vs "built, just not yet as of this cutoff").
+- A session with no revision chain at all (built before this change, and never rebuilt since)
+  falls back to treating the single bare current file as one legacy revision, on the same
+  `retrieved_at < cutoff` test - never inferred from filesystem mtime, never backdated. The
+  first rebuild of such a session under the new code seeds `.rev1.json` from that file's exact
+  existing bytes before writing anything new, so pre-existing history is never silently
+  discarded.
+- `private_desk.repository.DeskRepository._dated_files` excludes any `.rev*.json` sibling, so
+  its date-keyed lookups (`market_structure_path`/`market_structure`) always resolve to the
+  current file, never a revision.
+
 ## Private Desk (V2)
 
 `private_desk/services/market.py`'s `METRICS` tuple now includes `NEW_52W_HIGH`/`NEW_52W_LOW`,

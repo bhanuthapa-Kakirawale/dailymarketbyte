@@ -589,6 +589,56 @@ def test_37_no_future_market_structure_snapshot_leakage(tmp_path):
                                     dt.datetime(2026, 9, 21, 9, 1, tzinfo=IST)).status == PASS
 
 
+# ------------------------------------------ point-in-time correctness over a REAL revision chain
+# (unlike test_37, which writes a single raw file - these drive the real `ms.save_snapshot`
+# revisioning end to end: a genuine rebuild after the cutoff must never leak into an earlier
+# replay, and the private desk's reader must never resolve to a revision sibling.)
+def test_39_market_structure_rebuild_after_the_cutoff_never_leaks(tmp_path):
+    import market_structure as ms
+    from readiness import evidence as EV
+    from test_market_structure import D as MS_SESSION, hc, snapshot, universe
+
+    out = str(tmp_path)
+    uni1 = universe()
+    snap1, obs1 = snapshot(uni1, unusual=hc(6))
+    ms.save_snapshot(snap1, obs1, uni1, out)
+
+    uni2 = universe()
+    uni2.retrieved_at = "2026-09-26T09:00:00+05:30"
+    snap2, obs2 = snapshot(uni2, unusual=hc(3))
+    ms.save_snapshot(snap2, obs2, uni2, out)
+
+    between, _ = EV.structure_artifact(out, MS_SESSION,
+                                       dt.datetime(2026, 9, 26, 0, 0, tzinfo=IST))
+    assert between["snapshot"]["metrics"]["UNUSUAL_VOLUME"]["numerator"] == 6   # rev 1, not 2
+
+    after, _ = EV.structure_artifact(out, MS_SESSION, dt.datetime(2026, 9, 27, 0, 0, tzinfo=IST))
+    assert after["snapshot"]["metrics"]["UNUSUAL_VOLUME"]["numerator"] == 3
+
+    r = C.check_market_structure("POST", out, MS_SESSION,
+                                 dt.datetime(2026, 9, 26, 0, 0, tzinfo=IST))
+    assert r.status in (PASS, WARN)   # reaches the normal grading path, never MISSING
+
+
+def test_40_private_desk_market_structure_reader_never_resolves_a_revision_file(tmp_path):
+    import market_structure as ms
+    from private_desk.repository import DeskRepository
+    from test_market_structure import D as MS_SESSION, hc, snapshot, universe
+
+    out = str(tmp_path)
+    uni1 = universe()
+    snap1, obs1 = snapshot(uni1, unusual=hc(6))
+    path = ms.save_snapshot(snap1, obs1, uni1, out)
+
+    uni2 = universe()
+    uni2.retrieved_at = "2026-09-26T09:00:00+05:30"
+    snap2, obs2 = snapshot(uni2, unusual=hc(3))
+    ms.save_snapshot(snap2, obs2, uni2, out)   # a .rev2.json sibling now exists
+
+    resolved = DeskRepository(out).market_structure_path(MS_SESSION)
+    assert resolved == path and ".rev" not in resolved
+
+
 def _stable(r):
     d = r.to_dict()
     d.pop("evaluated_at")

@@ -72,9 +72,24 @@ def report_record_at(out_dir: str, session: dt.date, cutoff: dt.datetime) -> dic
 
 
 # --------------------------------------------------------------------------- Market Structure
-def structure_artifact(out_dir: str, session: dt.date) -> tuple:
-    """(artifact dict | None, path). Read-only JSON read - the full `load_snapshot` re-aggregates
-    and is the renderer's business, not the gate's."""
+def structure_artifact(out_dir: str, session: dt.date, cutoff: dt.datetime) -> tuple:
+    """(artifact dict | None, path). Point-in-time: the Market Structure revision that
+    genuinely existed on disk for `session` as of `cutoff`
+    (`market_structure.store.load_revision_as_of`) - never today's possibly-since-rebuilt
+    current file blindly re-read. The full `load_snapshot` re-aggregation is the renderer's
+    business, not the gate's."""
+    from market_structure.store import artifact_path, load_revision_as_of
+    path = artifact_path(out_dir, session)
+    try:
+        return load_revision_as_of(out_dir, session, cutoff_iso(cutoff)), path
+    except (OSError, ValueError):
+        return {"_unreadable": True}, path
+
+
+def structure_artifact_unbounded(out_dir: str, session: dt.date) -> tuple:
+    """(artifact dict | None, path), ignoring the cutoff entirely - diagnostic use only, to word
+    a MISSING verdict precisely ("never built" vs "built, just not until after the cutoff").
+    Never used to decide PASS/FAIL - `structure_artifact` is the only source of truth for that."""
     from market_structure.store import artifact_path
     path = artifact_path(out_dir, session)
     if not os.path.exists(path):
@@ -145,6 +160,6 @@ def post_manifest(out_dir: str, session: dt.date) -> tuple:
 
 
 __all__ = ["IST", "parse_ts", "at_or_before", "cutoff_iso", "history_db_path", "open_history",
-           "report_record_at", "structure_artifact", "structure_available_at",
-           "official_manifest", "live_event_families", "events_known_at",
-           "institutional_latest", "post_manifest"]
+           "report_record_at", "structure_artifact", "structure_artifact_unbounded",
+           "structure_available_at", "official_manifest", "live_event_families",
+           "events_known_at", "institutional_latest", "post_manifest"]

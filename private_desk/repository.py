@@ -84,7 +84,9 @@ class DeskRepository:
         out = {}
         for p in glob.glob(self.path(pattern)):
             name = os.path.basename(p)
-            if "_DEMO" in name:
+            # ".rev" = an immutable Market Structure point-in-time revision sibling
+            # (market_structure.store), never the live, always-current file this reads.
+            if "_DEMO" in name or ".rev" in name:
                 continue
             m = _DATE_RE.search(name)
             if m:

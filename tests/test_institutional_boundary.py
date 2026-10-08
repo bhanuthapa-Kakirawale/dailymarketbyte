@@ -75,6 +75,98 @@ def test_a_snapshot_retrieved_after_the_cutoff_is_never_shown_as_available(tmp_p
     assert ctx.cdsl_status == "HISTORICAL_SNAPSHOT_UNAVAILABLE"
 
 
+# ------------------------------------------ per-revision point-in-time correctness (mirrors
+# market_events' P2F.1 fix). `first_retrieved_at` is carried forward unchanged across every
+# revision of a report_key, so the OLD gate only ever answered "was this key known yet" - it
+# always returned the absolute LATEST on-disk revision regardless of cutoff, letting a later
+# restatement leak backward into an earlier replay. `list_snapshots`/`load_latest`'s `as_of`/
+# `first_retrieved_before` now pick the revision whose OWN `retrieved_at` was actually active as
+# of that timestamp.
+def _cdsl_rev(report_key, retrieved_at, first_retrieved_at, net_value):
+    from institutional_flows.models import CDSL, DEPOSITORY_REPORTED, RepresentedPeriod, \
+        SUCCESS, InstitutionalFlowSnapshot
+    return InstitutionalFlowSnapshot(
+        schema_version="x", source=CDSL, source_class=DEPOSITORY_REPORTED, report_type="x",
+        report_key=report_key, report_date=report_key, data_as_of=report_key,
+        represented_period=RepresentedPeriod(), retrieved_at=retrieved_at,
+        first_retrieved_at=first_retrieved_at, status=SUCCESS,
+        facts=[{"label": "net_value_crore", "value": net_value}])
+
+
+def test_list_snapshots_as_of_returns_the_revision_active_at_that_time_not_the_latest(tmp_path):
+    from institutional_flows.store import list_snapshots, write_revision
+    write_revision(str(tmp_path), _cdsl_rev("2026-10-05", "2026-10-05T19:30:00+05:30",
+                                            "2026-10-05T19:30:00+05:30", 1000))
+    write_revision(str(tmp_path), _cdsl_rev("2026-10-05", "2026-10-07T09:00:00+05:30",
+                                            "2026-10-05T19:30:00+05:30", -500))
+
+    from institutional_flows.models import CDSL
+    before = [s for _k, _p, s in list_snapshots(str(tmp_path), CDSL,
+                                                as_of="2026-10-06T00:00:00+05:30")]
+    assert len(before) == 1 and before[0].facts[0]["value"] == 1000     # rev 1, not rev 2
+
+    after = [s for _k, _p, s in list_snapshots(str(tmp_path), CDSL,
+                                               as_of="2026-10-08T00:00:00+05:30")]
+    assert len(after) == 1 and after[0].facts[0]["value"] == -500       # rev 2 now active
+
+    not_yet = [s for _k, _p, s in list_snapshots(str(tmp_path), CDSL,
+                                                 as_of="2026-10-05T19:30:00+05:30")]
+    assert not_yet == []   # strictly BEFORE rev 1's own retrieved_at - not yet known at all
+
+
+def test_list_snapshots_as_of_none_still_returns_the_absolute_latest_unchanged(tmp_path):
+    """Regression safety: every EXISTING caller (service.py::_store_one, context.py's "older"
+    lookup, private_desk/repository.py) never passes `as_of` - their behavior must be
+    byte-identical to before this fix."""
+    from institutional_flows.store import list_snapshots, write_revision
+    write_revision(str(tmp_path), _cdsl_rev("2026-10-05", "2026-10-05T19:30:00+05:30",
+                                            "2026-10-05T19:30:00+05:30", 1000))
+    write_revision(str(tmp_path), _cdsl_rev("2026-10-05", "2026-10-07T09:00:00+05:30",
+                                            "2026-10-05T19:30:00+05:30", -500))
+
+    from institutional_flows.models import CDSL
+    latest = [s for _k, _p, s in list_snapshots(str(tmp_path), CDSL)]
+    assert len(latest) == 1 and latest[0].facts[0]["value"] == -500 and latest[0].revision == 2
+
+
+def test_load_latest_first_retrieved_before_reflects_the_correct_historical_revision(tmp_path):
+    """The actual regression test for the gap: a report_key first seen before a replay cutoff
+    but RESTATED after it must show the pre-restatement figure at that cutoff, never today's
+    absolute latest on-disk revision."""
+    from institutional_flows.models import CDSL
+    from institutional_flows.store import load_latest, write_revision
+    write_revision(str(tmp_path), _cdsl_rev("2026-10-05", "2026-10-05T19:30:00+05:30",
+                                            "2026-10-05T19:30:00+05:30", 1000))
+    write_revision(str(tmp_path), _cdsl_rev("2026-10-05", "2026-10-07T09:00:00+05:30",
+                                            "2026-10-05T19:30:00+05:30", -500))
+
+    before_restatement = load_latest(str(tmp_path), CDSL,
+                                     first_retrieved_before="2026-10-06T00:00:00+05:30")
+    assert before_restatement is not None
+    assert before_restatement.facts[0]["value"] == 1000
+
+    after_restatement = load_latest(str(tmp_path), CDSL,
+                                    first_retrieved_before="2026-10-08T00:00:00+05:30")
+    assert after_restatement.facts[0]["value"] == -500
+
+    not_known_yet = load_latest(str(tmp_path), CDSL,
+                                first_retrieved_before="2026-10-05T19:30:00+05:30")
+    assert not_known_yet is None
+
+
+def test_load_latest_without_first_retrieved_before_is_unaffected(tmp_path):
+    """No cutoff given at all -> absolute latest, exactly as every other existing caller
+    already relies on."""
+    from institutional_flows.models import CDSL
+    from institutional_flows.store import load_latest, write_revision
+    write_revision(str(tmp_path), _cdsl_rev("2026-10-05", "2026-10-05T19:30:00+05:30",
+                                            "2026-10-05T19:30:00+05:30", 1000))
+    write_revision(str(tmp_path), _cdsl_rev("2026-10-05", "2026-10-07T09:00:00+05:30",
+                                            "2026-10-05T19:30:00+05:30", -500))
+    latest = load_latest(str(tmp_path), CDSL)
+    assert latest.facts[0]["value"] == -500 and latest.revision == 2
+
+
 # --------------------------------------------------------------------------- rights (fail-closed)
 def test_every_institutional_source_is_review_required_not_approved():
     from publication.rights import rights_for

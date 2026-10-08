@@ -94,9 +94,10 @@ def load_institutional(out_dir: str, *, cutoff: dt.datetime, live: bool,
         ctx.nsdl_latest, ctx.nsdl_status = nsdl_latest, PERSISTED_SNAPSHOT
         prev = load_latest(out_dir, NSDL, on_or_before=on_or_before,
                            first_retrieved_before=cutoff_iso)
-        # second-newest with a report_key strictly before the latest one
+        # second-newest with a report_key strictly before the latest one, itself bounded by the
+        # same cutoff - a later NSDL restatement must never leak into this slot either
         from .store import list_snapshots
-        older = [s for k, _p, s in list_snapshots(out_dir, NSDL)
+        older = [s for k, _p, s in list_snapshots(out_dir, NSDL, as_of=cutoff_iso)
                 if s.validated and k < nsdl_latest.report_key]
         ctx.nsdl_previous = older[0] if older else None
     elif live and capture_fn is not None:

@@ -187,6 +187,11 @@ examples, both added for PK-B (test reproducibility):
   `_generate_fixture.py` in the same folder for how it was produced (a manual, one-off script -
   never run automatically by the suite).
 
+The readiness-gate tests (`tests/test_readiness.py`, PK-C) follow the same rule: the canonical
+report is built into `tmp_path` by the stubbed production REPORT path, REPORT-job records are
+pinned to the fixture's evening, overnight cues come from an injected provider and the ffmpeg /
+font / disk seams are stubbed - nothing depends on `output\`, a local database or the network.
+
 A test that is intentionally an exception to "fully offline" (rare - one test in the suite was,
 until PK-B) must say so in its own docstring, and should still not depend on anything a clean
 checkout lacks; prefer freezing real data into `tests/fixtures/` over leaving it dependent on

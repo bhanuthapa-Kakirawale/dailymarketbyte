@@ -225,6 +225,12 @@ A template and the per-morning checklist are in
 
 ## Operational checks
 
+- **Production readiness gate (PK-C, docs/PRODUCTION_READINESS.md):** `python -m readiness
+  {pre|post}` answers READY / DEGRADED / BLOCKED before a render (exit 0 / 10 / 20; 30 = the
+  gate could not evaluate). `scripts\run_morning_pre.bat` runs it before the PRE render and stops
+  on BLOCKED; `operations.evening_full` runs it in-process between the REPORT gate and the POST
+  render. Read-only; LIVE evaluations write `output/readiness/readiness_<EDITION>_<session>.json`.
+
 - `python validate_pre_production.py --connectivity-only` shows whether each source is
   reachable from this machine. On GitHub, use `connectivity.yml`. It never gates publication.
 - `operations/official_events.py` warns when an official event's verification is within 30 days

@@ -27,6 +27,11 @@ Each command prints one summary and a **VERDICT** line at the end:
   video (section 5).
 - `ATTENTION REQUIRED` (evening) / `STOP` (morning), exit code 2: read section 6.
 
+Both commands first run the **production readiness gate** (docs/PRODUCTION_READINESS.md):
+`READINESS BLOCKED` means nothing was rendered (read the `fix` lines it prints);
+`READINESS DEGRADED` means the video is still generated, without the sections it lists. Run it
+by hand any time with `python -m readiness pre` / `python -m readiness post`.
+
 During the shadow trial `PUBLICATION RIGHTS  BLOCKED  rights review only` is **expected** and is
 not a video failure. Upload is always `NOT ATTEMPTED`: no normal command uploads.
 
@@ -271,6 +276,9 @@ Anything else in the failed list (`displayed_claims`, `recommendation_language`,
 | `NO_ELIGIBLE_EVENT` / `NO_ELIGIBLE_IPO_EVENT` / `NO_NEW_EVENT` | Lists read fine; nothing qualified or changed today. | No. | Nothing: this is a normal quiet day. | No. |
 | Evening `DEGRADED` | Report fine; an optional part failed. | No. | The `DEGRADED` lines. | Yes, once, if the cause is transient. |
 | Evening `BLOCKED` / `ATTENTION REQUIRED` before the POST | Report failed validation, the session is not final, or the REPORT describes another session. The POST was not rendered. | No video exists for that session. | `blocking issues`; `output\reports\unfit\`. | Yes, after the data issue is resolved (e.g. Yahoo backfill). Not in a loop. |
+| `READINESS BLOCKED` (morning script exit 2 / evening `READINESS` row) | The readiness gate found a broken required input, a timing problem (PRE after 09:15, POST before the session is final) or a publication defect. Nothing was rendered. | No video exists. | The `FAIL` rows and their `fix` lines; `output\readiness\readiness_<EDITION>_<date>.json`. | After fixing the cause (docs/PRODUCTION_READINESS.md "Operator remediation flow"). |
+| `READINESS DEGRADED` | Optional inputs missing or stale; those sections are omitted. | No. | The `WARN` rows. | Optional: re-run the REPORT later if a source had not published yet. |
+| `READINESS could not evaluate` (exit 30 / 1) | The gate itself failed - never treat it as READY. | Yes (morning script stops). | The error line. | Fix, or run `main.py` by hand if you accept the risk. |
 | PRE `BLOCKED` (`PREVIOUS_SESSION_MISSING`) | No canonical report for the previous session. | Yes. | Did the evening run succeed? | Run `run_evening_full.bat`, then PRE. |
 | POST `ALREADY RENDERED` | A rerun: this session already has a passing POST. | No. | The summary (read from its artifacts). | Only with `--rerender-post`. |
 | QA FAIL (`video`, `freeze-frame`, `content`) | The rendered file or a frame failed a check. | **Yes.** | The QA artifact / freeze-frame QA issues. | Only after understanding why; report it. |

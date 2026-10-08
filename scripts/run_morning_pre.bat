@@ -8,6 +8,21 @@ echo ================================================================
 echo  MORNING PRE (shadow)  -  started %DATE% %TIME%
 echo  output: %CD%\output\pre_shadow
 echo ================================================================
+REM Production readiness gate (docs\PRODUCTION_READINESS.md): 0 READY, 10 DEGRADED (continue),
+REM 20 BLOCKED (nothing is rendered), anything else = the gate could not evaluate (stop).
+python -m readiness pre
+set READY_RC=%ERRORLEVEL%
+if "%READY_RC%"=="20" (
+    echo READINESS BLOCKED - nothing rendered. See the blocking reasons above and
+    echo docs\PRODUCTION_READINESS.md. VERDICT: STOP
+    exit /b 2
+)
+if "%READY_RC%"=="10" echo READINESS DEGRADED - continuing; what the warnings above affect is omitted safely.
+if not "%READY_RC%"=="0" if not "%READY_RC%"=="10" (
+    echo READINESS could not evaluate ^(exit %READY_RC%^) - nothing rendered. VERDICT: STOP
+    exit /b 1
+)
+echo.
 python main.py --mode premarket --shadow
 set RC=%ERRORLEVEL%
 echo.

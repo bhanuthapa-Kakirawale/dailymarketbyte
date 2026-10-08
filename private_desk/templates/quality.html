@@ -88,6 +88,16 @@
 </section>
 
 <section class="panel">
+  <h2>Production readiness <span class="dim lc">PK-C gate · latest PRE / POST evaluation</span></h2>
+  <table><thead><tr><th>Edition</th><th>Status</th><th>Session</th><th>Evaluated</th><th>Decision / reasons</th></tr></thead><tbody>
+  {% for r in q.readiness or [] %}<tr><td>{{ r.edition }}</td>
+    <td><span class="b {{ 'ok' if r.status == 'READY' else ('warn' if r.status == 'DEGRADED' else 'bad') }}">{{ r.status | replace('_', ' ') }}</span></td>
+    <td class="mono">{{ r.session | na }}</td><td class="mono">{{ (r.evaluated_at or '')[:19] }}</td>
+    <td class="wrap note">{{ r.decision | na }}{% for b in r.blocking %}<br>BLOCKING {{ b | truncate(160) }}{% endfor %}{% for w in r.warnings %}<br>WARN {{ w | truncate(160) }}{% endfor %}{% if r.error %}<br>{{ r.error }}{% endif %}</td></tr>{% endfor %}
+  </tbody></table>
+</section>
+
+<section class="panel">
   <h2>Editorial decisions <span class="dim lc">V3 planner trace · latest POST / PRE edition</span></h2>
   {% for e in q.editorial or [] %}
   <h3>{{ e.edition }}{% if e.file %} <span class="mono note">{{ e.file }}</span>{% endif %}</h3>

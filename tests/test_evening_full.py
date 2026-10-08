@@ -75,7 +75,14 @@ class Runner:
         raise AssertionError(f"unexpected command {args}")
 
 
+def _ready_gate(session, as_of, out_dir, calendar=None):
+    """The PK-C POST readiness gate, stubbed READY (its own behaviour: tests/test_readiness.py)."""
+    from readiness import ReadinessResult
+    return ReadinessResult(edition="POST", as_of=as_of)
+
+
 def _run(tmp_path, runner, clock=EVENING, **kw):
+    kw.setdefault("readiness_fn", _ready_gate)
     return EF.run_evening_full(clock=lambda: clock, runner=runner, out_dir=str(tmp_path), **kw)
 
 

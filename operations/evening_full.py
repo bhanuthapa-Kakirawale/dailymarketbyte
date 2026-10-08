@@ -12,6 +12,10 @@ POST_UNIFIED for D, then one operator summary and VERDICT.
     3. REPORT gate       the job record THIS invocation wrote must exist, be SUCCESS or DEGRADED
                          (DEGRADED = optional intelligence only) and describe D - else STOP:
                          no POST is rendered.
+    3b. READINESS        the production readiness gate (`readiness.evaluate_post`, PK-C,
+                         docs/PRODUCTION_READINESS.md) for D, in-process and read-only, right
+                         before the render: BLOCKED stops here (no POST); DEGRADED continues
+                         with the warnings in the summary; a gate error stops (fail closed).
     4. POST              `python main.py --no-fetch-public` - scripts\\run_post.bat's command,
                          reading only what step 2 persisted (official snapshots are acquired once
                          per evening; the POST never runs the Radar). Skipped when a POST for D
@@ -216,13 +220,29 @@ def post_fatal(m: dict | None, session: str, report_id: str, *, rendered_now: bo
 
 
 # --------------------------------------------------------------------------- the run
+def post_readiness(session: str, as_of, out_dir: str, calendar=None):
+    """The PK-C POST readiness gate for `session` at `as_of` (LIVE), its report written to
+    output/readiness/. Returns the ReadinessResult."""
+    from readiness import evaluate_post, write_report
+    res = evaluate_post(dt.date.fromisoformat(str(session)), as_of, mode="LIVE",
+                        out_dir=out_dir, calendar=calendar)
+    try:
+        res.notes.append(f"report: {write_report(res, out_dir)}")
+    except Exception as exc:                  # the verdict stands; the file is diagnostics
+        res.notes.append(f"readiness report not written: {type(exc).__name__}: {exc}")
+    return res
+
+
 def run_evening_full(*, clock=None, runner=None, out_dir: str | None = None, calendar=None,
-                     rerender_post: bool = False) -> dict:
-    """Run REPORT then POST for the latest completed session. Returns the result (see summary)."""
+                     rerender_post: bool = False, readiness_fn=None) -> dict:
+    """Run REPORT then POST for the latest completed session. Returns the result (see summary).
+    `readiness_fn(session, as_of, out_dir, calendar)` is the POST readiness gate (tests inject
+    one; default `post_readiness`)."""
     import config
     from operations.sessions import latest_final_session
     out_dir = out_dir or config.OUT_DIR
     runner = runner or run_main
+    readiness_fn = readiness_fn or post_readiness
     clock = clock or config.now_ist
     ctx = session_context(clock(), calendar)
     res = {"context": ctx, "steps": [], "rows": {}, "notes": [], "fatal": None,
@@ -268,6 +288,24 @@ def run_evening_full(*, clock=None, runner=None, out_dir: str | None = None, cal
                             f"ran for {session} - run the evening command again")
             res["rows"]["POST_UNIFIED"] = ("NOT RUN", res["fatal"])
             return res
+        # ---- READINESS (PK-C): may the POST render? BLOCKED stops before the render
+        try:
+            gate = readiness_fn(session, clock(), out_dir, calendar)
+        except Exception as exc:
+            res["fatal"] = f"readiness gate could not evaluate ({type(exc).__name__}: {exc})"
+            res["rows"]["READINESS"] = ("FAIL", res["fatal"])
+            res["rows"]["POST_UNIFIED"] = ("NOT RUN", "stopped: readiness gate error")
+            return res
+        status = gate.overall_status
+        res["readiness"] = gate.to_dict()
+        res["rows"]["READINESS"] = ({"READY": "PASS", "DEGRADED": "DEGRADED"}.get(status, "BLOCKED"),
+                                    gate.decision)
+        for w in gate.warnings:
+            res["notes"].append(f"READINESS WARN {w}")
+        if status == "BLOCKED":
+            res["fatal"] = "readiness BLOCKED: " + "; ".join(gate.blocking_reasons)
+            res["rows"]["POST_UNIFIED"] = ("NOT RUN", "stopped: readiness gate BLOCKED")
+            return res
         started = time.time() - 1
         prc = runner(POST_ARGS)
         res["steps"].append(("POST", prc))
@@ -307,7 +345,7 @@ def print_summary(res: dict) -> None:
     print(f"  {'session':<20} {res.get('session') or ctx.get('session') or '-'}")
     print(f"  {'context':<20} {ctx['note']}")
     order = ("REPORT", "PRIVATE RADAR", "MARKET STRUCTURE", "EXCHANGE WATCH", "IPO WATCH",
-             "POST_UNIFIED", "VIDEO QA", "CONTENT AUDIT", "PUBLICATION RIGHTS")
+             "READINESS", "POST_UNIFIED", "VIDEO QA", "CONTENT AUDIT", "PUBLICATION RIGHTS")
     for k in order:
         if k in res["rows"]:
             st, detail = res["rows"][k]
@@ -349,7 +387,7 @@ def main(argv=None) -> int:
     return STOP if res.get("fatal") else OK
 
 
-__all__ = ["run_evening_full", "session_context", "report_rows", "report_fatal", "post_rows",
+__all__ = ["run_evening_full", "post_readiness", "session_context", "report_rows", "report_fatal", "post_rows",
            "post_fatal", "existing_post", "post_manifests", "command", "REPORT_ARGS",
            "POST_ARGS", "PASS", "ATTENTION", "main"]
 

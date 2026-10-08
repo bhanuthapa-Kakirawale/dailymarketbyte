@@ -291,7 +291,14 @@ def test_normal_daily_scripts_are_unchanged(name):
     if committed.returncode != 0:
         pytest.skip("git history not available")
     norm = lambda b: b.replace(b"\r\n", b"\n")                         # noqa: E731
-    assert norm(open(os.path.join(ROOT, "scripts", name), "rb").read()) == norm(committed.stdout)
+    current = norm(open(os.path.join(ROOT, "scripts", name), "rb").read())
+    if name == "run_morning_pre.bat":
+        # PK-C (owner-requested) inserted ONE block: the production readiness gate before the
+        # render (docs/PRODUCTION_READINESS.md). Everything else stays byte-for-byte e741289.
+        start = current.index(b"REM Production readiness gate")
+        end = current.index(b"echo.\npython main.py --mode premarket --shadow")
+        current = current[:start] + current[end + len(b"echo.\n"):]
+    assert current == norm(committed.stdout)
 
 
 # --------------------------------------------------------------------------- claims fix

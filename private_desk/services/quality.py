@@ -92,6 +92,37 @@ def data_quality(repo: DeskRepository, session: dt.date | None, replay: dict | N
     except SourceUnavailable as exc:
         out["report"], out["runs"] = {"status": "HISTORY_UNAVAILABLE", "error": str(exc)}, []
     out["editorial"] = editorial_decisions(repo)
+    out["readiness"] = production_readiness(repo)
+    return out
+
+
+def production_readiness(repo: DeskRepository) -> list:
+    """PK-C: the latest PRE / POST production-readiness report (READY / DEGRADED / BLOCKED +
+    the reasons) the gate wrote to output/readiness/. Read-only JSON - the desk never runs the
+    gate itself."""
+    import glob
+    import json
+    import os
+    out = []
+    for edition in ("PRE", "POST"):
+        files = glob.glob(repo.path("readiness", f"readiness_{edition}_*.json"))
+        files = [f for f in files if not f.endswith("_post_render.json")]
+        if not files:
+            out.append({"edition": edition, "status": "NO_REPORT"})
+            continue
+        path = max(files, key=lambda f: (os.path.basename(f), f))
+        try:
+            with open(path, encoding="utf-8") as fh:
+                d = json.load(fh)
+        except (OSError, ValueError) as exc:
+            out.append({"edition": edition, "status": "UNREADABLE", "error": str(exc)})
+            continue
+        out.append({"edition": edition, "status": d.get("overall_status") or "UNKNOWN",
+                    "file": os.path.relpath(path, repo.out_dir),
+                    "session": d.get("session_date"), "evaluated_at": d.get("evaluated_at"),
+                    "mode": d.get("mode"), "decision": d.get("decision"),
+                    "blocking": d.get("blocking_reasons") or [],
+                    "warnings": d.get("warnings") or []})
     return out
 
 

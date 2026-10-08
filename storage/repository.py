@@ -205,6 +205,23 @@ class MarketHistory:
         self.schema_version = initialise(self.conn)
         self.conn.commit()
 
+    @classmethod
+    def open_readonly(cls, db_path: str) -> "MarketHistory":
+        """A READ-ONLY handle for inspection (the production readiness gate): no directory
+        creation, no WAL switch, no schema initialise/migration - `storage.readonly` semantics,
+        plus `query_only`, so any write method raises. FileNotFoundError when the database does
+        not exist (a missing history is reported, never created)."""
+        from .readonly import connect_readonly
+        if not os.path.exists(db_path):
+            raise FileNotFoundError(db_path)
+        self = cls.__new__(cls)
+        self.db_path = db_path
+        self.conn = connect_readonly(db_path)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA query_only = ON")
+        self.schema_version = current_version(self.conn)
+        return self
+
     def __enter__(self):
         return self
 

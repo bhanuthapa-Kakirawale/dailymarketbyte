@@ -54,8 +54,12 @@ def find_previous_report(prev: dt.date, db_path: str | None = None):
     return (lookup.report, lookup.path) if lookup.found else (None, None)
 
 
-def previous_report_lookup(prev: dt.date, db_path: str | None = None):
+def previous_report_lookup(prev: dt.date, db_path: str | None = None, history=None):
+    """`history`: an already-open (e.g. read-only) MarketHistory - the readiness gate's seam;
+    None opens the default database exactly as before."""
     from operations.report_lookup import find_canonical_report
+    if history is not None:
+        return find_canonical_report(prev, history=history)
     return find_canonical_report(prev, db_path=db_path or _default_db())
 
 
@@ -71,7 +75,7 @@ _LOOKUP_BLOCK = {"MISSING": "PREVIOUS_SESSION_MISSING",
                  "HISTORY_UNAVAILABLE": "PREVIOUS_REPORT_UNAVAILABLE"}
 
 
-def require_previous_report(pre_date: dt.date, cal, db_path: str | None = None):
+def require_previous_report(pre_date: dt.date, cal, db_path: str | None = None, history=None):
     """(prev_session, report, path) for the PRE date, or raise PreMarketBlocked.
 
     requested PRE date D -> expected prior session = the canonical calendar's previous session
@@ -82,7 +86,7 @@ def require_previous_report(pre_date: dt.date, cal, db_path: str | None = None):
     prev = cal.previous_session(pre_date)
     if prev is None:
         raise PreMarketBlocked("NO_PREVIOUS_SESSION", f"no canonical session before {pre_date}")
-    lookup = previous_report_lookup(prev, db_path)
+    lookup = previous_report_lookup(prev, db_path, history=history)
     if not lookup.found:
         code = _LOOKUP_BLOCK.get(lookup.status, "PREVIOUS_SESSION_MISSING")
         msg = (f"no canonical report for the previous session {prev} - the REPORT job "
@@ -160,16 +164,19 @@ def _gift_not_fetched(policy):
 
 def build_real_brief(pre_date: dt.date, as_of: dt.datetime, history_fn=None, gift_fn=None,
                      calendar=None, db_path: str | None = None, shadow: bool = False,
-                     gift_policy=None, intel_fn=None, institutional_fn=None):
+                     gift_policy=None, intel_fn=None, institutional_fn=None, history=None,
+                     stories_fn=None):
     """(brief, acquisition) from REAL data. Raises PreMarketBlocked when the previous session
     cannot be described honestly. GIFT goes through the publication gate
     (`operations.gift_policy`): fetched only in shadow or once approved, displayed only once
-    approved; the verdict is in `brief.gift_policy`."""
+    approved; the verdict is in `brief.gift_policy`. `history` / `stories_fn` are the readiness
+    gate's read-only seams (an open MarketHistory; a replacement for the published-Radar-story
+    lookup) - None keeps the production behaviour."""
     from operations.gift_policy import gift_publication_policy, should_fetch
     from presentation.report_adapter import ReportPresentation
     from providers.premarket import fetch_premarket_quotes
     cal = calendar or SessionCalendar()
-    prev, report, report_path = require_previous_report(pre_date, cal, db_path)
+    prev, report, report_path = require_previous_report(pre_date, cal, db_path, history=history)
     pres_m = ReportPresentation(report).m
     report_vix = pres_m.get("vix")
     policy = gift_policy or gift_publication_policy()
@@ -187,7 +194,8 @@ def build_real_brief(pre_date: dt.date, as_of: dt.datetime, history_fn=None, gif
                            "reason": f"not fetched - {policy.reason}"}
         acq.log.append(f"GIFT NIFTY: POLICY_DISABLED - not fetched ({policy.reason})")
     events = scheduled_events_for(pre_date, cal, EXPIRY_WEEKDAY)
-    stories, evidence, audit, radar_src = published_radar_stories(prev, cal.previous_session(prev))
+    stories, evidence, audit, radar_src = (stories_fn or published_radar_stories)(
+        prev, cal.previous_session(prev))
     brief = build_pre_brief(report, pre_date, as_of, cal, acq, events, stories, evidence, audit,
                             sources={"market_report": report_path, **radar_src,
                                      "global_cues": "yahoo_finance (dated bars / 5m intraday)",

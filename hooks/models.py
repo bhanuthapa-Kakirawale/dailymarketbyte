@@ -66,7 +66,7 @@ ARCHETYPE_HEROES = {
     Archetype.QUIET_MARKET_HIDDEN_ACTION: (HeroVisual.DEPTH_LOLLIPOP, HeroVisual.SIGNAL_STACK_CHART,
                                           HeroVisual.HEADLINE_NUMBER),
     Archetype.BIG_MOVE: (HeroVisual.HEADLINE_NUMBER,),
-    Archetype.CONTRAST: (HeroVisual.VERSUS_SPLIT,),
+    Archetype.CONTRAST: (HeroVisual.VERSUS_SPLIT, HeroVisual.HEADLINE_NUMBER),
     Archetype.UNUSUAL_ACTIVITY: (HeroVisual.SIGNAL_STACK_CHART, HeroVisual.DEPTH_LOLLIPOP),
     Archetype.OVERNIGHT_CUE: (HeroVisual.OVERNIGHT_BOARD, HeroVisual.HEADLINE_NUMBER),
     Archetype.EVENT_LED: (HeroVisual.EVENT_CALENDAR,),

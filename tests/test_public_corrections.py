@@ -18,7 +18,7 @@ from publication.scene_claims import storyboard_scene_texts
 from test_public_publication import NEXT, PREV, SESSION, _Report, _intel, _plan, _post, _pre
 
 
-def _pres_break(pct=-1.64, reversal=False):
+def _pres_break(pct=-1.64, reversal=False, sectors=(("Metal", -0.4), ("IT", -1.2))):
     """A Nifty session that closes BELOW its prior 20-day low (a new structural event), near
     the day's low - or, with `reversal`, near the day's HIGH (an intraday reversal)."""
     n = 40
@@ -36,7 +36,7 @@ def _pres_break(pct=-1.64, reversal=False):
     c = float(closes[-1])
     m = {"pct": pct, "close": c, "chg": c * pct / 100, "open": float(opens[-1]),
          "high": float(highs[-1]), "low": float(lows[-1]), "chart_df": df, "prev_date": PREV}
-    return NS(m=m, sec=[{"name": "Metal", "pct": -0.4}, {"name": "IT", "pct": -1.2}],
+    return NS(m=m, sec=[{"name": n, "pct": v} for n, v in sectors],
               session_date=SESSION, fd=None, report=_Report())
 
 
@@ -50,7 +50,7 @@ def test_hook_plus_chart_suppresses_the_redundant_market_pulse():
     sb = _sb(_pres_break())
     kinds = [s.kind for s in sb.scenes]
     assert "nifty.move" in sb.hook_plan["fact_ids"]
-    assert kinds[:3] == ["DYNAMIC_HOOK", "NIFTY", "SECTORS"] and "PULSE" not in kinds
+    assert kinds[:2] == ["DYNAMIC_HOOK", "NIFTY"] and "PULSE" not in kinds
     assert "PULSE" not in sb.post_plan["order"]
     assert sb.post_plan["reasons"]["PULSE"].startswith("omitted: editorial de-duplication")
     assert "the close" not in sb.hook_plan["summary_line"]      # never promises a dropped scene
@@ -87,7 +87,8 @@ def test_flows_use_net_seller_buyer_wording_and_stay_provisional():
 
 
 def test_sector_counts_say_tracked():
-    sb = _sb(_pres_break())
+    # a sector board that wins its V3 slot (a 1.4-pt spread is NOTABLE)
+    sb = _sb(_pres_break(sectors=(("Metal", -0.2), ("IT", -1.6))))
     s = next(s for s in sb.scenes if s.kind == "SECTORS")
     assert s.headline == "All 2 tracked sector indices fell"
     assert s.subline == "0 of 2 tracked indices closed higher"
@@ -102,7 +103,8 @@ def test_sector_counts_say_tracked():
 
 
 # --------------------------------------------------------------------------- 4-5. roles / share
-def test_source_roles_are_separated_and_single_source_scenes_unchanged():
+def test_source_roles_are_separated_and_single_source_scenes_unchanged(editorial_select):
+    editorial_select("EXCHANGE")
     sb = _post()
     st = next(s for s in sb.scenes if s.kind == "STRUCTURE")
     assert st.texts["provenance"]["source"] == \
@@ -203,13 +205,14 @@ def test_approved_sources_remain_publishable(tmp_path):
     require_publication_pass(audit, str(video))
 
 
-def test_review_and_internal_renders_stay_complete_under_block(monkeypatch):
+def test_review_and_internal_renders_stay_complete_under_block(monkeypatch, editorial_select):
     monkeypatch.delenv("PUBLIC_REVIEW_REQUIRED_POLICY", raising=False)
+    editorial_select("EXCHANGE")          # the rights block never empties a selected section
     kinds = [s.kind for s in _post().scenes]
     assert {"SECTORS", "STRUCTURE", "EXCHANGE_WATCH"} <= set(kinds)      # nothing emptied
     private = _post(profile="PRIVATE_ANALYTICS")
     assert "RADAR_STORY" in [s.kind for s in private.scenes]
-    brief, plan, sb = _pre()
+    brief, plan, sb = _pre(reduce=True)
     assert "SETUP" in plan.order and "EXCHANGE" in plan.order
 
 

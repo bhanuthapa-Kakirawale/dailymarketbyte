@@ -290,6 +290,12 @@ def build_pre_storyboard(brief, plan, dynamic_hook: bool = True, hook_ai: bool =
         if gate is not None:
             from publication.public_hooks import restrict_sheet
             restrict_sheet(sheet, gate)
+        # Hook V3: a MATERIAL lead story steers the hook (hooks.candidates.LEAD_STORY_BONUS)
+        ed = plan.editorial or {}
+        if ed.get("lead_tier", 0) >= 3 and ed.get("lead_section"):
+            from hooks.sheet_pre import PRE_SECTION_KEYS
+            lead = PRE_SECTION_KEYS.get(ed["lead_section"], ed["lead_section"])
+            sheet.metadata = dict(sheet.metadata, lead_section=lead)
         kwargs = {"client": hook_client} if hook_client is not None else {}
         hp = plan_hook(sheet, use_ai=hook_ai, **kwargs)
         scenes.append(dynamic_hook_spec(hp, sheet))
@@ -315,10 +321,13 @@ def build_pre_storyboard(brief, plan, dynamic_hook: bool = True, hook_ai: bool =
     sb.claim_texts = storyboard_scene_texts(sb)
     # PRE sections the planner dropped on budget/runtime are an editorial cap, not "no data"
     secs = sb.public_audit.setdefault("omitted_sections", {})
-    for key, pub in (("EXCHANGE", "EXCHANGE_WATCH"), ("IPO", "IPO_WATCH")):
-        if (brief.exchange_watch if key == "EXCHANGE" else brief.ipo_watch) and \
-                key not in plan.order:
+    for key, pub, present in (("EXCHANGE", "EXCHANGE_WATCH", brief.exchange_watch),
+                              ("IPO", "IPO_WATCH", brief.ipo_watch),
+                              ("MARKET_EVENTS", "MARKET_EVENTS", brief.market_events),
+                              ("STRUCTURE", "MARKET_STRUCTURE", brief.structure)):
+        if present and key not in plan.order:
             secs[pub] = {"rendered": False, "code": "EDITORIAL_CAP",
+                         "editorial_status": "EDITORIAL_CAP",
                          "detail": plan.reasons.get(key, "")}
     return sb
 

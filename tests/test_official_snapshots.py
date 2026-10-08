@@ -141,11 +141,12 @@ def _fresh_state_session():
 
 # --------------------------------------------------------------------------- two runners
 @pytest.fixture
-def two_runners(offline_pipeline, monkeypatch, tmp_path):
+def two_runners(offline_pipeline, monkeypatch, tmp_path, editorial_select):
     """Runner A: the 19:30 REPORT job for Friday captures + persists. Runner B: a CLEAN output
     directory hydrates from the store and renders Monday's POST - with every official fetcher
     wired to fail, so anything B shows came from the persisted snapshots."""
     from products.report_job import run_report_job
+    editorial_select("EXCHANGE", "IPO")   # V3 grades these ROUTINE; this tests durable state
     store = state.LocalStateStore(str(tmp_path / "store"))
     runner_a, runner_b = tmp_path / "runnerA", tmp_path / "runnerB"
     _use(monkeypatch, runner_a)
@@ -648,9 +649,10 @@ def test_approved_24_sep_sequence_is_unchanged_from_stored_inputs(monkeypatch):
                                      replay=True, snapshot_session=dt.date(2026, 9, 24))
     sb, _ = PU.build_post_storyboard(report, plan, profile=prof, intelligence=intel,
                                      radar_dir=os.path.join(out, "radar"))
-    assert [s.kind for s in sb.scenes] == ["DYNAMIC_HOOK", "NIFTY", "SECTORS", "FLOWS",
-                                           "STRUCTURE", "STRUCTURE", "CLOSING"]
-    assert 36.0 <= sb.total_duration <= 38.5
+    # Editorial Planner V3 sequence (see tests/test_post_cutover.py EXPECTED_24_SEP)
+    assert [s.kind for s in sb.scenes] == ["DYNAMIC_HOOK", "NIFTY", "SECTORS", "STRUCTURE",
+                                           "FLOWS", "CLOSING"]
+    assert 30.5 <= sb.total_duration <= 32.0
     inputs = sb.public_audit["inputs"]
     assert inputs["market_structure"]["source"] == "PERSISTED_SNAPSHOT"
     codes = sb.public_audit["omitted_sections"]

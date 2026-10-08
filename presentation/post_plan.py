@@ -12,18 +12,27 @@ The POST Short answers "what actually happened today?" in one line of story:
     HOOK -> MARKET (how Nifty finished) -> SECTORS (where strength/weakness sat)
          -> [optional context that adds a NEW fact] -> RADAR (3 stories) -> CLOSE
 
-Core sections appear whenever their data exists. Optional sections must pass a VALUE TEST:
-they appear only when they add a fact that no core section already carries. A section is never
-shown merely because data exists, and never stretched to fill time.
+The MARKET PULSE (the headline) is the one required section. Every other section must first
+pass its VALUE TEST (it adds a fact the headline does not carry), and then - Editorial Planner
+V3 - compete with every other qualifying story, the public-intelligence sections included
+(UNDER THE SURFACE, MARKET EVENTS, IPO WATCH, EXCHANGE WATCH), in ONE deterministic arbitration
+(`presentation.editorial_arbiter`, POST_POLICY): materiality tier, POST relevance, redundancy,
+one story per family, slots and the runtime budget. A section is never shown merely because
+data exists, and never stretched to fill time; every decision is in `editorial["trace"]`.
 """
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 
 from config import fmt_in
+from editorial.config import MIN_SHORT_DURATION
 from intelligence.flow_materiality import is_material
 
-POST_PLAN_VERSION = "post-3.1"
+from . import editorial_arbiter as ea
+from .editorial_candidates import (exchange_candidate, ipo_candidate, market_events_candidate,
+                                   structure_candidate)
+
+POST_PLAN_VERSION = "post-4.0"
 
 # --------------------------------------------------------------------------- policy
 FLAT_PCT = 0.10              # |Nifty| below this: "almost unchanged"
@@ -42,11 +51,33 @@ GLOBAL_NIFTY_MIN_PCT = 1.0   # ... on a day Nifty itself moved at least this muc
 FLOW_MIN_CRORE = 1000.0
 HIGH_IMPACT_TAGS = {"RBI", "FED", "BUDGET", "POLICY"}
 
-SECTION_ORDER = ("PULSE", "NIFTY", "SECTORS", "MOVERS", "FLOWS", "GLOBAL", "EVENT", "RADAR")
-# At most this many optional sections per Short, taken in editorial priority - a busy day
-# must not turn the Short back into a dashboard (and the runtime stays <= 65 s).
-OPTIONAL_BUDGET = 2
-OPTIONAL_PRIORITY = ("NIFTY", "FLOWS", "MOVERS", "EVENT", "GLOBAL")
+# Sector materiality (V3): the value-test thresholds PRE has always used for its own sector
+# scene, plus one MATERIAL line - a rotation this wide is a story of its own.
+SECTOR_NOTABLE_SPREAD = 1.0  # leader - laggard, pts
+SECTOR_NOTABLE_PCT = 1.5     # or any one sector index moved this much
+SECTOR_MATERIAL = 2.5        # spread or single-sector move for MATERIAL
+
+# Editorial Planner V3 - the POST edition policy ("what changed in the completed session").
+# Narrative order: HEADLINE -> WHY (sectors, internals, flows) -> WHAT ELSE (events) -> Radar.
+SECTION_ORDER = ("PULSE", "NIFTY", "SECTORS", "STRUCTURE", "FLOWS", "MOVERS", "GLOBAL", "EVENT",
+                 "MARKET_EVENTS", "IPO", "EXCHANGE", "RADAR")
+OPTIONAL_SLOTS = 4           # a busy day must not turn the Short back into a dashboard
+POLICY_EVENT = "POLICY"      # family of a high-impact policy day (RBI/FED/BUDGET)
+HOOK_ESTIMATE_S = 5.0        # what the storyboard's runtime ceiling already assumes
+CLOSING_S = 2.6
+MIN_RUNTIME = MIN_SHORT_DURATION  # the readability-QA floor (editorial.config)
+# Scene seconds (mirrors daily_video.storyboard's builders; a test pins them)
+DUR = {"PULSE": 5.4, "MOVERS": 4.6, "GLOBAL": 4.8, "EVENT": 4.2, "FLOWS": 5.5,
+       "SECTORS_BASE": 5.6, "SECTORS_PER_EXTRA": 0.1, "NIFTY": 6.0}
+POST_RELEVANCE = {ea.SECTORS: 2, ea.BREADTH: 2, ea.FLOWS: 2, ea.INDEX: 2, POLICY_EVENT: 2,
+                  ea.MOVERS: 1, ea.CALENDAR: 1, ea.IPO: 1, ea.EXCHANGE: 1, ea.GLOBAL: 1}
+
+
+def post_policy(max_runtime: float = 62.0) -> ea.EditionPolicy:
+    return ea.EditionPolicy(name="POST", relevance=POST_RELEVANCE, play_order=SECTION_ORDER,
+                            anchor=("PULSE", "NIFTY"), optional_slots=OPTIONAL_SLOTS,
+                            max_runtime=max_runtime, fixed_cost_s=HOOK_ESTIMATE_S + CLOSING_S,
+                            min_runtime=MIN_RUNTIME)
 
 
 @dataclass
@@ -69,9 +100,19 @@ class PostSectionPlan:
     global_context: dict | None = None
     special_event: dict | None = None
     notes: list = field(default_factory=list)
+    # Editorial Planner V3: the arbitration record ({version, policy, order, lead, trace}) and
+    # the selected public-intelligence models the storyboard lays out (STRUCTURE: [(insight,
+    # provenance lines)], MARKET_EVENTS / IPO / EXCHANGE: their display models)
+    editorial: dict | None = None
+    public: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
-        d = asdict(self)
+        public = self.public
+        self.public = {}
+        try:
+            d = asdict(self)
+        finally:
+            self.public = public
         if d.get("structure"):
             d["structure"] = {"model": {k: v for k, v in d["structure"]["model"].items()
                                         if k not in ("candles", "ma_series")},
@@ -177,9 +218,20 @@ def _structure_model(m, ev):
     return {"model": model.to_dict(), "texts": model.strings()}
 
 
-def plan_post_sections(pres, plan, radar_stories=(), universe="Nifty 100") -> PostSectionPlan:
+def plan_post_sections(pres, plan, radar_stories=(), universe="Nifty 100", public=None,
+                       admit=None, symbol_sectors=None,
+                       max_runtime: float = 62.0) -> PostSectionPlan:
     """`radar_stories`: the PUBLISHED Radar stories [(presentation_story, story)] - the planner
-    needs them only to keep Movers from repeating a Radar story."""
+    needs them only to keep Movers from repeating a Radar story.
+
+    V3 inputs (all optional, so the planner still runs on the report alone):
+      public          presentation.public_intelligence.PublicSections - the gate-admitted
+                      UNDER THE SURFACE / MARKET EVENTS / IPO / EXCHANGE models, which now
+                      compete for the same slots instead of being appended
+      admit(key, post) -> bool   the publication gate's verdict on a report-backed section,
+                      asked BEFORE arbitration so a refused section never takes a slot
+      symbol_sectors  {symbol: Market Structure sector} - lets same-sector movers be
+                      recognised as a repeat of the sector story"""
     m = pres.m
     reasons, notes = {}, []
     radar_syms = {sp["instrument"] for sp, _ in radar_stories}
@@ -358,34 +410,198 @@ def plan_post_sections(pres, plan, radar_stories=(), universe="Nifty 100") -> Po
                                            "'watch next' items, not post-market facts" if tags
                                            else "no events"))
 
-    # ---------------------------------------------------------------- RADAR (core)
+    # ---------------------------------------------------------------- RADAR (private, locked)
     reasons["RADAR"] = (f"core: {len(radar_stories)} published Radar stories - the analytical close"
                         if radar_stories else "omitted: no published Radar stories")
 
-    show = {"PULSE": pulse is not None, "NIFTY": structure is not None,
-            "SECTORS": sectors is not None, "MOVERS": movers is not None, "FLOWS": flows_ok,
-            "GLOBAL": global_context is not None, "EVENT": special is not None,
-            "RADAR": bool(radar_stories)}
-    qualified = [k for k in OPTIONAL_PRIORITY if show[k]]
-    for k in qualified[OPTIONAL_BUDGET:]:
-        show[k] = False
-        reasons[k] = (f"omitted: qualified ({reasons[k].removeprefix('included: ')}), but the "
-                      f"Short already carries {OPTIONAL_BUDGET} optional sections of higher "
-                      f"priority ({', '.join(qualified[:OPTIONAL_BUDGET])})")
-    structure = structure if show["NIFTY"] else None
-    movers = movers if show["MOVERS"] else None
-    global_context = global_context if show["GLOBAL"] else None
-    special = special if show["EVENT"] else None
-    order = [k for k in SECTION_ORDER if show[k]]
-    return PostSectionPlan(
-        version=POST_PLAN_VERSION, show_market_pulse=show["PULSE"],
-        show_nifty_structure=show["NIFTY"], show_sectors=show["SECTORS"],
-        show_movers=show["MOVERS"], show_global_context=show["GLOBAL"], show_flows=show["FLOWS"],
-        show_special_event=show["EVENT"], show_radar=show["RADAR"], order=order, reasons=reasons,
-        pulse=pulse, structure=structure, sectors=sectors, movers=movers,
-        global_context=global_context, special_event=special, notes=notes)
+    post = PostSectionPlan(
+        version=POST_PLAN_VERSION, show_market_pulse=False, show_nifty_structure=False,
+        show_sectors=False, show_movers=False, show_global_context=False, show_flows=False,
+        show_special_event=False, show_radar=False, order=[], reasons=reasons, pulse=pulse,
+        structure=structure, sectors=sectors, movers=movers, global_context=global_context,
+        special_event=special, notes=notes)
+
+    # ---------------------------------------------------------------- V3 arbitration
+    nifty_pct = m.get("pct")
+    session = getattr(pres, "session_date", None)
+    report = getattr(pres, "report", None)
+    cands = []
+    if pulse is not None and admit is not None and not admit("PULSE", post):
+        # the headline itself refused by the gate (e.g. synthetic data): it never renders, so it
+        # must not be budgeted either - the storyboard records the refusal
+        pulse = None
+    if pulse is not None:
+        cands.append(ea.EditorialCandidate(
+            "POST.PULSE", "PULSE", ea.STRUCTURE_ANCHOR, ea.MATERIAL, "the headline: how Nifty "
+            "finished", DUR["PULSE"], role=ea.REQUIRED, topics=frozenset({"index_direction"}),
+            as_of=session))
+    if radar_stories:
+        # PRIVATE_ANALYTICS only (the public gate refuses every Radar story before this point);
+        # the locked Radar section stays outside the public runtime budget, as before V3.
+        cands.append(ea.EditorialCandidate(
+            "POST.RADAR", "RADAR", "RADAR", ea.MATERIAL, reasons["RADAR"], 0.0,
+            role=ea.REQUIRED, as_of=session))
+    if structure is not None:
+        fam = structure["model"]["event_family"]
+        cands.append(ea.EditorialCandidate(
+            "POST.NIFTY", "NIFTY", ea.INDEX,
+            ea.MATERIAL if fam.startswith("RANGE") else ea.NOTABLE,
+            reasons["NIFTY"].removeprefix("included: "), DUR["NIFTY"],
+            topics=frozenset({"nifty_structure"}), as_of=session))
+    if sectors is not None:
+        tier, why, explains, topics = sector_grade(sectors["rows"], nifty_pct)
+        cands.append(ea.EditorialCandidate(
+            "POST.SECTORS", "SECTORS", ea.SECTORS, tier, why, sectors_cost(len(sectors["rows"])),
+            explains_headline=explains, topics=topics, as_of=session))
+    if movers is not None:
+        cands.append(ea.EditorialCandidate(
+            "POST.MOVERS", "MOVERS", ea.MOVERS, ea.NOTABLE,
+            reasons["MOVERS"].removeprefix("included: "), DUR["MOVERS"],
+            topics=mover_topics(movers["cards"], symbol_sectors), as_of=session))
+    if fl is not None and len(fl.items) >= 2:
+        fii = fl.items[0].numeric
+        cands.append(ea.EditorialCandidate(
+            "POST.FLOWS", "FLOWS", ea.FLOWS, _flows_tier(fl) if flows_ok else 0,
+            reasons["FLOWS"].removeprefix("included: "), DUR["FLOWS"],
+            quality=_facts_quality(report, _flow_fact_ids(report)),
+            explains_headline=bool(fii is not None and nifty_pct
+                                   and (fii > 0) == (nifty_pct > 0)),
+            topics=frozenset({"flows_nse"}), as_of=session))
+    if global_context is not None:
+        cands.append(ea.EditorialCandidate(
+            "POST.GLOBAL", "GLOBAL", ea.GLOBAL, ea.ROUTINE,
+            reasons["GLOBAL"].removeprefix("included: "), DUR["GLOBAL"],
+            topics=frozenset({"global"}), as_of=session))
+    if special is not None:
+        cands.append(ea.EditorialCandidate(
+            "POST.EVENT", "EVENT", POLICY_EVENT, ea.MATERIAL,
+            reasons["EVENT"].removeprefix("included: "), DUR["EVENT"],
+            topics=frozenset({"policy_event"}), as_of=session))
+    if public is not None:
+        for ins, lines in public.structure:
+            cands.append(structure_candidate(ins, nifty_pct, "POST", session, lines))
+        if public.market_events:
+            cands.append(market_events_candidate(public.market_events, "POST", session))
+        if public.ipo:
+            cands.append(ipo_candidate(public.ipo, "POST", session))
+        if public.exchange:
+            cands.append(exchange_candidate(public.exchange, "POST", session))
+
+    if admit is not None:
+        cands = [c if (c.role == ea.REQUIRED or c.tier <= 0 or c.section not in ADMITTED_HERE
+                       or admit(c.section, post))
+                 else ea.with_quality(c, ea.PUBLICATION_BLOCKED) for c in cands]
+    decision = ea.arbitrate(cands, post_policy(max_runtime))
+    apply_decision(post, decision)
+    return post
+
+
+# Report-backed sections the publication gate is asked about here (the public-intelligence
+# sections were admitted fact-by-fact upstream, in presentation.public_intelligence)
+ADMITTED_HERE = frozenset({"NIFTY", "SECTORS", "MOVERS", "FLOWS", "GLOBAL", "EVENT"})
+_SHOW = {"PULSE": "show_market_pulse", "NIFTY": "show_nifty_structure", "SECTORS": "show_sectors",
+         "MOVERS": "show_movers", "GLOBAL": "show_global_context", "FLOWS": "show_flows",
+         "EVENT": "show_special_event", "RADAR": "show_radar"}
+
+
+def apply_decision(post: PostSectionPlan, decision) -> None:
+    """Write the arbiter's verdict into the plan: show flags, play order, one reason line per
+    competing section, and the selected public-intelligence models."""
+    shown = decision.sections_shown()
+    for key, attr in _SHOW.items():
+        setattr(post, attr, key in shown)
+    post.order = list(decision.order)
+    for key in sorted({t["section"] for t in decision.trace} - {"PULSE", "RADAR"}):
+        post.reasons[key] = decision.section_reason(key, post.reasons.get(key))
+    if not post.show_nifty_structure:
+        post.structure = None
+    if not post.show_sectors:
+        post.sectors = None
+    if not post.show_movers:
+        post.movers = None
+    if not post.show_global_context:
+        post.global_context = None
+    if not post.show_special_event:
+        post.special_event = None
+    pub = {}
+    for cid in decision.selected:
+        c = decision.candidates[cid]
+        if c.section == "STRUCTURE":
+            pub.setdefault("STRUCTURE", []).append(c.payload)
+        elif c.section in ("MARKET_EVENTS", "IPO", "EXCHANGE"):
+            pub[c.section] = c.payload
+    post.public = pub
+    post.editorial = decision.to_dict()
+
+
+# --------------------------------------------------------------------------- V3 grading
+def sectors_cost(n: int) -> float:
+    return round(DUR["SECTORS_BASE"] + DUR["SECTORS_PER_EXTRA"] * max(0, n - 6), 2)
+
+
+def sector_grade(rows, nifty_pct) -> tuple:
+    """(tier, reason, explains_headline, topics) for a sector board, strongest first. NOTABLE is
+    the value test PRE has always applied to its own sector scene; MATERIAL a wide rotation."""
+    vals = [float(r["numeric"]) for r in rows]
+    spread = vals[0] - vals[-1] if len(vals) > 1 else 0.0
+    big = max(abs(v) for v in vals)
+    if spread >= SECTOR_MATERIAL or big >= SECTOR_MATERIAL:
+        tier = ea.MATERIAL
+    elif spread >= SECTOR_NOTABLE_SPREAD or big >= SECTOR_NOTABLE_PCT:
+        tier = ea.NOTABLE
+    else:
+        tier = ea.ROUTINE
+    why = (f"sector spread {spread:.2f} pts, largest single move {big:.2f}% "
+           f"(leader {rows[0]['name']} {rows[0]['value']}, laggard {rows[-1]['name']} "
+           f"{rows[-1]['value']})")
+    explains = bool(nifty_pct) and ((nifty_pct > 0 and vals[0] > 0) or
+                                    (nifty_pct < 0 and vals[-1] < 0))
+    topics = {"sectors_board"} | {t for t in (ea.sector_topic(rows[0]["name"]),
+                                              ea.sector_topic(rows[-1]["name"])) if t}
+    return tier, why, explains, frozenset(topics)
+
+
+def mover_topics(cards, symbol_sectors=None) -> frozenset:
+    """Each card is the sector story's fact when its stock sits in a mapped sector (so a mover
+    list dominated by the leading/lagging sector is a repeat), else its own fact."""
+    out = set()
+    for c in cards:
+        t = ea.sector_topic((symbol_sectors or {}).get(c["name"]))
+        out.add(t or f"mover:{c['name']}")
+    return frozenset(out)
+
+
+def _flows_tier(fl) -> int:
+    materiality = (fl.metadata or {}).get("materiality") or {}
+    states = [ctx for ctx in materiality.values() if is_material(ctx)]
+    if any(ctx.get("magnitude_state") in ("LARGE_NET_BUY", "LARGE_NET_SELL") for ctx in states):
+        return ea.MATERIAL
+    return ea.NOTABLE
+
+
+def _flow_fact_ids(report) -> list:
+    return list(((getattr(report, "institutional_flows", None) or {}).get("fact_ids")) or [])
+
+
+def _facts_quality(report, fact_ids) -> str:
+    """OK; PARTIAL when a fact is backed ONLY by AI observations (never VERIFIED - see
+    core.validation); STALE when the report marked it stale."""
+    from core.enums import SourceType, ValidationStatus
+    if report is None or not hasattr(report, "fact"):
+        return ea.OK
+    quality = ea.OK
+    for fid in fact_ids:
+        f = report.fact(fid)
+        if f is None:
+            continue
+        if getattr(f, "validation_status", None) is ValidationStatus.STALE:
+            return ea.STALE
+        obs = list(getattr(f, "observations", None) or [])
+        if obs and all(getattr(o, "source_type", None) is SourceType.AI for o in obs):
+            quality = ea.PARTIAL
+    return quality
 
 
 __all__ = ["PostSectionPlan", "plan_post_sections", "direction_phrase", "session_support",
-           "structural_event", "POST_PLAN_VERSION", "SECTION_ORDER", "OPTIONAL_BUDGET",
-           "OPTIONAL_PRIORITY"]
+           "structural_event", "POST_PLAN_VERSION", "SECTION_ORDER", "OPTIONAL_SLOTS",
+           "post_policy", "sector_grade", "sectors_cost", "mover_topics", "apply_decision", "DUR"]

@@ -305,7 +305,8 @@ def test_pre_plan_caps_the_published_watch_at_two():
     import dataclasses
     from presentation.pre_plan import plan_pre_sections
     from products.pre_fixtures import synthetic_brief
-    base = synthetic_brief("RISK_OFF")
+    # without RISK_OFF's NOTABLE VIX / sector stories, so the stock watch wins its V3 slot
+    base = dataclasses.replace(synthetic_brief("RISK_OFF"), vix=None, sectors=[])
     many = [dict(base.stock_facts[0], symbol=s) for s in ("CCC", "AAA", "EEE")]
     plan = plan_pre_sections(dataclasses.replace(base, stock_facts=many))
     assert [i["symbol"] for i in plan.stock_watch.items] == ["CCC", "AAA"]
@@ -488,7 +489,8 @@ FROZEN = {
     # `structure_spec` from `.public_storyboard`) appended to the existing EXCHANGE/IPO/
     # MARKET_EVENTS `builders` dict, plus "STRUCTURE" added to the omitted-sections tuple. No
     # other frozen file changed.
-    "daily_video/pre_storyboard.py": "306791b996b9737c22e56463ee2e92131b23217ce2b039cba59c4a7305f2a1f5",
+    # re-pinned: P4 Editorial Planner V3 (owner-approved plan)
+    "daily_video/pre_storyboard.py": "32793f49df3f9a923c74648b40d3aaea944905a58049d1d2aa40563056801ccd",
     "daily_video/radar_scenes.py": "ecda846e8012b64794641568023fa3582d256b2456c6ff805171cb76738b9647",
     "daily_video/radar_story_scene.py": "e544e5b3d224e6fcd194b9c5602a26749bda5f6c7a1a0228cb9e2ba38b53c64a",
     # Re-pinned 2026-10-07 with owner approval: `diverging_rows` (SECTORS/FLOWS) now reserves
@@ -497,7 +499,8 @@ FROZEN = {
     # negative/comma crore value (e.g. "STOCK EXCHANGE" / "-₹4,281 cr"). No other frozen
     # file changed.
     "daily_video/scenes.py": "4347e5280af68e429a25e471d372bc830c52bedc9ec4b5c1c22208c8d9be8abb",
-    "daily_video/storyboard.py": "cf7cc4860852b9316354a1cc36c9672373b9bc3e646b552d194ba78664620783",
+    # re-pinned: P4 Editorial Planner V3 (owner-approved plan)
+    "daily_video/storyboard.py": "cff54bc8ae35b85be1e45dfa174db68cd87fde26b0ca6d1f2d6f8cb7448c69db",
     "daily_video/theme.py": "8e1af617da9052c104ede87ddd393de5744355d657b513accfee4414f8b726db",
     "daily_video/typography.py": "d6b5620d928e4ea9eef40647713b37f639f5ce087a47bd112bf0af2c37f152ae",
     "video.py": "7b7155df022f5795ab271a38963fa05ab9cd4ba6917391a75f5df3567280e352",

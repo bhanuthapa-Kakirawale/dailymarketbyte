@@ -46,7 +46,7 @@ hook is unmistakably Daily Market Byte.
 |---|---|---|---|---|
 | `QUIET_MARKET_HIDDEN_ACTION` | small headline number, big moves underneath | POST, CUSTOM | \|Nifty\| < 0.40% and ≥2 flagged stocks moved ≥1% and ≥3× Nifty (CUSTOM: \|move\| < 1% with an average cross) | `DEPTH_LOLLIPOP`, `SIGNAL_STACK_CHART` |
 | `BIG_MOVE` | one number is the story | POST, PRE, CUSTOM | \|Nifty\| ≥ 1% (stock ≥ 5%); boosted by a 20-session rank | `HEADLINE_NUMBER` |
-| `CONTRAST` | two things went opposite ways | POST, CUSTOM | sector leader > 0 > laggard, spread ≥ 1.5 pp; or FIIs vs DIIs opposite, each ≥ Rs 1,000 cr; or weak-chart event + a strong fundamental | `VERSUS_SPLIT` |
+| `CONTRAST` | two things went opposite ways | POST, CUSTOM | sector leader > 0 > laggard, spread ≥ 1.5 pp; or FIIs vs DIIs opposite, each ≥ Rs 1,000 cr; or weak-chart event + a strong fundamental; or (Hook V3) the index vs most of a named universe - a shown Market Structure BREADTH divergence | `VERSUS_SPLIT`, `HEADLINE_NUMBER` (index-vs-breadth only) |
 | `UNUSUAL_ACTIVITY` | several signals stacked on one name | POST, CUSTOM | Radar story with ≥3 independent signals, or ≥2× volume and ≥2.5% move; CUSTOM: range break on ≥2× volume | `SIGNAL_STACK_CHART`, `DEPTH_LOLLIPOP` |
 | `OVERNIGHT_CUE` | the world moved while India slept | PRE | largest global cue ≥ 1%; GIFT Nifty added when validated | `OVERNIGHT_BOARD`, `HEADLINE_NUMBER` |
 | `EVENT_LED` | a dated, named event | PRE (POST if high-impact) | an event tagged RBI/FED/BUDGET/POLICY/GDP/CPI/RESULTS/F&O or `impact=HIGH` | `EVENT_CALENDAR` |
@@ -60,6 +60,31 @@ shape covers sector vs sector, FIIs vs DIIs and chart vs fundamentals (the CUSTO
 separate `PREMARKET_THINGS_TO_KNOW` became the mode-agnostic `THINGS_TO_KNOW`, which is also
 the universal fallback. `OVERNIGHT_CUE` was added because "overnight cue" and "event" are
 different shapes with different heroes.
+
+## Hook V3 (Editorial Planner V3 integration)
+
+The hook is derived from the edition's strongest selected story without a second hook engine:
+
+- **Breadth divergence has a hook form.** When the editorial plan shows a BREADTH divergence
+  insight, `publication.public_hooks.add_structure_facts` adds `structure.divergence`.
+  - It is a `BREADTH_MOVE` fact: the count of universe stocks that closed against Nifty's
+    direction, over the covered denominator, taken from the insight's own split.
+  - `BREADTH_MOVE` is a move kind for the validator, so "fell" next to "NIFTY 200" is checked
+    against that fact's direction.
+  - The candidate `post-breadth-divergence` (CONTRAST, `HEADLINE_NUMBER` hero) says, e.g., "Nifty
+    rose 0.30%. 128 of 200 NIFTY 200 stocks fell.".
+  - Score: 0.62 + up to 0.10 by breadth share, below BIG_MOVE's floor, so the big-move priority
+    is untouched. It is a count over a named universe, never a stock name.
+- **Lead story bonus.** When the editorial arbiter's lead story is MATERIAL, the storyboard sets
+  `sheet.metadata["lead_section"]`.
+  - Candidates that pay that section off (`hooks.candidates.PAYS_OFF`) get a fixed
+    `LEAD_STORY_BONUS` (0.05).
+  - The summary line names the lead section first.
+  - `major_index_priority` and the beat-diversity rules run afterwards, unchanged.
+- **Summary order.** The POST summary line names its sections in the order the Short plays them,
+  as PRE always has.
+
+Gemini's role does not change: it may only choose among these validated candidates.
 
 ## Visual language (Phase 1A: editorial collage)
 

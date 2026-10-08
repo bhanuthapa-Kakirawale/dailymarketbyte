@@ -91,6 +91,45 @@ def data_quality(repo: DeskRepository, session: dt.date | None, replay: dict | N
         out["runs"] = repo.publication_runs(8)
     except SourceUnavailable as exc:
         out["report"], out["runs"] = {"status": "HISTORY_UNAVAILABLE", "error": str(exc)}, []
+    out["editorial"] = editorial_decisions(repo)
+    return out
+
+
+def editorial_decisions(repo: DeskRepository) -> list:
+    """Editorial Planner V3 transparency: the latest POST production manifest's and the latest
+    PRE shadow section plan's decision trace - which stories were selected, which were not, and
+    why (tier, duplicate, family, slots, budget). Read-only JSON, never a fetch or a write."""
+    import glob
+    import json
+    import os
+    out = []
+    sources = (("POST", "post", "*", "production_manifest.json", ("editorial_trace",)),
+               ("PRE", "pre_shadow", "*", "pre_section_plan_*.json", ("editorial",)))
+    for edition, folder, sub, pattern, keys in sources:
+        files = [f for f in glob.glob(repo.path(folder, sub, pattern))
+                 if "DEMO" not in f and "replay" not in f]
+        if not files:
+            out.append({"edition": edition, "status": "NO_ARTIFACT", "rows": []})
+            continue
+        path = max(files, key=lambda f: (os.path.basename(os.path.dirname(f)), f))
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError) as exc:
+            out.append({"edition": edition, "status": "UNREADABLE", "error": str(exc),
+                        "rows": []})
+            continue
+        ed = data.get(keys[0]) or {}
+        out.append({"edition": edition, "file": os.path.relpath(path, repo.out_dir),
+                    "status": "OK" if ed.get("trace") else "NO_V3_TRACE",
+                    "policy": ed.get("policy"), "lead": ed.get("lead"),
+                    "runtime_estimate": ed.get("runtime_estimate"),
+                    "order": ed.get("order") or [],
+                    "rows": [{k: r.get(k) for k in ("candidate_id", "family", "tier", "quality",
+                                                    "relevance", "decision", "reason",
+                                                    "duplicate_of", "displaced_by",
+                                                    "merged_into", "cost_s")}
+                             for r in ed.get("trace") or []]})
     return out
 
 

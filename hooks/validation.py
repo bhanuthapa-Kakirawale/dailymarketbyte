@@ -35,7 +35,10 @@ _WORD = re.compile(r"[A-Za-z][A-Za-z0-9&'’/\-]*")
 _NUM = re.compile(r"(?P<sign>[+\-−–])?\s?(?:Rs\.?\s?|₹\s?)?(?P<num>\d{1,2}:\d{2}|\d[\d,]*(?:\.\d+)?)")
 _SENT_BREAK = re.compile(r"[.!?:;—]|\s[–-]\s")
 _ALLOWED_CHARS = re.compile(r"^[\x20-\x7E×—–₹’]*$")
-MOVE_KINDS = ("INDEX_MOVE", "SECTOR_MOVE", "STOCK_MOVE", "FLOW", "GLOBAL_CUE", "GIFT_NIFTY")
+# BREADTH_MOVE (Hook V3): how most of a named universe closed - a count with a direction, so
+# "fell" next to the universe is checked against it like any other move
+MOVE_KINDS = ("INDEX_MOVE", "SECTOR_MOVE", "STOCK_MOVE", "FLOW", "GLOBAL_CUE", "GIFT_NIFTY",
+              "BREADTH_MOVE")
 
 _COMPILED = {
     "causal": [re.compile(p, re.I) for p in policy.CAUSAL_PATTERNS],

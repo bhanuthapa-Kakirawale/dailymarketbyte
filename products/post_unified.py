@@ -178,6 +178,10 @@ def manifest(*, entry_point, report_source, report_id, session, sb, audit, uploa
             # Every section's SELECTED/OMITTED decision + reason, and (when relevant) whether an
             # omission was a timing gap rather than a planner choice - docs/PRODUCTION_SCHEDULE.md.
             "post_section_decisions": section_decisions(sb),
+            # Editorial Planner V3: every competing story, its tier/quality/relevance and the
+            # arbiter's decision (selected / duplicate / diversity / slots / budget) - operator
+            # and Private Desk transparency, never shown in the video
+            "editorial_trace": (sb.post_plan or {}).get("editorial"),
             "post_data_readiness": data_readiness(sb, out_dir, session),
             # durable-state provenance: which persisted snapshot fed each public section
             "inputs": (sb.public_audit or {}).get("inputs"),

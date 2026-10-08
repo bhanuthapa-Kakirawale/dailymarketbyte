@@ -88,6 +88,22 @@
 </section>
 
 <section class="panel">
+  <h2>Editorial decisions <span class="dim lc">V3 planner trace · latest POST / PRE edition</span></h2>
+  {% for e in q.editorial or [] %}
+  <h3>{{ e.edition }}{% if e.file %} <span class="mono note">{{ e.file }}</span>{% endif %}</h3>
+  {% if e.status != 'OK' %}<p class="na">{{ e.status | replace('_', ' ') }}{% if e.error %} - {{ e.error }}{% endif %}</p>{% else %}
+  <p class="note">Order: {{ e.order | join(' → ') }} · lead {{ e.lead | na }} · est. {{ e.runtime_estimate }}s</p>
+  <table><thead><tr><th>Candidate</th><th>Family</th><th class="n">Tier</th><th>Quality</th><th>Decision</th><th>Why</th><th>Relation</th><th class="n">Cost</th></tr></thead><tbody>
+  {% for r in e.rows %}<tr><td class="mono">{{ r.candidate_id }}</td><td>{{ r.family }}</td><td class="n">{{ r.tier }}</td><td>{{ r.quality }}</td>
+    <td><span class="b {{ 'ok' if r.decision in ('SELECTED', 'QUIET_FLOOR') else ('cont' if r.decision == 'MERGED_INTO' else 'warn') }}">{{ r.decision }}</span></td>
+    <td class="wrap note">{{ r.reason | truncate(140) }}</td>
+    <td class="note">{% if r.duplicate_of %}duplicate of {{ r.duplicate_of }}{% elif r.displaced_by %}displaced by {{ r.displaced_by }}{% elif r.merged_into %}carried by {{ r.merged_into }}{% endif %}</td>
+    <td class="n">{{ r.cost_s }}</td></tr>{% endfor %}
+  </tbody></table>{% endif %}
+  {% endfor %}
+</section>
+
+<section class="panel">
   <h2>Market regime classifier <span class="dim lc">private context · derived, rebuildable</span></h2>
   {% set rq = q.regime %}
   {% if rq and rq.status != 'NO_SESSION' %}

@@ -23,6 +23,9 @@ class PublicIntelligence:
     ipos: list = field(default_factory=list)              # IPOEvent
     known_securities: dict = field(default_factory=dict)  # symbol -> company (universe)
     universe_symbols: set = field(default_factory=set)
+    # symbol -> Market Structure sector bucket (NSE's own Industry column, read-only) - used by
+    # the editorial planner only, to recognise a mover list that repeats the sector story
+    symbol_sectors: dict = field(default_factory=dict)
     synthetic: bool = False
     notes: list = field(default_factory=list)
     # how each input was obtained: PERSISTED_SNAPSHOT / CAPTURED_THIS_RUN /
@@ -385,6 +388,7 @@ def load_public_intelligence(structure_session: dt.date | None, list_date: dt.da
                 intel.structure = snap
                 intel.known_securities = uni.companies()
                 intel.universe_symbols = uni.symbols()
+                intel.symbol_sectors = {s: c.sector for s, c in uni.constituents.items()}
                 intel.structure_status = PERSISTED_SNAPSHOT
                 with open(path, "rb") as fh:
                     intel.structure_ref = {"file": os.path.relpath(path, out_dir),

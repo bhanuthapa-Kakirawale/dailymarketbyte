@@ -507,7 +507,13 @@ FROZEN = {
     "chart.py": "ca402c4a721039861bf86dd0ab6b25cef997024732a3de2edee5c74c26c2f2fa",
     # Re-pinned 2026-09-26 with owner approval: public market intelligence V1 brief (feature/sebi-publication-v1) - provenance bar, public scenes, publication gate;
     # and the V1 final review correction pass (source roles, de-duplication, silent V2).
-    "daily_video/provenance_bar.py": "f46e5eeab911cec195df35b58bb9bb7ff3955dd8e92eadf00381e11046266939",
+    # Re-pinned 2026-10-09 with owner approval (feature/pre-global-scene-safe-area-fix-v1):
+    # draw_provenance's fit()-only sizing let a line too wide even at the font floor (PRE
+    # overnight's combined "DATA AS OF ... · FETCHED ..." - every reconstruction of a past
+    # morning, not just one date) silently overflow past the Shorts action rail. New
+    # `_rows`/`_layout` split such a line across rows at its existing " · " segment boundaries -
+    # deterministic, content-preserving wrapping; no font size, formatting or content changed.
+    "daily_video/provenance_bar.py": "177d7f8b3ed71a424052e990a71c1d8bbeceaa3a51b5a3e46650a87ea9d47315",
     "daily_video/public_scenes.py": "e91915b296634e8c3ac36fbd1331036e308de5a41b6ed3055a81f5c25e3fa808",
     "daily_video/public_storyboard.py": "24cb857013d7f1c9a123271259308fd266dbe351b2365344058ad980fad27462",
 }

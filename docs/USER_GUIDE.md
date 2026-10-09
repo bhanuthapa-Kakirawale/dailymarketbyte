@@ -332,6 +332,11 @@ Not needed on a normal day. Use these to redo or inspect one step.
 |---|---|---|
 | `run_production_pre.bat` / `run_production_post.bat` | **Preferred production entry points** (PK-D, docs/PRODUCTION_ORCHESTRATOR.md): the two rows below, plus a run lock, idempotency, `--resume` and an immutable run manifest. | `python -m production_orchestrator pre\|post` |
 | `check_production_status.bat` | Read-only: the latest PK-D PRE/POST run (status, readiness, warnings). Runs nothing. | `python -m production_orchestrator status` |
+| `install_shadow_tasks.ps1` (no switch / `-WhatIf`) | **Preview only** (PK-E, docs/SHADOW_PRODUCTION_OPERATIONS.md): plans the 4 DMB Windows Task Scheduler entries (intelligence_am/pre/intelligence_pm/post). Installs nothing. | `python -m shadow_scheduler status` underneath, for comparison |
+| `install_shadow_tasks.ps1 -Install` | Registers the 4 tasks for real. **Owner-approved step only** - never run automatically. | `Register-ScheduledTask` |
+| `check_shadow_tasks.ps1` | Read-only: are the 4 DMB tasks registered correctly (missing/disabled/drift). Runs nothing. | - |
+| `remove_shadow_tasks.ps1 -Remove` | Removes only the 4 DMB-owned tasks. | `Unregister-ScheduledTask` |
+| `check_shadow_operations.bat` | Read-only: each shadow job's last run + MISSED/PENDING + HEALTHY/ATTENTION/BROKEN. Runs nothing. | `python -m shadow_scheduler status` |
 | `run_morning_pre.bat` | **Normal morning command.** Generates PRE. | `python main.py --mode premarket --shadow` + PRE check |
 | `run_evening_full.bat` | **Normal evening command.** REPORT + same-day POST + summary. | `python -m operations.evening_full` |
 | `run_evening.bat` | Advanced / debug helper. REPORT / acquisition only, no video. | `python main.py --mode report` + evening check |

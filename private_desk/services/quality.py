@@ -5,6 +5,7 @@ import datetime as dt
 
 from ..db import DB_FILES, SourceUnavailable
 from ..repository import BENCHMARK_SYMBOL, DeskRepository
+from . import intelligence_freshness as ifr
 from . import production_runs as pr
 from .. import replay as rp
 
@@ -95,6 +96,7 @@ def data_quality(repo: DeskRepository, session: dt.date | None, replay: dict | N
     out["editorial"] = editorial_decisions(repo)
     out["readiness"] = production_readiness(repo)
     out["production_orchestrator"] = pr.production_orchestrator_status(repo)
+    out["intelligence_refresh"] = ifr.intelligence_refresh_status(repo)
     return out
 
 

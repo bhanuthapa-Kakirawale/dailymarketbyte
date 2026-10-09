@@ -35,6 +35,12 @@ is local only.
 **When to use it:** after `scripts\run_evening_full.bat` has finished (around 19:30 IST). If the
 evening job is still writing, a page may say DATA UNAVAILABLE. Reload it a minute later.
 
+If PRE/POST haven't run for a few sessions, `scripts\run_intelligence_refresh.bat` (read-only
+counterpart: `scripts\check_intelligence_coverage.bat`) catches up the latest session and
+self-heals the previous 30 days of price-derived coverage WITHOUT rendering any video - see
+docs/INTELLIGENCE_REFRESH.md. Its outcome shows up on the Data Quality page's "Intelligence
+refresh" panel automatically; no separate Desk refresh step is needed.
+
 ## 2. The header (every page)
 
 - **PRIVATE / LOCAL ONLY**: nothing on this site is ever published.
@@ -66,7 +72,7 @@ evening job is still writing, a page may say DATA UNAVAILABLE. Reload it a minut
 | **Institutional** | NSE provisional FII/FPI + DII cash flow (latest + last 10 reported sessions), CDSL's latest depository-reported daily category/route table, NSDL's latest fortnightly sector table with AUC shown separately - docs/INSTITUTIONAL_FLOW_INTELLIGENCE.md. |
 | **Market Events** | Earnings/IPO/OFS/government-auction/buyback/open-offer/delisting calendar, TODAY / TOMORROW / NEXT 7 DAYS / RECENTLY ANNOUNCED per family, with a family filter. EARNINGS, OFS and BUYBACK are all live from NSE's own feeds; IPO is a live, read-only projection of the existing IPO Watch data (shown as VIEW_ONLY, never NOT_SUPPORTED_YET); government-auction/open-offer/delisting still show NOT_SUPPORTED_YET - docs/MARKET_EVENTS_ENGINE.md. |
 | **History** | Every recorded Radar appearance. Filter by date range, symbol, sector, attention, family, detector, novelty and appearance. Shows how often each stock appeared. |
-| **Data Quality** | Source freshness, database health, Radar run markers and issues, detector-replay reconciliation, OHLCV coverage (missing or stale symbols), Market Structure coverage, official snapshot status, institutional-flow status (NSE/CDSL/NSDL + sector-mapping coverage), the regime classifier's status (version, freshness, available dimensions, historical validation), and recent DMB runs. |
+| **Data Quality** | Source freshness, database health, Radar run markers and issues, detector-replay reconciliation, OHLCV coverage (missing or stale symbols), Market Structure coverage, official snapshot status, institutional-flow status (NSE/CDSL/NSDL + sector-mapping coverage), the regime classifier's status (version, freshness, available dimensions, historical validation), recent DMB runs, and the intelligence-refresh freshness/backfill status (latest `refresh` run, per-session coverage summary, blocking reasons). |
 
 ### Dashboard = attention subset, Radar = complete set
 

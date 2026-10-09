@@ -109,6 +109,27 @@
 </section>
 
 <section class="panel">
+  <h2>Intelligence refresh <span class="dim lc">30-day coverage self-heal · read-only</span></h2>
+  {% set ir = q.intelligence_refresh or {} %}
+  {% if ir.status in ('NO_RUN', 'UNREADABLE') %}<p class="na">{{ ir.status | replace('_', ' ') }}{% if ir.error %} - {{ ir.error }}{% endif %}</p>{% else %}
+  <table><thead><tr><th>Status</th><th>Latest session</th><th>Completed</th><th>Run</th></tr></thead><tbody>
+  <tr><td><span class="b {{ 'ok' if ir.status in ('SUCCESS', 'DEGRADED') else ('warn' if ir.status == 'RUNNING' else 'bad') }}">{{ ir.status }}</span></td>
+    <td class="mono">{{ (ir.latest_session_result or {}).session | na }} <span class="note">{{ (ir.latest_session_result or {}).action | na }}</span></td>
+    <td class="mono">{{ ir.completed_at | na }}</td>
+    <td class="wrap note mono">{{ ir.run_id | na }}{% for b in ir.blocking %}<br>BLOCKING {{ b | truncate(160) }}{% endfor %}{% for w in ir.warnings %}<br>WARN {{ w | truncate(160) }}{% endfor %}</td></tr>
+  </tbody></table>
+  <table><thead><tr><th>Sessions audited</th><th>Fully recoverable</th><th>Partially recoverable</th></tr></thead><tbody>
+  <tr><td class="n">{{ (ir.summary or {}).sessions_audited | na }}</td>
+    <td class="n">{{ (ir.summary or {}).sessions_fully_recoverable | na }}</td>
+    <td class="n">{{ (ir.summary or {}).sessions_partially_recoverable | na }}</td></tr>
+  </tbody></table>
+  {% if (ir.summary or {}).component_counts %}
+  <p class="note">{% for k, v in ir.summary.component_counts.items() %}{{ k }}: {{ v }}{% if not loop.last %} · {% endif %}{% endfor %}</p>
+  {% endif %}
+  {% endif %}
+</section>
+
+<section class="panel">
   <h2>Editorial decisions <span class="dim lc">V3 planner trace · latest POST / PRE edition</span></h2>
   {% for e in q.editorial or [] %}
   <h3>{{ e.edition }}{% if e.file %} <span class="mono note">{{ e.file }}</span>{% endif %}</h3>

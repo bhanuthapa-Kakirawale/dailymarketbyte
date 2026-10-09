@@ -44,6 +44,14 @@ and one immutable JSON record per run under `output\production_runs\`. `scripts\
 check_production_status.bat` shows the latest PRE/POST run without running anything. See
 docs/PRODUCTION_ORCHESTRATOR.md. The two commands above keep working unchanged either way.
 
+**Intelligence refresh (optional):** `scripts\run_intelligence_refresh.bat` keeps Private
+Desk's intelligence data current without requiring PRE/POST to have run, and self-heals the
+previous 30 days of price-derived coverage (index/OHLCV history, Market Structure, Radar
+candidate history) where that is safely reconstructable; everything else (Institutional Flow,
+Market Events, official snapshots, canonical reports, editorial selections) for a missed day
+is permanently unavailable and is reported, never fabricated. `scripts\
+check_intelligence_coverage.bat` is read-only. See docs/INTELLIGENCE_REFRESH.md.
+
 ---
 
 ## 1. Quick start (once, and after every `git pull`)

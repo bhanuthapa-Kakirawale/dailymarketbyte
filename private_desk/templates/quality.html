@@ -98,6 +98,17 @@
 </section>
 
 <section class="panel">
+  <h2>Production runs <span class="dim lc">PK-D orchestrator · latest PRE / POST run</span></h2>
+  <table><thead><tr><th>Edition</th><th>Status</th><th>Session</th><th>Readiness (preflight → post-render)</th><th>Run</th></tr></thead><tbody>
+  {% for r in q.production_orchestrator or [] %}<tr><td>{{ r.edition }}</td>
+    <td><span class="b {{ 'ok' if r.status in ('SUCCESS', 'ALREADY_COMPLETED', 'SKIPPED') else ('warn' if r.status in ('DEGRADED', 'RUNNING', 'PLANNED') else 'bad') }}">{{ r.status | replace('_', ' ') }}</span></td>
+    <td class="mono">{{ r.session | na }}</td>
+    <td class="mono">{{ r.readiness_preflight | na }} → {{ r.readiness_post_render | na }}</td>
+    <td class="wrap note mono">{{ r.run_id | na }}{% for b in r.blocking %}<br>BLOCKING {{ b | truncate(160) }}{% endfor %}{% for w in r.warnings %}<br>WARN {{ w | truncate(160) }}{% endfor %}{% if r.error %}<br>{{ r.error }}{% endif %}</td></tr>{% endfor %}
+  </tbody></table>
+</section>
+
+<section class="panel">
   <h2>Editorial decisions <span class="dim lc">V3 planner trace · latest POST / PRE edition</span></h2>
   {% for e in q.editorial or [] %}
   <h3>{{ e.edition }}{% if e.file %} <span class="mono note">{{ e.file }}</span>{% endif %}</h3>

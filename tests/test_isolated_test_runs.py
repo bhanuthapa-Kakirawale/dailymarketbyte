@@ -44,6 +44,9 @@ def test_writes_into_production_are_refused_in_a_test_run(test_context):
               os.path.join(PROD, "official_snapshots", "2026-09-25"),
               os.path.join(PROD, "institutional_flows", "NSE", "x.json"),
               os.path.join(PROD, "private_radar", "x.png"),
+              os.path.join(PROD, "production_runs", "POST", "2026-09-25", "run1.json"),
+              os.path.join(PROD, "production_runs", "POST", "2026-09-25", "run.lock"),
+              os.path.join(PROD, "production_runs", "PRE", "latest.json"),
               os.path.join(TESTS, "..", "data", "market_history.db")):        # traversal
         with pytest.raises(ProductionPathError):
             run_context.guard_write(p, "probe")

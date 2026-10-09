@@ -243,7 +243,7 @@ Stability rules:
 - Only `evaluated_at` and `runtime` vary between evaluations of the same evidence.
 - On an execution error the CLI prints `{"schema": ..., "overall_status": null, "error": ..., "exit_code": 30}`.
 
-PK-D can import `readiness.__main__.evaluate(edition, session_date=, as_of=, intent=, stage=)` or `readiness.evaluate_pre` / `evaluate_post` directly.
+PK-D (`production_orchestrator/`, docs/PRODUCTION_ORCHESTRATOR.md) imports `readiness.pre.evaluate_pre`, `readiness.post.evaluate_post` and `readiness.post_render.evaluate_post_render` directly, the same in-process functions `operations.evening_full.post_readiness` already calls - a third caller, never a second readiness implementation.
 
 ## Report file (audit trail)
 
@@ -265,6 +265,7 @@ The Private Desk's Data Quality page shows the latest PRE and POST report (statu
   - BLOCKED stops (POST NOT RUN, ATTENTION REQUIRED).
   - DEGRADED continues, and adds each warning to the notes.
   - A gate error stops (fail closed).
+- **`scripts\run_production_pre.bat` / `run_production_post.bat`** (PK-D, docs/PRODUCTION_ORCHESTRATOR.md) call the same evaluators in-process, plus a run lock, idempotency, `--resume` and an immutable run manifest - the preferred production entry points, additive to the two bullets above.
 - **Unchanged:** `run_post.bat`, `run_evening.bat`, `main.py` and the isolated test-run commands do not run the gate. They stay usable manual / advanced paths.
 
 ## Operator remediation flow

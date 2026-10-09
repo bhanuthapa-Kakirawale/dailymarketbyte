@@ -37,6 +37,13 @@ not a video failure. Upload is always `NOT ATTEMPTED`: no normal command uploads
 
 Other scripts are for troubleshooting only — see section 9.
 
+**PK-D (optional, preferred):** `scripts\run_production_pre.bat` and
+`scripts\run_production_post.bat` wrap these same two commands with a run lock, idempotency
+(re-running the same morning/evening twice is a safe no-op), `--resume` after an interrupted run,
+and one immutable JSON record per run under `output\production_runs\`. `scripts\
+check_production_status.bat` shows the latest PRE/POST run without running anything. See
+docs/PRODUCTION_ORCHESTRATOR.md. The two commands above keep working unchanged either way.
+
 ---
 
 ## 1. Quick start (once, and after every `git pull`)
@@ -315,6 +322,8 @@ Not needed on a normal day. Use these to redo or inspect one step.
 
 | Script | Role | Runs |
 |---|---|---|
+| `run_production_pre.bat` / `run_production_post.bat` | **Preferred production entry points** (PK-D, docs/PRODUCTION_ORCHESTRATOR.md): the two rows below, plus a run lock, idempotency, `--resume` and an immutable run manifest. | `python -m production_orchestrator pre\|post` |
+| `check_production_status.bat` | Read-only: the latest PK-D PRE/POST run (status, readiness, warnings). Runs nothing. | `python -m production_orchestrator status` |
 | `run_morning_pre.bat` | **Normal morning command.** Generates PRE. | `python main.py --mode premarket --shadow` + PRE check |
 | `run_evening_full.bat` | **Normal evening command.** REPORT + same-day POST + summary. | `python -m operations.evening_full` |
 | `run_evening.bat` | Advanced / debug helper. REPORT / acquisition only, no video. | `python main.py --mode report` + evening check |

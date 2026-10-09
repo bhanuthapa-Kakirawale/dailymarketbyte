@@ -109,9 +109,14 @@ def test_list_snapshots_as_of_returns_the_revision_active_at_that_time_not_the_l
                                                as_of="2026-10-08T00:00:00+05:30")]
     assert len(after) == 1 and after[0].facts[0]["value"] == -500       # rev 2 now active
 
+    at_exactly = [s for _k, _p, s in list_snapshots(str(tmp_path), CDSL,
+                                                    as_of="2026-10-05T19:30:00+05:30")]
+    assert len(at_exactly) == 1 and at_exactly[0].facts[0]["value"] == 1000
+    # a revision captured EXACTLY at the cutoff is already known as of that instant (inclusive)
+
     not_yet = [s for _k, _p, s in list_snapshots(str(tmp_path), CDSL,
-                                                 as_of="2026-10-05T19:30:00+05:30")]
-    assert not_yet == []   # strictly BEFORE rev 1's own retrieved_at - not yet known at all
+                                                 as_of="2026-10-05T19:29:59+05:30")]
+    assert not_yet == []   # strictly before rev 1's own retrieved_at - not yet known at all
 
 
 def test_list_snapshots_as_of_none_still_returns_the_absolute_latest_unchanged(tmp_path):
@@ -149,9 +154,36 @@ def test_load_latest_first_retrieved_before_reflects_the_correct_historical_revi
                                     first_retrieved_before="2026-10-08T00:00:00+05:30")
     assert after_restatement.facts[0]["value"] == -500
 
+    exactly_at_rev1 = load_latest(str(tmp_path), CDSL,
+                                  first_retrieved_before="2026-10-05T19:30:00+05:30")
+    assert exactly_at_rev1 is not None and exactly_at_rev1.facts[0]["value"] == 1000
+    # inclusive: a revision captured exactly at the cutoff already counts as known
+
     not_known_yet = load_latest(str(tmp_path), CDSL,
-                                first_retrieved_before="2026-10-05T19:30:00+05:30")
+                                first_retrieved_before="2026-10-05T19:29:59+05:30")
     assert not_known_yet is None
+
+
+def test_load_latest_cutoff_boundary_is_inclusive_not_exclusive(tmp_path):
+    """Explicit A/B/C boundary proof: a revision captured strictly BEFORE the cutoff is
+    visible (A); a revision captured EXACTLY AT the cutoff is visible (B, inclusive); a
+    revision captured even 1 second AFTER the cutoff is invisible and never leaks backward (C)."""
+    from institutional_flows.models import CDSL
+    from institutional_flows.store import load_latest, write_revision
+    write_revision(str(tmp_path), _cdsl_rev("2026-10-08", "2026-10-08T10:00:00+05:30",
+                                            "2026-10-08T10:00:00+05:30", 1000))
+
+    # A: cutoff strictly after the revision's retrieved_at - visible
+    a = load_latest(str(tmp_path), CDSL, first_retrieved_before="2026-10-08T10:00:01+05:30")
+    assert a is not None and a.facts[0]["value"] == 1000
+
+    # B: cutoff exactly equal to the revision's retrieved_at - visible (inclusive)
+    b = load_latest(str(tmp_path), CDSL, first_retrieved_before="2026-10-08T10:00:00+05:30")
+    assert b is not None and b.facts[0]["value"] == 1000
+
+    # C: cutoff 1 second before the revision's retrieved_at - invisible
+    c = load_latest(str(tmp_path), CDSL, first_retrieved_before="2026-10-08T09:59:59+05:30")
+    assert c is None
 
 
 def test_load_latest_without_first_retrieved_before_is_unaffected(tmp_path):

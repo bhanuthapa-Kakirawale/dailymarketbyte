@@ -87,13 +87,15 @@ def list_snapshots(out_dir: str, source: str, *, as_of: str | None = None) -> li
     every current/live caller relies on.
 
     `as_of` given (an ISO timestamp): "latest" instead means the highest-numbered revision
-    whose OWN `retrieved_at` is STRICTLY before `as_of` - the revision genuinely on disk at
+    whose OWN `retrieved_at` is AT OR BEFORE `as_of` (inclusive - a revision captured exactly
+    at the cutoff is already known as of that instant) - the revision genuinely on disk at
     that moment, never today's absolute latest. `retrieved_at` (unlike `first_retrieved_at`,
     which `service.py` pins to the FIRST revision's capture time and carries forward unchanged
     on every REVISED write) is set fresh on each capture, so it is the only field that can tell
     revisions apart in time. A report_key with no revision yet at `as_of` is excluded entirely -
-    a later restatement must never leak backward into an earlier replay. Mirrors
-    `market_events.store.list_events`."""
+    a later restatement must never leak backward into an earlier replay. A sibling of
+    `market_events.store.list_events`'s `as_of` (which is intentionally strict/exclusive - the
+    two are deliberately different conventions, kept independent)."""
     folder = _source_dir(out_dir, source)
     if not os.path.isdir(folder):
         return []
@@ -116,7 +118,7 @@ def list_snapshots(out_dir: str, source: str, *, as_of: str | None = None) -> li
         chosen = None
         for _n, path in revs:
             snap = load_revision(path)
-            if snap is not None and snap.retrieved_at and snap.retrieved_at < as_of:
+            if snap is not None and snap.retrieved_at and snap.retrieved_at <= as_of:
                 chosen = (snap.report_key, path, snap)
         if chosen is not None:
             out.append(chosen)

@@ -117,8 +117,9 @@ def save_snapshot(snapshot, observations, universe_def, out_dir: str, subset_def
 
 def load_revision_as_of(out_dir: str, session: dt.date, cutoff_iso: str) -> dict | None:
     """The artifact payload genuinely on disk for `session` as of `cutoff_iso` (the revision
-    chain's own highest-numbered revision whose `universe_source.retrieved_at` is STRICTLY
-    before `cutoff_iso`), never today's possibly-since-rebuilt current file blindly re-read.
+    chain's own highest-numbered revision whose `universe_source.retrieved_at` is AT OR BEFORE
+    `cutoff_iso`, inclusive - a revision captured exactly at the cutoff is already known as of
+    that instant), never today's possibly-since-rebuilt current file blindly re-read.
     Falls back to the single bare "current" file, treated as one legacy revision, only when NO
     `.revN.json` chain exists at all for this session (a session never rebuilt since this fix
     shipped) - never infers from filesystem mtime, never backdates a timestamp."""
@@ -136,7 +137,7 @@ def load_revision_as_of(out_dir: str, session: dt.date, cutoff_iso: str) -> dict
         except (OSError, ValueError):
             continue
         retrieved = ((art.get("snapshot") or {}).get("universe_source") or {}).get("retrieved_at")
-        if retrieved and retrieved < cutoff_iso:
+        if retrieved and retrieved <= cutoff_iso:
             chosen = art
     return chosen
 

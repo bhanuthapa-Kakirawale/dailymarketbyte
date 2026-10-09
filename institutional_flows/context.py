@@ -66,10 +66,11 @@ def nse_same_session_status(out_dir: str, session_date: dt.date) -> dict:
 def load_institutional(out_dir: str, *, cutoff: dt.datetime, live: bool,
                        on_or_before: dt.date | None = None,
                        capture_fn=None) -> InstitutionalContext:
-    """`cutoff` is an ISO timestamp (brief.as_of): a snapshot counts only if it was FIRST
-    retrieved strictly before this point - a report fetched later in the day, even if dated
-    earlier, must never appear to have been available at the cutoff. `on_or_before` additionally
-    bounds the report's own date/fortnight-end (never a report "from the future" relative to the
+    """`cutoff` is an ISO timestamp (brief.as_of): a snapshot counts only if its own revision's
+    `retrieved_at` is AT OR BEFORE this point (inclusive) - a report fetched later in the day,
+    even if dated earlier, must never appear to have been available at the cutoff, but one
+    captured at exactly the cutoff instant already counts. `on_or_before` additionally bounds
+    the report's own date/fortnight-end (never a report "from the future" relative to the
     session being built)."""
     from .store import load_latest
     cutoff_iso = cutoff.isoformat() if hasattr(cutoff, "isoformat") else str(cutoff)

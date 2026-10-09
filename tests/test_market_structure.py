@@ -312,8 +312,33 @@ def test_load_revision_as_of_replay_never_leaks_a_post_cutoff_rebuild(tmp_path):
     after = load_revision_as_of(str(tmp_path), D, "2026-09-27T00:00:00+05:30")
     assert after["snapshot"]["metrics"]["UNUSUAL_VOLUME"]["numerator"] == 3     # rev 2 now active
 
-    before_any = load_revision_as_of(str(tmp_path), D, "2026-09-25T19:30:00+05:30")
+    at_exactly = load_revision_as_of(str(tmp_path), D, "2026-09-25T19:30:00+05:30")
+    assert at_exactly["snapshot"]["metrics"]["UNUSUAL_VOLUME"]["numerator"] == 6
+    # a revision captured EXACTLY at the cutoff is already known as of that instant (inclusive)
+
+    before_any = load_revision_as_of(str(tmp_path), D, "2026-09-25T19:29:59+05:30")
     assert before_any is None   # strictly before rev 1's own retrieved_at - not yet known at all
+
+
+def test_load_revision_as_of_cutoff_boundary_is_inclusive_not_exclusive(tmp_path):
+    """Explicit A/B/C boundary proof: a revision strictly BEFORE the cutoff is visible (A);
+    a revision captured EXACTLY AT the cutoff is visible (B, inclusive); a revision captured
+    even 1 second AFTER the cutoff is invisible and never leaks backward (C)."""
+    from market_structure.store import load_revision_as_of
+
+    uni = universe()
+    uni.retrieved_at = "2026-10-08T10:00:00+05:30"
+    snap, obs = snapshot(uni, unusual=hc(6))
+    ms.save_snapshot(snap, obs, uni, str(tmp_path))
+
+    a = load_revision_as_of(str(tmp_path), D, "2026-10-08T10:00:01+05:30")
+    assert a["snapshot"]["metrics"]["UNUSUAL_VOLUME"]["numerator"] == 6
+
+    b = load_revision_as_of(str(tmp_path), D, "2026-10-08T10:00:00+05:30")
+    assert b["snapshot"]["metrics"]["UNUSUAL_VOLUME"]["numerator"] == 6
+
+    c = load_revision_as_of(str(tmp_path), D, "2026-10-08T09:59:59+05:30")
+    assert c is None
 
 
 def test_load_revision_as_of_falls_back_to_the_bare_legacy_file_when_no_chain_exists(tmp_path):
@@ -328,7 +353,8 @@ def test_load_revision_as_of_falls_back_to_the_bare_legacy_file_when_no_chain_ex
         json.dump(art, fh)
 
     assert load_revision_as_of(str(tmp_path), D, "2026-09-25T20:00:00+05:30") == art
-    assert load_revision_as_of(str(tmp_path), D, "2026-09-25T19:30:00+05:30") is None
+    assert load_revision_as_of(str(tmp_path), D, "2026-09-25T19:30:00+05:30") == art  # inclusive
+    assert load_revision_as_of(str(tmp_path), D, "2026-09-25T19:29:59+05:30") is None
 
 
 def test_save_snapshot_seeds_rev1_from_a_preexisting_legacy_bare_file(tmp_path):

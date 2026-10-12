@@ -1,12 +1,14 @@
 """PowerShell syntax validation for the 3 new .ps1 scripts, plus ONE real, non-modifying run
 of `install_shadow_tasks.ps1` (default and -WhatIf) and `check_shadow_tasks.ps1` against the
-owner's ACTUAL environment - expecting all 4 tasks reported as not-yet-installed (MISSING),
-with zero mutation either way.
+owner's ACTUAL environment - zero mutation either way, whatever the real install state
+happens to be on this machine right now (MISSING before the owner's first real `-Install`,
+`Exists=Yes` afterward - both are legitimate; this file asserts read-only behavior, never a
+fixed install state it can't control).
 
 This is the one test module in the shadow_scheduler suite that is intentionally NOT isolated
 from the owner's real machine (per the packet's own test 14/51 asks for exactly this): it
-shells out to the real `powershell.exe` and reads the real (absent) Task Scheduler state.
-Every other shadow_scheduler test file uses bare `tmp_path` and has no such dependency.
+shells out to the real `powershell.exe` and reads the real Task Scheduler state, whatever it
+is. Every other shadow_scheduler test file uses bare `tmp_path` and has no such dependency.
 """
 from __future__ import annotations
 
@@ -65,7 +67,12 @@ def test_install_whatif_matches_the_default_preview():
     assert default_proc.stdout == whatif_proc.stdout
 
 
-def test_check_shadow_tasks_reports_missing_before_any_install():
+def test_check_shadow_tasks_reports_every_job_read_only_whatever_the_real_install_state():
+    """Read-only: reports on all 4 jobs by name, exits 0, and - whether this machine currently
+    has them MISSING (not yet installed) or Exists=Yes (the owner's real -Install has already
+    run) - never mutates anything either way. This file deliberately does not assert which of
+    those two legitimate states is current; that's the owner's call, made outside any Claude
+    Code packet."""
     proc = subprocess.run(
         ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
          os.path.join(SCRIPTS_DIR, "check_shadow_tasks.ps1")],
@@ -73,7 +80,8 @@ def test_check_shadow_tasks_reports_missing_before_any_install():
     assert proc.returncode == 0, proc.stderr
     for name in ("DMB-Shadow-Intelligence-AM", "DMB-Shadow-PRE", "DMB-Shadow-Intelligence-PM",
                 "DMB-Shadow-POST"):
-        assert f"{name}   MISSING" in proc.stdout or "MISSING" in proc.stdout
+        assert name in proc.stdout
+        assert "MISSING" in proc.stdout or "Exists=Yes" in proc.stdout
 
 
 def test_remove_default_preview_is_a_no_op_and_mutates_nothing():

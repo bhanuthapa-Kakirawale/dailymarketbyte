@@ -2,8 +2,10 @@
 healthy child, a child that launches and returns nonzero (a BUSINESS outcome like PK-D's own
 BLOCKED=20, never a "scheduler crash", never retried), a child that can't even be launched
 (genuine infra FAILED), a lock that is busy past its bounded wait (LOCKED, never touching the
-holder), and that a late invocation still launches the canonical child exactly as it would on
-time - the runner has no wall-clock/business logic of its own at all.
+holder), and that a late-but-still-within-window invocation still launches the canonical child
+exactly as it would on time. The 1-hour execution-window enforcement itself (EXPIRED, both
+check points, the lock-wait deadline cap) is covered in
+`test_shadow_scheduler_execution_window.py`.
 """
 from __future__ import annotations
 
@@ -68,7 +70,10 @@ def test_healthy_job_is_completed_exit_zero_lock_released_log_created(tmp_path):
 
 def test_child_nonzero_is_child_nonzero_not_a_scheduler_crash_exit_code_preserved(tmp_path):
     fake = _FakeSubprocess(returncode=20)   # mirrors PK-D's own BLOCKED
-    exit_code = _run(tmp_path, job="pre", subprocess_run=fake)
+    # 07:05 IST = 01:35 UTC - inside PRE's 07:00-08:00 execution window (the file-wide default
+    # utcnow fixture is chosen for POST's own 19:30 schedule, not PRE's).
+    pre_utcnow = lambda: dt.datetime(2026, 10, 9, 1, 35, tzinfo=UTC)
+    exit_code = _run(tmp_path, job="pre", subprocess_run=fake, utcnow=pre_utcnow)
     assert exit_code == 20   # verbatim, never remapped
     out_dir = str(tmp_path / "shadow_scheduler")
     latest = records.read_latest(out_dir, "pre")
@@ -95,8 +100,9 @@ def test_child_launch_failure_is_failed_with_diagnostic_lock_released(tmp_path):
 def test_child_command_comes_only_from_the_static_registry_never_env_or_cli(tmp_path):
     fake = _FakeSubprocess(returncode=0)
     repo_root = str(tmp_path / "repo")
+    pre_utcnow = lambda: dt.datetime(2026, 10, 9, 1, 35, tzinfo=UTC)   # inside PRE's window
     _run(tmp_path, job="pre", subprocess_run=fake, repo_root=repo_root,
-        cli_argv=["run", "pre", "--some-untrusted-arg"])
+        cli_argv=["run", "pre", "--some-untrusted-arg"], utcnow=pre_utcnow)
     command, kwargs = fake.calls[0]
     assert command == [os.path.normpath(os.path.join(repo_root, "scripts/run_production_pre.bat"))]
     assert kwargs["cwd"] == repo_root
@@ -104,13 +110,16 @@ def test_child_command_comes_only_from_the_static_registry_never_env_or_cli(tmp_
     assert "publish" not in " ".join(command)
 
 
-def test_late_invocation_still_launches_the_canonical_child_unconditionally(tmp_path):
-    """The runner has no wall-clock/business logic - a scheduled job that starts well past
-    its scheduled time still launches exactly the same canonical child command. PK-C alone
-    decides whether that's actually safe to render."""
+def test_invocation_late_but_still_within_window_launches_normally(tmp_path):
+    """A scheduled job that starts late within its own 1-hour execution window (e.g. a
+    StartWhenAvailable catch-up) still launches exactly the same canonical child command. PK-C
+    alone decides whether that's actually safe to render - this runner only enforces the
+    window, never a market/business decision."""
     fake = _FakeSubprocess(returncode=0)
-    late_utcnow = lambda: dt.datetime(2026, 10, 9, 20, 0, tzinfo=UTC)   # 8pm UTC, very late
-    exit_code = _run(tmp_path, job="post", subprocess_run=fake, utcnow=late_utcnow)
+    # 20:00 IST = 14:30 UTC - inside POST's 19:30-20:30 window, but not at the exact scheduled
+    # minute.
+    late_but_in_window_utcnow = lambda: dt.datetime(2026, 10, 9, 14, 30, tzinfo=UTC)
+    exit_code = _run(tmp_path, job="post", subprocess_run=fake, utcnow=late_but_in_window_utcnow)
     assert exit_code == 0
     assert len(fake.calls) == 1
 

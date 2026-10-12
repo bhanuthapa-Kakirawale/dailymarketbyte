@@ -6,10 +6,14 @@ recomputed, never re-derived. Structurally read-only: this file contains no writ
 asserts this statically, not just behaviorally, which is why `records.py` (which writes) and
 `status.py` (which never does) stay separate files rather than merged.
 
-MISSED/PENDING/NOT_EXPECTED reuses the existing `core.trading_calendar.SessionCalendar` -
-never a second calendar implementation. `now`/`calendar` are always injected parameters,
-never a bare `datetime.now()` call, so every decision here is deterministic and testable
-without a real wall clock.
+MISSED/PENDING/NOT_EXPECTED/WAITING reuses the existing `core.trading_calendar.SessionCalendar`
+- never a second calendar implementation - plus `config.execution_window` (PK-E follow-up,
+2026-10-12) for the 1-hour per-job window: WAITING means "inside the window, no run yet today",
+distinct from MISSED ("the deadline has passed with no run today"). `now`/`calendar` are
+always injected parameters, never a bare `datetime.now()` call, so every decision here is
+deterministic and testable without a real wall clock. A job's own `runner_status` (including
+EXPIRED - invoked at/after its deadline, child never launched) always takes display precedence
+over `missed_state` once a run record exists for today; see `render_human`.
 
 Task-registration drift (a task missing/disabled/pointing at the wrong path) is a SEPARATE
 signal, surfaced only by `scripts\\check_shadow_tasks.ps1` - this module never shells out to
@@ -23,7 +27,8 @@ import json
 import os
 
 from . import config, records
-from .models import ATTENTION, BROKEN, HEALTHY, JOBS, MISSED, NOT_EXPECTED, OK, PENDING, UNKNOWN
+from .models import (ATTENTION, BROKEN, HEALTHY, JOBS, MISSED, NOT_EXPECTED, OK, PENDING,
+                     UNKNOWN, WAITING)
 
 # Business-side statuses that mean "needs a look" - shared across PK-D's vocabulary
 # (SUCCESS/DEGRADED/BLOCKED/FAILED/SKIPPED/ALREADY_COMPLETED/LOCKED) and intelligence_refresh's
@@ -58,9 +63,7 @@ def _missed_state(job_spec, scheduler_latest: dict | None, now_ist: dt.datetime,
     if is_session is False:
         return NOT_EXPECTED
 
-    scheduled_h, scheduled_m = (int(x) for x in job_spec.scheduled_time.split(":"))
-    scheduled_dt = now_ist.replace(hour=scheduled_h, minute=scheduled_m, second=0,
-                                   microsecond=0)
+    scheduled_dt, deadline_dt = config.execution_window(job_spec, now_ist)
     ran_today = False
     if scheduler_latest:
         started = _parse_iso(scheduler_latest.get("started_at"))
@@ -70,7 +73,13 @@ def _missed_state(job_spec, scheduler_latest: dict | None, now_ist: dt.datetime,
             ran_today = started_ist.date() == today
     if now_ist < scheduled_dt:
         return PENDING
-    return OK if ran_today else MISSED
+    if ran_today:
+        return OK
+    # Still inside the 1-hour execution window with no run yet today - NOT a miss. Only
+    # at/after the deadline, with still no run, does this become MISSED.
+    if now_ist < deadline_dt:
+        return WAITING
+    return MISSED
 
 
 def job_status(out_dir: str, business_root: str, job_spec, now_ist: dt.datetime,
@@ -116,7 +125,7 @@ def overall_status(out_dir: str | None = None, *, business_root: str | None = No
         if row["runner_status"] == "FAILED":
             overall = BROKEN
         elif overall != BROKEN and (row["missed_state"] == MISSED
-                                    or row["runner_status"] == "LOCKED"
+                                    or row["runner_status"] in ("LOCKED", "EXPIRED")
                                     or row["business_status"] in _BUSINESS_ATTENTION_STATUSES):
             overall = ATTENTION
 
@@ -131,6 +140,7 @@ def render_human(status: dict) -> str:
     lines = ["DMB SHADOW OPERATIONS", "-" * 50]
     missed = 0
     locked = 0
+    expired = 0
     for job in JOBS:
         row = status["jobs"][job]
         label = _JOB_LABELS.get(job, job)
@@ -141,9 +151,12 @@ def render_human(status: dict) -> str:
             missed += 1
         if row["runner_status"] == "LOCKED":
             locked += 1
+        if row["runner_status"] == "EXPIRED":
+            expired += 1
     lines.append("")
     lines.append(f"Missed tasks:      {missed}")
     lines.append(f"Lock conflicts:    {locked}")
+    lines.append(f"Expired windows:   {expired}")
     lines.append("")
     lines.append("AUTOMATION HEALTH:")
     lines.append(status["overall"])

@@ -6,6 +6,7 @@ an env var, CLI-supplied path, or any market/log/session text.
 """
 from __future__ import annotations
 
+import datetime as dt
 import os
 
 from .models import JobSpec
@@ -20,6 +21,16 @@ LOCK_POLL_SECONDS = 15
 
 TASK_SCHEDULER_FOLDER = "\\DMB\\"
 EXECUTION_TIME_LIMIT = "PT50M"   # ISO-8601 duration; midpoint of the suggested 45-60 min range
+
+# 1-hour operational EXECUTION WINDOW per job (PK-E follow-up, 2026-10-12), IST. Deliberately a
+# different concept from EXECUTION_TIME_LIMIT above: that is the MAXIMUM RUNTIME of an already-
+# launched process (50 minutes, enforced by Windows Task Scheduler itself); this is the window
+# of wall-clock time during which the runner will even agree to START the child at all. A job
+# invoked at/after its own scheduled_time but before scheduled_time + this many minutes may
+# launch (subject to the global lock); at/after the deadline it is EXPIRED and the runner
+# refuses to launch the child - StartWhenAvailable can still fire the Task Scheduler entry
+# late, but the Python runner is what actually enforces the cutoff.
+EXECUTION_WINDOW_MINUTES = 60
 
 JOB_REGISTRY: dict[str, JobSpec] = {
     "intelligence_am": JobSpec(
@@ -62,5 +73,19 @@ def repo_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def execution_window(spec: JobSpec, now_ist: dt.datetime) -> tuple[dt.datetime, dt.datetime]:
+    """(scheduled_dt, deadline_dt) for `spec`, both on `now_ist`'s own calendar date and in
+    `now_ist`'s own tzinfo (whatever that is - this function imposes no timezone of its own).
+    A start is valid only for `scheduled_dt <= now < deadline_dt`; the deadline itself is
+    already past the window. The ONE place this arithmetic is defined - `runner.py` (enforcing
+    it) and `status.py` (reporting PENDING/WAITING/MISSED) both call this rather than each
+    computing their own copy."""
+    hour, minute = (int(part) for part in spec.scheduled_time.split(":"))
+    scheduled_dt = now_ist.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    deadline_dt = scheduled_dt + dt.timedelta(minutes=EXECUTION_WINDOW_MINUTES)
+    return scheduled_dt, deadline_dt
+
+
 __all__ = ["OUT_SUBDIR", "LOCK_WAIT_SECONDS", "LOCK_POLL_SECONDS", "TASK_SCHEDULER_FOLDER",
-          "EXECUTION_TIME_LIMIT", "JOB_REGISTRY", "shadow_out_dir", "repo_root"]
+          "EXECUTION_TIME_LIMIT", "EXECUTION_WINDOW_MINUTES", "JOB_REGISTRY", "shadow_out_dir",
+          "repo_root", "execution_window"]

@@ -8,7 +8,7 @@ from shadow_scheduler import config, models
 
 def test_runner_vocabulary_is_disjoint_from_readiness_and_orchestrator_vocabularies():
     runner_terms = {models.RUNNING, models.COMPLETED, models.CHILD_NONZERO, models.LOCKED,
-                    models.FAILED}
+                    models.FAILED, models.EXPIRED}
     readiness_terms = {"READY", "DEGRADED", "BLOCKED"}
     orchestrator_terms = {"SUCCESS", "DEGRADED", "BLOCKED", "FAILED", "SKIPPED",
                           "ALREADY_COMPLETED", "LOCKED", "PLANNED", "RUNNING"}
@@ -86,5 +86,29 @@ def test_run_record_to_dict_round_trips_every_packet_field():
     d = rec.to_dict()
     for field in ("schema_version", "job", "run_id", "started_at", "completed_at", "duration",
                  "hostname", "pid", "repo_path", "python_executable", "child_command",
-                 "child_exit_code", "runner_status", "log_path"):
+                 "child_exit_code", "runner_status", "log_path", "scheduled_time",
+                 "window_start", "window_end", "child_started"):
         assert field in d, field
+
+
+def test_run_record_window_fields_default_sanely_for_an_ordinary_launch():
+    """`child_started` defaults True (an ordinary COMPLETED/CHILD_NONZERO record never has to
+    set it explicitly); the window fields default empty/None until the runner fills them in."""
+    rec = models.RunRecord()
+    assert rec.child_started is True
+    assert rec.scheduled_time == ""
+    assert rec.window_start is None
+    assert rec.window_end is None
+
+
+def test_expired_is_a_terminal_status_with_a_zero_exit_code():
+    assert models.EXPIRED in models.TERMINAL_STATUSES
+    assert models.EXPIRED_EXIT_CODE == 0
+    # Deliberately NOT one of the nonzero infra exit codes - EXPIRED is never a crash.
+    assert models.EXPIRED not in models.INFRA_EXIT_CODES
+    assert models.EXPIRED_EXIT_CODE not in models.INFRA_EXIT_CODES.values()
+
+
+def test_waiting_is_distinct_from_pending_and_missed():
+    assert models.WAITING not in (models.PENDING, models.MISSED, models.NOT_EXPECTED,
+                                  models.OK, models.UNKNOWN)

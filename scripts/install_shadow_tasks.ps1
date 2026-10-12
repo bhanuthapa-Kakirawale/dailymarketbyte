@@ -20,7 +20,15 @@ param(
 )
 
 $script:ShadowTaskFolder = "\DMB\"
-$script:ShadowExecutionTimeLimit = "PT50M"
+# Task Scheduler's own COM object reports ExecutionTimeLimit back as an ISO-8601 duration
+# string (e.g. "PT50M") - that textual form is used ONLY for drift comparison/reporting.
+# New-ScheduledTaskSettingsSet's -ExecutionTimeLimit parameter on this PowerShell/Windows
+# combination requires an actual System.TimeSpan, not the ISO-8601 string - passing the
+# string throws "Cannot convert value ... to type System.TimeSpan", which previously left
+# $settings $null and made Register-ScheduledTask fail. Keep both forms, each used only
+# where it's valid.
+$script:ShadowExecutionTimeLimitIso8601 = "PT50M"
+$script:ShadowExecutionTimeLimitSpan = [TimeSpan]::FromMinutes(50)
 # Weekly trigger DaysOfWeek bitmask (Sunday=1 .. Saturday=64); Mon-Fri = 2+4+8+16+32.
 $script:ShadowMonFriBitmask = 62
 
@@ -99,7 +107,7 @@ function Compare-ShadowTask {
 
     $settings = $LiveTask.Settings
     if (($settings.MultipleInstances -ne "IgnoreNew") -or (-not $settings.StartWhenAvailable) -or
-        ($settings.ExecutionTimeLimit -ne $script:ShadowExecutionTimeLimit) -or
+        ($settings.ExecutionTimeLimit -ne $script:ShadowExecutionTimeLimitIso8601) -or
         ($settings.RestartCount -ne 0)) {
         $drift.Add("CONFIG_DRIFT")
     }
@@ -126,19 +134,21 @@ function Test-ShadowTimezoneIsIst {
 
 function New-ShadowScheduledTask {
     <# Registers ONE expected task for real. Only ever called from Invoke-ShadowTaskInstall,
-       which has already run every refusal check. #>
+       which has already run every refusal check. Every step uses -ErrorAction Stop so any
+       cmdlet failure (e.g. a bad settings object) is a terminating error the caller's
+       try/catch sees - it must never fall through silently into a false "CREATED". #>
     param([Parameter(Mandatory)]$Expected)
     $action = New-ScheduledTaskAction -Execute $Expected.Execute -Argument $Expected.Arguments `
-        -WorkingDirectory $Expected.WorkingDirectory
+        -WorkingDirectory $Expected.WorkingDirectory -ErrorAction Stop
     $trigger = New-ScheduledTaskTrigger -Weekly `
-        -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday -At $Expected.Time
+        -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday -At $Expected.Time -ErrorAction Stop
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable `
-        -ExecutionTimeLimit $script:ShadowExecutionTimeLimit -RestartCount 0
+        -ExecutionTimeLimit $script:ShadowExecutionTimeLimitSpan -RestartCount 0 -ErrorAction Stop
     # Current interactive user, no stored password, no SYSTEM.
     $userId = "$env:USERDOMAIN\$env:USERNAME"
-    $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited
+    $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited -ErrorAction Stop
     Register-ScheduledTask -TaskName $Expected.Name -TaskPath $script:ShadowTaskFolder `
-        -Action $action -Trigger $trigger -Settings $settings -Principal $principal | Out-Null
+        -Action $action -Trigger $trigger -Settings $settings -Principal $principal -ErrorAction Stop | Out-Null
 }
 
 function Invoke-ShadowTaskInstall {
@@ -171,13 +181,25 @@ function Invoke-ShadowTaskInstall {
         $row = $plan | Where-Object { $_.Name -eq $exp.Name }
         switch ($row.Plan) {
             "CREATE" {
-                New-ShadowScheduledTask -Expected $exp
-                Write-Host "CREATED   $($exp.Name)"
+                try {
+                    New-ShadowScheduledTask -Expected $exp
+                    Write-Host "CREATED   $($exp.Name)"
+                }
+                catch {
+                    Write-Error "FAILED to create $($exp.Name): $($_.Exception.Message)"
+                    return 1
+                }
             }
             "UPDATE" {
-                Unregister-ScheduledTask -TaskName $exp.Name -TaskPath $script:ShadowTaskFolder -Confirm:$false
-                New-ShadowScheduledTask -Expected $exp
-                Write-Host "UPDATED   $($exp.Name)"
+                try {
+                    Unregister-ScheduledTask -TaskName $exp.Name -TaskPath $script:ShadowTaskFolder -Confirm:$false -ErrorAction Stop
+                    New-ShadowScheduledTask -Expected $exp
+                    Write-Host "UPDATED   $($exp.Name)"
+                }
+                catch {
+                    Write-Error "FAILED to update $($exp.Name): $($_.Exception.Message)"
+                    return 1
+                }
             }
             "UNCHANGED" {
                 Write-Host "UNCHANGED $($exp.Name)"

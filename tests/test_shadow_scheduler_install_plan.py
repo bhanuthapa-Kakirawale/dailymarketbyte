@@ -128,3 +128,75 @@ Write-Host "CREATED_COUNT=$($created.Count)"
     assert "EXIT=0" in proc.stdout
     assert "CREATED_COUNT=4" in proc.stdout
     assert "TIMEZONE CHECK SKIPPED" in proc.stderr or "TIMEZONE CHECK SKIPPED" in proc.stdout
+
+
+# Full, safe shims for every Task Scheduler cmdlet New-ShadowScheduledTask touches - used by
+# every test below so NONE of them can ever fall through to the real cmdlets (a function
+# shadows a same-named cmdlet in the same scope, but only if it is actually defined - leaving
+# even one out risks a REAL Register-ScheduledTask call, which must never happen in a test).
+_SAFE_SHIMS = r"""
+function New-ScheduledTaskAction { param($Execute, $Argument, $WorkingDirectory, $ErrorAction) [pscustomobject]@{} }
+function New-ScheduledTaskTrigger { param([switch]$Weekly, $DaysOfWeek, $At, $ErrorAction) [pscustomobject]@{} }
+function New-ScheduledTaskSettingsSet { param($MultipleInstances, [switch]$StartWhenAvailable, $ExecutionTimeLimit, $RestartCount, $ErrorAction) [pscustomobject]@{} }
+function New-ScheduledTaskPrincipal { param($UserId, $LogonType, $RunLevel, $ErrorAction) [pscustomobject]@{} }
+function Register-ScheduledTask { param($TaskName, $TaskPath, $Action, $Trigger, $Settings, $Principal, $ErrorAction) $null }
+"""
+
+
+def test_execution_time_limit_passed_to_the_cmdlet_is_a_50_minute_timespan(tmp_path):
+    """Test A: New-ScheduledTaskSettingsSet must receive a System.TimeSpan of exactly 50
+    minutes, never the ISO-8601 string "PT50M" that caused the real conversion error."""
+    body = _SAFE_SHIMS + r"""
+$script:CapturedLimit = $null
+function New-ScheduledTaskSettingsSet {
+    param($MultipleInstances, [switch]$StartWhenAvailable, $ExecutionTimeLimit, $RestartCount, $ErrorAction)
+    $script:CapturedLimit = $ExecutionTimeLimit
+    [pscustomobject]@{}
+}
+$expected = Get-ExpectedShadowTasks -RepoRoot "D:\repo" -PythonExe "D:\repo\venv\Scripts\python.exe"
+New-ShadowScheduledTask -Expected $expected[0]
+Write-Host "TYPE=$($script:CapturedLimit.GetType().FullName)"
+Write-Host "MINUTES=$($script:CapturedLimit.TotalMinutes)"
+"""
+    proc = _run_ps(tmp_path, body)
+    assert proc.returncode == 0, proc.stderr
+    assert "TYPE=System.TimeSpan" in proc.stdout
+    assert "MINUTES=50" in proc.stdout
+
+
+def test_registration_failure_cannot_produce_a_created_message(tmp_path):
+    """Tests B + C: a Register-ScheduledTask-path failure (surfaced here via a failing
+    New-ScheduledTaskSettingsSet, exactly like the real "PT50M" conversion error) must never
+    let CREATED print, and the installer must fail visibly (non-zero exit). Every other
+    Task Scheduler cmdlet is still shimmed safely so nothing reaches the real OS."""
+    body = _SAFE_SHIMS + r"""
+function Get-ScheduledTask { param($TaskPath, $TaskName, $ErrorAction) $null }
+function Get-TimeZone { [pscustomobject]@{ Id = "India Standard Time" } }
+function New-ScheduledTaskSettingsSet {
+    param($MultipleInstances, [switch]$StartWhenAvailable, $ExecutionTimeLimit, $RestartCount, $ErrorAction)
+    throw "Cannot convert value `"PT50M`" to type `"System.TimeSpan`"."
+}
+$code = Invoke-ShadowTaskInstall -RepoRoot "D:\repo" -PythonExe "D:\repo\venv\Scripts\python.exe"
+Write-Host "EXIT=$code"
+"""
+    proc = _run_ps(tmp_path, body)
+    assert "EXIT=1" in proc.stdout
+    assert "CREATED" not in proc.stdout
+
+
+def test_successful_registration_still_reports_created(tmp_path):
+    """Test D: with every step genuinely succeeding, CREATED must still print for all four
+    tasks and the installer must exit 0 - the fail-fast hardening must not break the
+    successful path."""
+    body = _SAFE_SHIMS + r"""
+function Get-ScheduledTask { param($TaskPath, $TaskName, $ErrorAction) $null }
+function Get-TimeZone { [pscustomobject]@{ Id = "India Standard Time" } }
+$code = Invoke-ShadowTaskInstall -RepoRoot "D:\repo" -PythonExe "D:\repo\venv\Scripts\python.exe"
+Write-Host "EXIT=$code"
+"""
+    proc = _run_ps(tmp_path, body)
+    assert proc.returncode == 0, proc.stderr
+    assert "EXIT=0" in proc.stdout
+    for name in ("DMB-Shadow-Intelligence-AM", "DMB-Shadow-PRE", "DMB-Shadow-Intelligence-PM",
+                "DMB-Shadow-POST"):
+        assert f"CREATED   {name}" in proc.stdout

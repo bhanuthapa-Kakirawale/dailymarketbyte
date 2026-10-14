@@ -518,6 +518,20 @@ to `POST_TRIM_ORDER` for the same runtime-ceiling trimming. May state a filing/r
 occurred, closed, or was updated today - never interprets a financial result (no revenue/
 EBITDA/PAT/margin/EPS/beat-miss parsing; that is explicitly out of scope for V1).
 
+**Render + publication-audit contract (fixed 2026-10-14):** `market_events_spec()`
+(`daily_video/public_storyboard.py`) was wired end-to-end through selection/arbitration/storyboard
+from the start, but the scene kind `"MARKET_EVENTS"` was never registered with the two sibling
+registries EXCHANGE_WATCH/IPO_WATCH already have - the composer's scene-class map and the
+publication audit's claims-tracing map - so the first real live MARKET_EVENTS content (an OFS/
+buyback/govt-auction family qualifying on a real session) BLOCKED the scheduled POST at PK-C
+preflight ("unrenderable scene kind(s): MARKET_EVENTS" / "displayed_claims" failed). Both are now
+registered: `daily_video/public_scenes.py:MarketEventsScene` (+ `daily_video/composer.py`'s
+`SCENE_CLASSES`/`REQUIRED_MARKS`) draws the scene, and `publication/scene_claims.py`'s
+`_public_section_claims` traces every card's displayed numbers back to the event's own
+`event_keys`/`sources` (the same shape `exchange_spec`'s `event_ids`/`sources` already use) so
+`displayed_claims` resolves instead of falling through to the generic, unresolved catch-all. No
+Market Events selection/validation rule changed.
+
 ## Private Desk use
 
 `GET /events` (`private_desk/services/market_events.py`, `templates/events.html`): TODAY /

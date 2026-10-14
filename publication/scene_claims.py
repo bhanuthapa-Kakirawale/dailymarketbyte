@@ -36,9 +36,10 @@ def _public_section_claims(sid, spec, texts, session):
                 ids = [f"{i}:{name}" for i in base]
             out.append(claim(sid, v, k, ids, STRUCTURE_SOURCES, role=STRUCTURE_ROLE,
                              data_as_of=session, derivation=deriv))
-    elif kind == "EXCHANGE_WATCH":
+    elif kind in ("EXCHANGE_WATCH", "MARKET_EVENTS"):
+        ids_key = "event_ids" if kind == "EXCHANGE_WATCH" else "event_keys"
         for k, v in _numeric(texts):
-            out.append(claim(sid, v, k, spec.data.get("event_ids") or [],
+            out.append(claim(sid, v, k, spec.data.get(ids_key) or [],
                              spec.data.get("sources") or [], role="SOURCE", data_as_of=session))
     elif kind in ("IPO_WATCH", "IPO_BOARD"):
         ids = [f"ipo:{c}" for c in spec.data.get("companies") or []]
@@ -134,7 +135,7 @@ def post_claims(sb, report, sheet=None) -> list:
             for f, v in _numeric(texts):
                 name = texts.get(f.rsplit(".", 1)[0] + ".name", "") if "." in f else ""
                 out.append(rc(sid, v, f, res.ids_for(name)))
-        elif k in ("STRUCTURE", "EXCHANGE_WATCH", "IPO_WATCH", "IPO_BOARD"):
+        elif k in ("STRUCTURE", "EXCHANGE_WATCH", "IPO_WATCH", "IPO_BOARD", "MARKET_EVENTS"):
             out += _public_section_claims(sid, spec, texts, session)
         else:
             # private-only / rare scenes: the scene's declared fact ids, else unresolved
@@ -285,7 +286,7 @@ def pre_claims(sb, brief, sheet=None) -> list:
                                      derivation="verified schedule"))
                 else:
                     out.append(rc(sid, v, f, []))
-        elif k in ("STRUCTURE", "EXCHANGE_WATCH", "IPO_WATCH", "IPO_BOARD"):
+        elif k in ("STRUCTURE", "EXCHANGE_WATCH", "IPO_WATCH", "IPO_BOARD", "MARKET_EVENTS"):
             out += _public_section_claims(sid, spec, texts, brief.pre_date)
         else:
             for f, v in _numeric(texts):

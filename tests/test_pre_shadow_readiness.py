@@ -481,7 +481,12 @@ FROZEN = {
     # failure) plus a `music` field in its return dict, keyed on an explicit
     # `music_rotation_date` (the edition/production date, never the market session discussed -
     # owner correction) rather than `storyboard.session_date`. No scene drawing/timing changed.
-    "daily_video/composer.py": "387cc2f5d1f27753951fb1a74edfd0dba1e15ddd2a8722f59712a51ec8166aee",
+    # Re-pinned (feature/post-market-events-render-contract-fix-v1, owner-approved plan):
+    # registered the "MARKET_EVENTS" scene kind (MarketEventsScene, already correctly built by
+    # market_events_spec/presentation/editorial_candidates but never wired into the composer) in
+    # SCENE_CLASSES and REQUIRED_MARKS, fixing the real 2026-10-14 "unrenderable scene kind(s):
+    # MARKET_EVENTS" preflight BLOCK. No other scene's drawing/timing changed.
+    "daily_video/composer.py": "4bc8d5f95505cc47764e42fe06740037b2b1d800609b2e7ab2c84e8bee49ccce",
     "daily_video/hook_kit.py": "65054d18a31ce549a9da2ea5adbdcadda7fc9e1366283fcff0d71c462e688cee",
     "daily_video/hook_scene.py": "f6af246492bc2d0d5b92f24b18ed84cccd7fdbfddd99f26930ec865d88759d2f",
     "daily_video/market_scenes.py": "e2b981425c12d98def8ed3da62d58a405f54eaab411c168bbd4b8f669820e12d",
@@ -520,7 +525,11 @@ FROZEN = {
     # `_rows`/`_layout` split such a line across rows at its existing " · " segment boundaries -
     # deterministic, content-preserving wrapping; no font size, formatting or content changed.
     "daily_video/provenance_bar.py": "177d7f8b3ed71a424052e990a71c1d8bbeceaa3a51b5a3e46650a87ea9d47315",
-    "daily_video/public_scenes.py": "e91915b296634e8c3ac36fbd1331036e308de5a41b6ed3055a81f5c25e3fa808",
+    # Re-pinned (feature/post-market-events-render-contract-fix-v1, owner-approved plan): added
+    # MarketEventsScene (near-clone of ExchangeWatchScene's card layout: chip + status, primary
+    # company/symbol name, one wrapped factual line, "market_event_card" mark) - the missing
+    # renderer half of the MARKET_EVENTS scene kind. No other scene changed.
+    "daily_video/public_scenes.py": "7a9f73cf5a8d8126e01922971faf0383e9145578864677ee63bae4a92639d462",
     "daily_video/public_storyboard.py": "24cb857013d7f1c9a123271259308fd266dbe351b2365344058ad980fad27462",
 }
 

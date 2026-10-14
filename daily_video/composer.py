@@ -24,8 +24,8 @@ from .market_scenes import (GlobalContextScene, MarketPulseScene, MarketStructur
                             MoversDuelScene, QuickCloseScene, SectorBoardScene, SpecialEventScene)
 from .pre_scenes import (PreEventScene, PreOvernightScene, PreStockWatchScene, PreVixScene,
                          PreWatchScene)
-from .public_scenes import (ExchangeWatchScene, IPOWatchScene, PrimaryMarketScene,
-                            StructureScene)
+from .public_scenes import (ExchangeWatchScene, IPOWatchScene, MarketEventsScene,
+                            PrimaryMarketScene, StructureScene)
 from .radar_scenes import RadarIntroScene
 from .radar_story_scene import RadarStockScene
 from .scenes import AheadScene, FlowsScene, HookScene
@@ -43,6 +43,7 @@ SCENE_CLASSES = {
     # public market intelligence V1 (PUBLIC_UNREGISTERED)
     "STRUCTURE": StructureScene, "EXCHANGE_WATCH": ExchangeWatchScene,
     "IPO_WATCH": IPOWatchScene, "IPO_BOARD": PrimaryMarketScene,
+    "MARKET_EVENTS": MarketEventsScene,
 }
 
 REQUIRED_MARKS = {
@@ -75,6 +76,7 @@ REQUIRED_MARKS = {
     "EXCHANGE_WATCH": {"exchange_card"},
     "IPO_WATCH": {"ipo_card"},
     "IPO_BOARD": {"ipo_row"},
+    "MARKET_EVENTS": {"market_event_card"},
 }
 
 

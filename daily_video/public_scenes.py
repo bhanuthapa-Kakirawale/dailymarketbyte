@@ -6,6 +6,8 @@ Market Byte design system, SOURCE / DATA AS OF on every one (the shared provenan
                           advance/decline split - never a stock name
     ExchangeWatchScene    EXCHANGE WATCH: 1-3 official exchange events, each card = the
                           security, the exchange's status, one fixed factual line
+    MarketEventsScene     MARKET EVENTS: 1-3 official calendar/lifecycle events, each card =
+                          the company/instrument, its status, one fixed factual line
     IPOWatchScene         IPO WATCH: one IPO, its dated event and up to 5 official fact rows
     PrimaryMarketScene    PRIMARY MARKET board: 2-4 IPOs with today's dated event
 
@@ -157,6 +159,49 @@ class ExchangeWatchScene(Scene):
                 ctx.ink.text(ctx.d, (x0, y), ln, fl, alpha(theme.TEXT_PRIMARY, k), "line")
                 y += int(fl.size * 1.2)
             ctx.mark("exchange_card", box)
+
+
+# --------------------------------------------------------------------------- market events
+class MarketEventsScene(Scene):
+    TOP = 440
+
+    def paint(self, ctx, t):
+        tx = self.spec.texts
+        _top(ctx, t, {"headline": tx["headline"], "subline": tx.get("subline", "")})
+        cards = tx["cards"]
+        n = len(cards)
+        gap = 22
+        h = min(280, (CONTENT_BOTTOM - self.TOP - gap * (n - 1)) / max(n, 1))
+        for i, c in enumerate(cards):
+            k = min(K.snap(t, 0.4 + 0.35 * i, 0.32), 1.0)
+            if k <= 0:
+                continue
+            y0 = self.TOP + i * (h + gap)
+            box = (theme.X0 + (1 - k) * 40, y0, TEXT_RIGHT_LOW + (1 - k) * 40, y0 + h)
+            card(ctx, box, k, fill=theme.PANEL, accent=theme.HIGHLIGHT)
+            x0 = box[0] + 40
+            xe = chip(ctx, x0, box[1] + 26, c["tag"], theme.HIGHLIGHT, p=k, size=theme.T_SMALL)
+            if c.get("status"):
+                fs = fit(c["status"], box[2] - xe - 40, theme.T_SMALL, min_size=theme.MIN_FONT)
+                ctx.ink.text(ctx.d, (xe + 16, box[1] + 34), c["status"], fs,
+                             alpha(theme.TEXT_SECONDARY, k), "status")
+            name = c.get("company") or c.get("symbol") or ""
+            fn = fit(name, box[2] - x0 - 36, 52, min_size=34)
+            ctx.ink.text(ctx.d, (x0, box[1] + 84), name, fn, alpha(theme.TEXT_PRIMARY, k), "name")
+            y = box[1] + 84 + fn.size + 10
+            if c.get("symbol") and c.get("company") and h >= 240:
+                fc = fit(c["symbol"], box[2] - x0 - 36, 28, bold=False, min_size=theme.MIN_FONT)
+                ctx.ink.text(ctx.d, (x0, y), c["symbol"], fc, alpha(theme.TEXT_SECONDARY, k),
+                             "symbol")
+                y += fc.size + 10
+            line = c["line"]
+            fl = fit(line, (box[2] - x0 - 36) * 2, 30, bold=False, min_size=theme.MIN_FONT)
+            for ln in wrap(line, fl, box[2] - x0 - 36)[:2]:
+                if y + fl.size > box[3] - 10:
+                    break
+                ctx.ink.text(ctx.d, (x0, y), ln, fl, alpha(theme.TEXT_PRIMARY, k), "line")
+                y += int(fl.size * 1.2)
+            ctx.mark("market_event_card", box)
 
 
 # --------------------------------------------------------------------------- IPO watch

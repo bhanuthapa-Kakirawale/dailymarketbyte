@@ -83,6 +83,70 @@ def test_market_events_scene_requires_provenance():
     assert "provenance" in spec.texts
 
 
+# --------------------------------------------------------------------------- render + audit contract
+def test_market_events_is_registered_as_a_renderable_scene_kind():
+    from daily_video.composer import SCENE_CLASSES
+    assert "MARKET_EVENTS" in SCENE_CLASSES
+
+
+def test_market_events_scene_renders_and_passes_freeze_frame_qa():
+    from daily_video.composer import Composer, REQUIRED_MARKS
+    from daily_video.public_storyboard import market_events_spec
+    from daily_video.storyboard import Storyboard
+    spec = market_events_spec(_model(2), "POST")
+    sb = Storyboard(session_date=DAY, date_label="TUE 06 OCT 2026", kicker="SESSION RECAP",
+                    scenes=[spec])
+    _, _, qa = Composer(sb).freeze(0)
+    assert qa["passed"], qa["issues"]
+    assert REQUIRED_MARKS["MARKET_EVENTS"] <= set(qa["marks"])
+
+
+def test_market_events_empty_model_never_produces_a_scene():
+    # select_market_events() returning nothing -> build_model() returns None -> no section/scene
+    # is ever added (presentation/post_plan.py, presentation/pre_plan.py's `if ...market_events:`
+    # guard) - nothing new to wire here, confirmed at the model layer.
+    from market_events.watch import build_model
+    assert build_model([]) is None
+
+
+def test_market_events_post_claims_trace_every_card_to_its_facts():
+    """Regression for the 2026-10-14 displayed_claims BLOCK: every numeric string a MARKET_EVENTS
+    card shows (price bands, cut-off yields, notified amounts, record dates, ...) must resolve to
+    the event's own fact ids/sources, never fall through to an empty `fact_ids=[]` claim."""
+    from publication.claims import check_claims
+    from publication.scene_claims import post_claims, storyboard_scene_texts
+    from daily_video.public_storyboard import market_events_spec
+    from daily_video.storyboard import Storyboard
+    spec = market_events_spec(_model(3), "POST")
+    sb = Storyboard(session_date=DAY, date_label="TUE 06 OCT 2026", kicker="SESSION RECAP",
+                    scenes=[spec])
+    claims = post_claims(sb, None)
+    me_claims = [c for c in claims if c["scene_id"].endswith("_market_events")]
+    assert me_claims
+    for c in me_claims:
+        assert c["fact_ids"] or c["derivation"], c
+        assert c["source_name"], c
+    assert not check_claims(storyboard_scene_texts(sb), claims)
+
+
+def test_market_events_pre_claims_trace_every_card_to_its_facts():
+    from publication.claims import check_claims
+    from publication.scene_claims import pre_claims, storyboard_scene_texts
+    from daily_video.public_storyboard import market_events_spec
+    from daily_video.storyboard import Storyboard
+    brief = dataclasses.replace(synthetic_brief("QUIET"), market_events=_model(2))
+    spec = market_events_spec(_model(2), "PRE")
+    sb = Storyboard(session_date=DAY, date_label="TUE 06 OCT 2026", kicker="BEFORE THE BELL",
+                    scenes=[spec])
+    claims = pre_claims(sb, brief)
+    me_claims = [c for c in claims if c["scene_id"].endswith("_market_events")]
+    assert me_claims
+    for c in me_claims:
+        assert c["fact_ids"] or c["derivation"], c
+        assert c["source_name"], c
+    assert not check_claims(storyboard_scene_texts(sb), claims)
+
+
 # --------------------------------------------------------------------------- never inferred
 def test_earnings_line_never_fabricates_a_result_date():
     """The card's one factual line must come only from `ev.facts` (what the filing itself

@@ -104,6 +104,38 @@ def test_renderer_performs_no_detector_calculation():
         assert ".rolling(" not in src and ".mean(" not in src, name
 
 
+def _scene_spec_kind_literals(src):
+    """Every `kind="X"` string literal passed to a `SceneSpec(...)` call - a planner/storyboard
+    author's declared scene kind, found statically (never by importing/running the module)."""
+    out = set()
+    for node in ast.walk(ast.parse(src)):
+        if not (isinstance(node, ast.Call) and
+                ((isinstance(node.func, ast.Name) and node.func.id == "SceneSpec") or
+                 (isinstance(node.func, ast.Attribute) and node.func.attr == "SceneSpec"))):
+            continue
+        for kw in node.keywords:
+            if kw.arg == "kind" and isinstance(kw.value, ast.Constant) and \
+                    isinstance(kw.value.value, str):
+                out.add(kw.value.value)
+    return out
+
+
+def test_every_scene_kind_the_storyboards_can_emit_is_renderable():
+    """Structural contract: a planner/storyboard that declares `SceneSpec(kind="X", ...)` for a
+    kind the composer's SCENE_CLASSES registry doesn't know is a defect caught here, at test
+    time - not by a production preflight BLOCKED run (as MARKET_EVENTS once was: wired through
+    `market_events_spec` but never registered in SCENE_CLASSES, see readiness/checks.py's
+    "unrenderable scene kind(s)")."""
+    kinds = set()
+    for path in ("daily_video/storyboard.py", "daily_video/public_storyboard.py",
+                 "daily_video/pre_storyboard.py"):
+        with open(path, encoding="utf-8") as fh:
+            kinds |= _scene_spec_kind_literals(fh.read())
+    assert kinds                                   # the scan itself must find real kinds
+    missing = kinds - set(composer.SCENE_CLASSES)
+    assert not missing, f"declared but unrenderable scene kind(s): {sorted(missing)}"
+
+
 # --------------------------------------------------------------------------- 5-7 design system
 def test_primary_brand_is_daily_market_byte_and_radar_is_a_section(real):
     assert (chrome.BRAND_PART1 + chrome.BRAND_PART2).strip() == "DAILY MARKET BYTE"

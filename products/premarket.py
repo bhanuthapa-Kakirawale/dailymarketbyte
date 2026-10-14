@@ -383,10 +383,12 @@ def render_pre(brief, out_dir: str, watermark: str | None = None, frames_only: b
         dump(f"pre_result_{tag}.json", result)
         return result
 
-    # background music (docs/BACKGROUND_MUSIC.md): PRE discusses `previous_session`, not its own
-    # edition date (`sb.session_date` here is `brief.pre_date`) - so POST for that same session
-    # picks the same track.
-    comp = Composer(sb, watermark=watermark, music_session_date=brief.previous_session)
+    # background music (docs/BACKGROUND_MUSIC.md): keyed on the EDITION/production date
+    # (brief.pre_date), never the market session PRE discusses (brief.previous_session) - a
+    # Monday PRE+POST pair must share one track even though PRE's own "previous session" (e.g.
+    # Friday's close) differs from POST's own "session" (also Friday, but via a different field).
+    # `sb.session_date` already equals `brief.pre_date` here; passed explicitly for clarity.
+    comp = Composer(sb, watermark=watermark, music_rotation_date=brief.pre_date)
     names = []
     seen = {}
     for s in sb.scenes:

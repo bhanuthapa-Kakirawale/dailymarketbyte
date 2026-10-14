@@ -85,16 +85,18 @@ REQUIRED_MARKS = {
 AUDIO_ENABLED = config.DMB_AUDIO_ENABLED
 
 
-def _select_music(session_date, total_seconds: float, out_dir: str) -> "music.MusicSelection":
-    """Deterministic selection + pre-flight validation, keyed on the storyboard's own
-    `session_date` (never wall-clock) so PRE and POST for the same session pick the same track.
-    Never raises - any problem here just means a silent render, never a blocked one."""
+def _select_music(rotation_date, total_seconds: float, out_dir: str) -> "music.MusicSelection":
+    """Deterministic selection + pre-flight validation, keyed on `rotation_date` - the VIDEO's
+    own edition/production date (Composer.music_rotation_date), never the market session it
+    discusses, never wall-clock. Never raises - any problem here just means a silent render,
+    never a blocked one."""
     try:
-        sel = music.get_music(config.ASSETS_DIR, out_dir, seconds=total_seconds, date=session_date)
+        sel = music.get_music(config.ASSETS_DIR, out_dir, seconds=total_seconds, date=rotation_date)
     except Exception as exc:
-        return music.MusicSelection(path=None, status=music.SILENT_FALLBACK,
-                                    selection_method="error",
-                                    reason=f"selection failed: {type(exc).__name__}: {exc}")
+        return music.MusicSelection(
+            path=None, status=music.SILENT_FALLBACK, selection_method="error",
+            reason_code=music.REASON_SELECTION_ERROR, rotation_date=rotation_date.isoformat(),
+            reason=f"selection failed: {type(exc).__name__}: {exc}")
     if sel.status == music.APPLIED_REAL:
         from qa.video_qa import probe_media
         info = probe_media(sel.path)
@@ -102,21 +104,27 @@ def _select_music(session_date, total_seconds: float, out_dir: str) -> "music.Mu
             return music.MusicSelection(
                 path=None, status=music.SILENT_FALLBACK, track_id=sel.track_id,
                 filename=sel.filename, title=sel.title, selection_method=sel.selection_method,
+                reason_code=music.REASON_TRACK_FAILED_PROBE, rotation_date=sel.rotation_date,
                 reason=f"track file failed audio probe: {sel.filename}")
     return sel
 
 
-def _music_manifest_dict(sel) -> dict:
+def _music_manifest_dict(sel, rotation_date) -> dict:
     """A reference for the production manifest/publication audit, not a duplicate of the full
-    music manifest (task packet section 12)."""
+    music manifest (docs/BACKGROUND_MUSIC.md). `origin` (REAL | PROCEDURAL | NONE) and
+    `rotation_date` are always reported, even when audio is disabled, so the audit never has to
+    guess what WOULD have been selected."""
     base = {"volume": config.MUSIC_VOLUME, "fade_in_seconds": config.MUSIC_FADE_IN_SECONDS,
-            "fade_out_seconds": config.MUSIC_FADE_OUT_SECONDS, "audio_enabled": AUDIO_ENABLED}
+            "fade_out_seconds": config.MUSIC_FADE_OUT_SECONDS, "audio_enabled": AUDIO_ENABLED,
+            "rotation_date": rotation_date.isoformat() if rotation_date else None}
     if sel is None:
-        return {**base, "status": music.SILENT_FALLBACK, "track_id": None, "filename": None,
-                "title": None, "selection_method": "",
+        return {**base, "status": music.SILENT_FALLBACK, "origin": music.ORIGIN_NONE,
+                "track_id": None, "filename": None, "title": None, "selection_method": "",
+                "reason_code": music.REASON_AUDIO_PHASE_DISABLED,
                 "reason": "audio phase disabled (DMB_AUDIO_ENABLED=false)"}
-    return {**base, "status": sel.status, "track_id": sel.track_id, "filename": sel.filename,
-            "title": sel.title, "selection_method": sel.selection_method, "reason": sel.reason}
+    return {**base, "status": sel.status, "origin": sel.origin, "track_id": sel.track_id,
+            "filename": sel.filename, "title": sel.title, "selection_method": sel.selection_method,
+            "reason_code": sel.reason_code, "reason": sel.reason}
 
 
 def build_scenes(storyboard) -> list:
@@ -124,19 +132,21 @@ def build_scenes(storyboard) -> list:
 
 
 class Composer:
-    def __init__(self, storyboard, watermark: str | None = None, music_session_date=None):
+    def __init__(self, storyboard, watermark: str | None = None, music_rotation_date=None):
         """`watermark`: a red corner badge on every frame (e.g. "SYNTHETIC DATA - NOT REAL")
         so preview renders built from fixtures can never be mistaken for a real session.
 
-        `music_session_date`: the MARKET SESSION this edition is about, for background-music
-        rotation (docs/BACKGROUND_MUSIC.md). Defaults to `storyboard.session_date`, which is
-        correct for POST (the session it recaps) but NOT for PRE - a PRE storyboard's
-        `session_date` is the edition's own morning date (`brief.pre_date`), while the session it
-        discusses is `brief.previous_session`; `products/premarket.py` passes that explicitly so
-        PRE and POST for the same session still pick the same track."""
+        `music_rotation_date`: the VIDEO's own edition/production date, for background-music
+        rotation (docs/BACKGROUND_MUSIC.md) - e.g. the calendar morning a PRE+POST pair is
+        published for, NEVER the underlying market session either edition discusses. Defaults to
+        `storyboard.session_date`, which happens to equal the edition date for most direct/review
+        callers, but production call sites pass it explicitly: `main.py` passes `report.report_date`
+        for POST and `products/premarket.py` passes `brief.pre_date` for PRE, so a same-morning
+        PRE+POST pair always share one track even though PRE's own `previous_session` (what it
+        discusses) differs from POST's own `session_date` (what IT discusses)."""
         self.sb = storyboard
         self.watermark = watermark
-        self.music_session_date = music_session_date or storyboard.session_date
+        self.music_rotation_date = music_rotation_date or storyboard.session_date
         self.scenes = build_scenes(storyboard)
         self.starts = storyboard.starts()
         self.total = storyboard.total_duration
@@ -192,7 +202,7 @@ class Composer:
     def render(self, out_path: str, fps: int = theme.FPS) -> dict:
         out_dir = os.path.dirname(os.path.abspath(out_path))
         os.makedirs(out_dir, exist_ok=True)
-        music_sel = _select_music(self.music_session_date, self.total, out_dir) if AUDIO_ENABLED else None
+        music_sel = _select_music(self.music_rotation_date, self.total, out_dir) if AUDIO_ENABLED else None
         audio_args = []
         if music_sel is not None and music_sel.path:
             fade_out_start = max(0.0, self.total - config.MUSIC_FADE_OUT_SECONDS)
@@ -229,12 +239,14 @@ class Composer:
             music_sel = music.MusicSelection(
                 path=None, status=music.SILENT_FALLBACK, track_id=music_sel.track_id,
                 filename=music_sel.filename, title=music_sel.title,
-                selection_method=music_sel.selection_method,
+                selection_method=music_sel.selection_method, reason_code=music.REASON_MUX_FAILED,
+                rotation_date=music_sel.rotation_date,
                 reason="ffmpeg audio mux failed; re-rendered silent")
         return {"output_path": out_path if ok else None, "ok": ok, "frames": frames,
                 "fps": fps, "duration": round(frames / fps, 3),
                 "render_seconds": round(time.time() - t0, 1),
-                "music": _music_manifest_dict(music_sel if AUDIO_ENABLED else None)}
+                "music": _music_manifest_dict(music_sel if AUDIO_ENABLED else None,
+                                              self.music_rotation_date)}
 
     # ------------------------------------------------------------------ freeze-frame QA
     def freeze(self, index: int, t_local: float | None = None):

@@ -2,6 +2,11 @@
 selection in `music.get_music`, pre-flight validation + ffmpeg audio stage in
 `daily_video.composer.Composer.render`, and the dynamic `expect_audio` QA wiring in `main.py`.
 
+Rotation is keyed on the VIDEO's own production/edition date (`Composer.music_rotation_date`),
+never the underlying market session a PRE or POST edition discusses - owner correction after the
+first validation replay surfaced a PRE/POST mismatch. `SESSION`/`PREV` below are plain calendar
+dates used as rotation keys in these tests; they do not represent market sessions.
+
 Fully offline: real (tiny) WAV fixtures and the real ffmpeg binary already bundled by
 imageio-ffmpeg - no network, no copyrighted/downloaded audio.
 """
@@ -174,6 +179,8 @@ def test_composer_applies_a_short_track_looped_and_trimmed_to_duration(tmp_path,
     render = comp.Composer(sb).render(str(out), fps=1)
     assert render["ok"]
     assert render["music"]["status"] == music.APPLIED_REAL
+    assert render["music"]["origin"] == music.ORIGIN_REAL
+    assert render["music"]["rotation_date"] == sb.session_date.isoformat()
     info = probe_media(str(out))
     assert info.get("audio"), "looped short track must still produce an audio stream"
     assert abs(info["duration"] - sb.total_duration) < 1.0
@@ -235,15 +242,31 @@ def test_composer_uses_procedural_track_when_library_is_empty(tmp_path, monkeypa
     render = comp.Composer(sb).render(str(out), fps=1)
     assert render["ok"]
     assert render["music"]["status"] == music.APPLIED_PROCEDURAL
+    assert render["music"]["origin"] == music.ORIGIN_PROCEDURAL
+    assert render["music"]["reason_code"] == music.REASON_NO_CLEARED_REAL_TRACK
     info = probe_media(str(out))
     assert info.get("audio")
 
 
-def test_composer_music_session_date_overrides_storyboard_session_date(tmp_path, monkeypatch):
-    """Regression (found in the PRE/POST validation replay): a PRE storyboard's own
-    `session_date` is its edition date (`brief.pre_date`), not the market session it discusses
-    (`brief.previous_session`) - products/premarket.py passes that explicitly via
-    `music_session_date` so PRE and POST for the same session still pick the same track."""
+def test_composer_music_rotation_date_defaults_to_storyboard_session_date(tmp_path):
+    """Composer.music_rotation_date defaults to storyboard.session_date when no explicit
+    override is given (the right default for direct/review callers that have no separate
+    "edition" concept)."""
+    import daily_video.composer as comp
+
+    sb = _tiny_storyboard()
+    c = comp.Composer(sb)
+    assert c.music_rotation_date == sb.session_date
+
+
+def test_music_rotation_key_is_the_edition_date_not_the_session_discussed(tmp_path, monkeypatch):
+    """Owner correction: rotation must use the VIDEO's own production/edition date, never the
+    underlying market session either edition discusses. A PRE storyboard's own `session_date`
+    IS its edition date (`brief.pre_date`); POST's `session_date` is the session it RECAPS, one
+    or more days earlier than its own edition date (`report.report_date`) - so Composer must be
+    given an explicit `music_rotation_date` override for POST (main.py passes `report.report_date`)
+    while PRE needs none (products/premarket.py still passes `brief.pre_date` explicitly, for
+    clarity, even though it equals `sb.session_date` already)."""
     import config
     import daily_video.composer as comp
 
@@ -256,22 +279,66 @@ def test_composer_music_session_date_overrides_storyboard_session_date(tmp_path,
         _write_wav(os.path.join(music_dir, name), 1.0)
     monkeypatch.setattr(config, "ASSETS_DIR", str(assets))
 
-    sb = _tiny_storyboard()
-    edition_date = sb.session_date              # a different date than the session discussed
-    discussed_session = edition_date - dt.timedelta(days=1)
-    assert edition_date != discussed_session
+    pre_edition_date = dt.date(2026, 10, 13)          # Tuesday: PRE's own `brief.pre_date`
+    pre_previous_session = dt.date(2026, 10, 12)      # Monday's close - what PRE DISCUSSES
+    post_edition_date = pre_edition_date              # POST airs the SAME Tuesday morning
+    post_session_date = pre_previous_session          # POST recaps the SAME Monday close
+    assert pre_edition_date != pre_previous_session   # the exact case this guards against
 
-    sel_default = comp._select_music(sb.session_date, 1.0, str(out))
-    sel_overridden = comp._select_music(discussed_session, 1.0, str(out))
-    expected_default = music.get_music(str(assets), str(out), seconds=1.0, date=edition_date)
-    expected_override = music.get_music(str(assets), str(out), seconds=1.0, date=discussed_session)
-    assert sel_default.track_id == expected_default.track_id
-    assert sel_overridden.track_id == expected_override.track_id
+    sb_pre = _tiny_storyboard()
+    sb_pre.session_date = pre_edition_date
+    sb_post = _tiny_storyboard()
+    sb_post.session_date = post_session_date          # POST's session_date is NOT its edition
 
-    c1 = comp.Composer(sb)
-    assert c1.music_session_date == sb.session_date
-    c2 = comp.Composer(sb, music_session_date=discussed_session)
-    assert c2.music_session_date == discussed_session
+    c_pre = comp.Composer(sb_pre, music_rotation_date=pre_edition_date)
+    c_post = comp.Composer(sb_post, music_rotation_date=post_edition_date)
+    assert c_pre.music_rotation_date == c_post.music_rotation_date == pre_edition_date
+
+    sel_pre = comp._select_music(c_pre.music_rotation_date, 1.0, str(out))
+    sel_post = comp._select_music(c_post.music_rotation_date, 1.0, str(out))
+    assert sel_pre.track_id == sel_post.track_id      # SAME edition day -> SAME track
+    expected = music.get_music(str(assets), str(out), seconds=1.0, date=pre_edition_date)
+    assert sel_pre.track_id == expected.track_id
+
+    # a naive composer that forgot the override (defaulting to storyboard.session_date) would
+    # have picked a DIFFERENT track for POST - proving the override is load-bearing, not a no-op
+    naive_post_sel = comp._select_music(sb_post.session_date, 1.0, str(out))
+    assert naive_post_sel.track_id != sel_post.track_id or post_session_date == post_edition_date
+
+
+def test_rotation_key_rotates_across_consecutive_edition_dates(tmp_path):
+    """Section 15.C: several consecutive PRODUCTION/EDITION dates - never market sessions -
+    rotate deterministically, and re-querying the same edition date always repeats (15.D)."""
+    assets = tmp_path / "assets"
+    out = tmp_path / "out"
+    os.makedirs(out, exist_ok=True)
+    tracks = [_cleared(str(i), f"{i}.wav") for i in range(3)]
+    music_dir = _manifest(str(assets), tracks)
+    for i in range(3):
+        _write_wav(os.path.join(music_dir, f"{i}.wav"), 1.0)
+
+    edition_dates = [SESSION + dt.timedelta(days=i) for i in range(5)]
+    picked = [music.get_music(str(assets), str(out), seconds=1.0, date=d).track_id
+             for d in edition_dates]
+    assert picked == [str(d.toordinal() % 3) for d in edition_dates]
+    assert len(set(picked)) > 1
+    # re-rendering the first edition date again selects the same track
+    repeat = music.get_music(str(assets), str(out), seconds=1.0, date=edition_dates[0])
+    assert repeat.track_id == picked[0]
+
+
+def test_procedural_generation_failure_falls_back_to_silent(tmp_path, monkeypatch):
+    """Section 15.H: if the approved first-party procedural generator itself raises, the result
+    is SILENT_FALLBACK - never an exception propagating into the renderer."""
+    assets = tmp_path / "assets"
+    out = tmp_path / "out"
+    os.makedirs(assets, exist_ok=True)
+    os.makedirs(out, exist_ok=True)
+    monkeypatch.setattr(music, "generate", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    sel = music.get_music(str(assets), str(out), seconds=3.0, date=SESSION)
+    assert sel.status == music.SILENT_FALLBACK
+    assert sel.reason_code == music.REASON_PROCEDURAL_GENERATION_FAILED
+    assert sel.origin == music.ORIGIN_NONE
 
 
 def test_composer_is_silent_when_audio_phase_disabled(monkeypatch, tmp_path):
@@ -284,7 +351,10 @@ def test_composer_is_silent_when_audio_phase_disabled(monkeypatch, tmp_path):
     render = comp.Composer(sb).render(str(out), fps=1)
     assert render["ok"]
     assert render["music"]["status"] == music.SILENT_FALLBACK
+    assert render["music"]["origin"] == music.ORIGIN_NONE
+    assert render["music"]["reason_code"] == music.REASON_AUDIO_PHASE_DISABLED
     assert render["music"]["audio_enabled"] is False
+    assert render["music"]["rotation_date"] == sb.session_date.isoformat()
     info = probe_media(str(out))
     assert not info.get("audio")
 

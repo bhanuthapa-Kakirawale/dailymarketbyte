@@ -112,14 +112,19 @@ def post_metadata(sb, pres, info) -> dict:
     return {"title": title, "description": "\n".join(lines), "tags": tags}
 
 
-def render_post(sb, out_path: str, frames_dir: str, watermark: str | None = None) -> dict:
+def render_post(sb, out_path: str, frames_dir: str, watermark: str | None = None,
+                music_rotation_date=None) -> dict:
     """Freeze-frame QA (the layout gate: safe areas, overlaps, required marks, provenance) and
-    the silent MP4. Returns {"frames_qa": {...}, "render": {...}}."""
+    the MP4 (silent, or with background music - docs/BACKGROUND_MUSIC.md). Returns
+    {"frames_qa": {...}, "render": {...}}.
+
+    `music_rotation_date`: the POST edition's own production date (main.py passes
+    `report.report_date`) - never the market session this storyboard recaps."""
     from daily_video import Composer
     from operations.run_context import guard_write
     guard_write(out_path, "POST video")
     guard_write(frames_dir, "POST frames")
-    comp = Composer(sb, watermark=watermark)
+    comp = Composer(sb, watermark=watermark, music_rotation_date=music_rotation_date)
     names = [f"{i:02d}_{s.kind.lower()}" for i, s in enumerate(sb.scenes)]
     qa = comp.export_freeze_frames(frames_dir, names)
     render = comp.render(out_path)

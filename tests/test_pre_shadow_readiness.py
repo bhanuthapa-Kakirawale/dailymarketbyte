@@ -478,8 +478,10 @@ FROZEN = {
     # Re-pinned (feature/background-music-rotation-v1, owner-approved plan): composer.py's
     # AUDIO_ENABLED is now env-gated (config.DMB_AUDIO_ENABLED) and render() gained an ffmpeg
     # audio stage (deterministic music selection, pre-flight validation, silent fallback on any
-    # failure) plus a `music` field in its return dict. No scene drawing/timing code changed.
-    "daily_video/composer.py": "beaa74b603396227f6544d6a8991025d6c6e39320cf2c00a027582e25ebc18cf",
+    # failure) plus a `music` field in its return dict, keyed on an explicit
+    # `music_rotation_date` (the edition/production date, never the market session discussed -
+    # owner correction) rather than `storyboard.session_date`. No scene drawing/timing changed.
+    "daily_video/composer.py": "387cc2f5d1f27753951fb1a74edfd0dba1e15ddd2a8722f59712a51ec8166aee",
     "daily_video/hook_kit.py": "65054d18a31ce549a9da2ea5adbdcadda7fc9e1366283fcff0d71c462e688cee",
     "daily_video/hook_scene.py": "f6af246492bc2d0d5b92f24b18ed84cccd7fdbfddd99f26930ec865d88759d2f",
     "daily_video/market_scenes.py": "e2b981425c12d98def8ed3da62d58a405f54eaab411c168bbd4b8f669820e12d",

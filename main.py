@@ -875,7 +875,8 @@ def run(args):
         os.makedirs(run_dir, exist_ok=True)
         out = os.path.join(OUT_DIR, f"daily_byte_{tag}.mp4")
         rendered = PU.render_post(sb, out, os.path.join(run_dir, "freeze_frames"),
-                                  watermark=PU.DEMO_WATERMARK if args.demo else None)
+                                  watermark=PU.DEMO_WATERMARK if args.demo else None,
+                                  music_rotation_date=edition)
         meta = PU.post_metadata(sb, pres, info)
         meta_path = out.replace(".mp4", ".json")
         with open(meta_path, "w", encoding="utf-8") as f:

@@ -40,29 +40,55 @@ The repo ships with an **empty** manifest (`[]`) - the owner has not cleared any
 
 ## Deterministic rotation
 
-Selection is keyed on the **market session being covered** - never wall-clock time, run id, or
-edition. Concretely that's `Composer.music_session_date`, which defaults to the storyboard's own
-`session_date` (correct for POST, whose `session_date` IS the session it recaps) but is passed
-explicitly by `products/premarket.py` as `brief.previous_session` for PRE - a PRE storyboard's
-`session_date` is its own edition date (`brief.pre_date`, e.g. the morning of the 13th), not the
-session it discusses (e.g. the 12th). Without this override PRE and POST for the same session
-would pick different tracks (caught in this feature's own validation replay - see
-`tests/test_music_selection.py::test_composer_music_session_date_overrides_storyboard_session_date`).
+Selection is keyed on the **VIDEO's own production/edition date** - never wall-clock time, run
+id, random state, and never the underlying market session either edition discusses.
+Concretely that's `Composer.music_rotation_date`:
+
+- **POST**: `main.py` passes `report.report_date` explicitly - the canonical report's own "next
+  edition" field, i.e. the calendar morning POST is published for. POST's `session_date` is the
+  session it *recaps* (typically one or more calendar days earlier - a weekend/holiday gap makes
+  this more than one day), so it is never used for rotation.
+- **PRE**: `products/premarket.py` passes `brief.pre_date` explicitly - the calendar morning PRE
+  is published for. PRE's `brief.previous_session` (the close it discusses) is never used for
+  rotation either.
+
+**Owner correction (2026-10-14):** an earlier version of this feature keyed POST on
+`storyboard.session_date` and PRE on `brief.previous_session` - i.e. both on the *market session
+discussed*. That happened to agree for a same-morning PRE+POST pair in the common case (PRE's
+previous session and POST's session are usually the same session), but it keyed on the wrong
+concept: a PRE edition and the POST edition that airs the same morning are the right pairing, and
+the fix makes that explicit and correct rather than incidental. See
+`tests/test_music_selection.py::test_music_rotation_key_is_the_edition_date_not_the_session_discussed`.
 
 1. Build the list of CLEARED + enabled manifest entries, sorted by `track_id`.
-2. If non-empty (N tracks): `idx = session_date.toordinal() % N` picks the track.
-3. If empty (N = 0, today's real state): the procedural generator (`music.generate`, unchanged)
-   synthesizes an original instrumental track - no rights risk, since nothing is sourced
-   externally. This is also the existing, pre-existing behavior of `music.py`.
+2. If non-empty (N tracks): `idx = rotation_date.toordinal() % N` picks the track.
+3. If empty (N = 0, today's real state): the approved first-party procedural generator
+   (`music.generate`, unchanged) synthesizes an original instrumental track - it is its OWN
+   explicit approval class (`origin: "PROCEDURAL"`, owner-approved, self-synthesized so it never
+   needs to pass the external CLEARED-manifest rights gate a real file does), not an implicit
+   bypass of that gate.
 
-Because both PRE and POST pass the same `session_date` into selection, **PRE and POST for the
-same session always get the same track** - brand consistency for that day's edition, per owner
-decision. A session rendered months later (replay) selects the same track as long as the enabled
-library/order hasn't materially changed.
+Because POST and PRE for the same production morning both resolve to the same `rotation_date`,
+**that PRE+POST pair always gets the same track** - brand consistency for that day's edition, per
+owner decision. Re-rendering the same edition date (a replay) selects the same track again, as
+long as the enabled library/order hasn't materially changed; if the owner's manifest changes
+between a session and a later replay of it, a historical replay may pick a different real track
+(expected, not a bug) - this is not separately persisted into a new historical database beyond
+the immutable render manifest each render already writes.
 
 A manifest entry that IS eligible (CLEARED + enabled) but whose file is missing or fails an audio
 probe is **not** silently swapped for the generator - that would mask a real asset problem. It
 falls back to a fully silent render instead (`SILENT_FALLBACK`), with the reason recorded.
+
+### Selection priority (owner policy)
+
+A. One or more CLEARED + enabled real tracks exist → select from those, deterministically.
+B. Zero cleared real tracks exist → the approved first-party procedural preset library.
+C. Procedural generation itself fails → silent.
+
+A missing/corrupt real asset never falls through to procedural generation - that would mask the
+specific asset problem being hidden (it falls back to silence for that render instead, with the
+reason recorded); only a *genuinely empty* eligible library routes to procedural (path B).
 
 ## Rendering
 
@@ -100,13 +126,25 @@ full music manifest):
 ```json
 {
   "status": "APPLIED_REAL | APPLIED_PROCEDURAL | SILENT_FALLBACK",
+  "origin": "REAL | PROCEDURAL | NONE",
   "track_id": "...", "filename": "...", "title": "...",
   "selection_method": "manifest_rotation | procedural_rotation | procedural | error",
+  "reason_code": "OK | NO_CLEARED_REAL_TRACK | TRACK_FILE_MISSING | TRACK_FAILED_PROBE | "
+                 "PROCEDURAL_GENERATION_FAILED | MUX_FAILED | AUDIO_PHASE_DISABLED | SELECTION_ERROR",
   "reason": "...",
+  "rotation_date": "2026-10-13",
   "volume": 0.22, "fade_in_seconds": 0.75, "fade_out_seconds": 1.25,
   "audio_enabled": true
 }
 ```
+
+`origin` is always derived from `status` (`APPLIED_REAL`→`REAL`, `APPLIED_PROCEDURAL`→`PROCEDURAL`,
+`SILENT_FALLBACK`→`NONE`) - the two can never disagree. `reason_code` is the explicit, inspectable
+*why* behind `status`; `reason` is the free-text detail. `rotation_date` is always populated
+(ISO date), even when audio is disabled, so the audit never has to guess what would have been
+selected. Procedural music is never represented as a CLEARED external asset - `track_id` for a
+procedural selection is always prefixed `procedural:`, and `selection_method`/`origin` make the
+distinction explicit.
 
 This flows into POST's `production_manifest.json` (`music` key, alongside `qa`/`duration`) and
 into PRE's `pre_result_<date>.json` (`render.music`), via `main.py`'s `video_qa(..., expect_audio=...)`

@@ -20,10 +20,31 @@ MANIFEST_NAME = "music_manifest.json"
 CLEARED = "CLEARED"
 NEEDS_RIGHTS_CONFIRMATION = "NEEDS_RIGHTS_CONFIRMATION"
 
+# Outcome of a selection attempt - what the render ends up with.
 APPLIED_REAL = "APPLIED_REAL"
 APPLIED_PROCEDURAL = "APPLIED_PROCEDURAL"
 SILENT_FALLBACK = "SILENT_FALLBACK"
-NO_CLEARED_TRACK = "NO_CLEARED_TRACK"
+
+# `origin`: the approval class behind the outcome, never conflated with `status`. The procedural
+# generator is its OWN owner-approved class (FIRST_PARTY_PROCEDURAL) - self-synthesized, so it
+# never needs to pass the external CLEARED-manifest rights gate that a real file does.
+ORIGIN_REAL = "REAL"
+ORIGIN_PROCEDURAL = "PROCEDURAL"           # == FIRST_PARTY_PROCEDURAL
+ORIGIN_NONE = "NONE"
+_ORIGIN_BY_STATUS = {APPLIED_REAL: ORIGIN_REAL, APPLIED_PROCEDURAL: ORIGIN_PROCEDURAL,
+                     SILENT_FALLBACK: ORIGIN_NONE}
+
+# `reason_code`: an explicit, inspectable WHY behind `status` - distinct from the free-text
+# `reason`. "No cleared real track configured" is the NORMAL path while the owner's external
+# library is empty, never an error.
+REASON_OK = "OK"
+REASON_NO_CLEARED_REAL_TRACK = "NO_CLEARED_REAL_TRACK"
+REASON_TRACK_FILE_MISSING = "TRACK_FILE_MISSING"
+REASON_TRACK_FAILED_PROBE = "TRACK_FAILED_PROBE"
+REASON_PROCEDURAL_GENERATION_FAILED = "PROCEDURAL_GENERATION_FAILED"
+REASON_MUX_FAILED = "MUX_FAILED"
+REASON_AUDIO_PHASE_DISABLED = "AUDIO_PHASE_DISABLED"
+REASON_SELECTION_ERROR = "SELECTION_ERROR"
 
 # Five presets (tempo + chord progression) so the rotation actually sounds different each day.
 PRESETS = [
@@ -129,7 +150,8 @@ def _variant_index(date: dt.date) -> int:
 
 @dataclass
 class MusicSelection:
-    """What get_music() picked, for QA/manifest reporting - never used to drive content."""
+    """What get_music() picked, for QA/manifest reporting - never used to drive content.
+    `origin` is derived from `status` (never set independently), so the two can never disagree."""
     path: str | None
     status: str                      # APPLIED_REAL | APPLIED_PROCEDURAL | SILENT_FALLBACK
     track_id: str | None = None
@@ -137,6 +159,12 @@ class MusicSelection:
     title: str | None = None
     selection_method: str = ""
     reason: str = ""
+    reason_code: str = REASON_OK
+    rotation_date: str | None = None     # the edition/production date actually used as the key
+
+    @property
+    def origin(self) -> str:
+        return _ORIGIN_BY_STATUS.get(self.status, ORIGIN_NONE)
 
 
 def _load_manifest(assets_dir: str) -> list:
@@ -168,18 +196,24 @@ def _load_manifest(assets_dir: str) -> list:
 
 def get_music(assets_dir: str, out_dir: str, seconds: float = 76.0, swells=(),
              date: dt.date = None) -> MusicSelection:
-    """Picks the day's track, keyed off `date` - the DMB session date, never wall-clock - so the
-    same session always resolves to the same track and PRE/POST share it for that session.
+    """Picks the track for `date` - the VIDEO's own edition/production date (see
+    daily_video.composer.Composer.music_rotation_date), never a market session it discusses,
+    never wall-clock, never run id. The caller is responsible for passing the right date; this
+    function just rotates deterministically over whatever date it's given.
 
-    1. A CLEARED + enabled real track from assets/music/music_manifest.json, chosen
+    Selection priority (owner policy):
+    A. A CLEARED + enabled real track from assets/music/music_manifest.json, chosen
        deterministically by `date` among the eligible tracks (docs/BACKGROUND_MUSIC.md).
-    2. If none are configured at all, the procedural generator - self-synthesized, so it carries
-       no rights risk, and is the right default while the owner's cleared library is still empty.
+    B. If none are configured at all, the approved first-party procedural generator -
+       self-synthesized, so it never needs to pass the external rights gate, and is the right
+       default while the owner's cleared library is still empty.
+    C. If procedural generation itself fails, SILENT_FALLBACK.
 
     A manifest entry that IS eligible but whose file is missing/unreadable is NOT silently
     swapped for the generator (that would mask a real asset problem going unnoticed) - it comes
     back as SILENT_FALLBACK and the caller (daily_video/composer.py) renders without audio."""
     date = date or dt.date.today()
+    rotation_date = date.isoformat()
     tracks = _load_manifest(assets_dir)
     if tracks:
         idx = date.toordinal() % len(tracks)
@@ -188,10 +222,12 @@ def get_music(assets_dir: str, out_dir: str, seconds: float = 76.0, swells=(),
         if os.path.exists(path):
             return MusicSelection(path=path, status=APPLIED_REAL, track_id=chosen["track_id"],
                                   filename=chosen["filename"], title=chosen["title"],
-                                  selection_method="manifest_rotation")
+                                  selection_method="manifest_rotation", reason_code=REASON_OK,
+                                  rotation_date=rotation_date)
         return MusicSelection(
             path=None, status=SILENT_FALLBACK, track_id=chosen["track_id"],
             filename=chosen["filename"], title=chosen["title"], selection_method="manifest_rotation",
+            reason_code=REASON_TRACK_FILE_MISSING, rotation_date=rotation_date,
             reason=f"manifest track {chosen['track_id']!r} file not found: {chosen['filename']}")
     idx = _variant_index(date)
     preset = PRESETS[idx]
@@ -201,8 +237,12 @@ def get_music(assets_dir: str, out_dir: str, seconds: float = 76.0, swells=(),
                         chords=preset["chords"], swells=swells)
     except Exception as exc:
         return MusicSelection(path=None, status=SILENT_FALLBACK, selection_method="procedural",
+                              reason_code=REASON_PROCEDURAL_GENERATION_FAILED,
+                              rotation_date=rotation_date,
                               reason=f"procedural generation failed: {type(exc).__name__}: {exc}")
     return MusicSelection(path=path, status=APPLIED_PROCEDURAL,
                           track_id=f"procedural:{preset['name']}", filename=os.path.basename(path),
                           title=preset["name"], selection_method="procedural_rotation",
-                          reason="no CLEARED/enabled real track configured")
+                          reason_code=REASON_NO_CLEARED_REAL_TRACK, rotation_date=rotation_date,
+                          reason="no CLEARED/enabled real track configured - using the approved "
+                                 "first-party procedural generator")

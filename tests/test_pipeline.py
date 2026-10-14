@@ -87,17 +87,21 @@ def offline_pipeline(monkeypatch, tmp_path, market_dict, movers, sectors, tiles,
     # freeze-frame work only - planner, storyboard, gates and audit all run for real
     from products import post_unified
 
-    def _render_post(sb, out_path, frames_dir, watermark=None):
+    def _render_post(sb, out_path, frames_dir, watermark=None, music_rotation_date=None):
         rendered["storyboard"] = sb
         rendered["watermark"] = watermark
+        rendered["music_rotation_date"] = music_rotation_date
         open(out_path, "wb").write(b"stub")
         return {"frames_qa": {"passed": True, "issues": {}},
                 "render": {"ok": True, "output_path": out_path,
-                          "music": {"status": "APPLIED_PROCEDURAL",
+                          "music": {"status": "APPLIED_PROCEDURAL", "origin": "PROCEDURAL",
                                     "track_id": "procedural:lofi_dreamy",
                                     "filename": "bg_music_0.wav", "title": "lofi_dreamy",
                                     "selection_method": "procedural_rotation",
+                                    "reason_code": "NO_CLEARED_REAL_TRACK",
                                     "reason": "no CLEARED/enabled real track configured",
+                                    "rotation_date": music_rotation_date.isoformat()
+                                    if music_rotation_date else None,
                                     "volume": 0.22, "fade_in_seconds": 0.75,
                                     "fade_out_seconds": 1.25, "audio_enabled": True}}}
 

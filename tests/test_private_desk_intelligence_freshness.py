@@ -26,7 +26,8 @@ def test_populated_latest_json_is_reported_verbatim(tmp_path):
     folder = tmp_path / "intelligence_refresh"
     folder.mkdir(parents=True)
     payload = {"orchestrator_status": "SUCCESS", "run_id": "r1", "started_at": "t0",
-              "completed_at": "t1", "latest_session_result": {"session": "2026-10-09"},
+              "completed_at": "t1", "latest_session_result": {"session": "2026-10-09",
+                  "canonical_report": {"status": "COMPLETE", "expected_session": "2026-10-09"}},
               "summary": {"sessions_audited": 5}, "blocking_reasons": [], "warnings": ["w1"]}
     (folder / "latest.json").write_text(json.dumps(payload), encoding="utf-8")
     out = intelligence_refresh_status(DeskRepository(str(tmp_path)))
@@ -34,6 +35,29 @@ def test_populated_latest_json_is_reported_verbatim(tmp_path):
     assert out["run_id"] == "r1"
     assert out["summary"]["sessions_audited"] == 5
     assert out["warnings"] == ["w1"]
+    assert out["canonical_report"]["display"] == "OK"
+    assert out["canonical_report"]["expected_session"] == "2026-10-09"
+
+
+def test_canonical_report_missing_maps_to_missing_display(tmp_path):
+    folder = tmp_path / "intelligence_refresh"
+    folder.mkdir(parents=True)
+    payload = {"orchestrator_status": "DEGRADED", "latest_session_result": {
+        "session": "2026-10-13", "canonical_report": {"status": "MISSING",
+                                                       "expected_session": "2026-10-13"}}}
+    (folder / "latest.json").write_text(json.dumps(payload), encoding="utf-8")
+    out = intelligence_refresh_status(DeskRepository(str(tmp_path)))
+    assert out["canonical_report"]["display"] == "MISSING"
+
+
+def test_canonical_report_absent_status_maps_to_unknown_display(tmp_path):
+    # An old manifest written before this change has no canonical_report key at all.
+    folder = tmp_path / "intelligence_refresh"
+    folder.mkdir(parents=True)
+    payload = {"orchestrator_status": "SUCCESS", "latest_session_result": {"session": "2026-10-09"}}
+    (folder / "latest.json").write_text(json.dumps(payload), encoding="utf-8")
+    out = intelligence_refresh_status(DeskRepository(str(tmp_path)))
+    assert out["canonical_report"]["display"] == "UNKNOWN"
 
 
 def test_never_writes_anything(tmp_path):

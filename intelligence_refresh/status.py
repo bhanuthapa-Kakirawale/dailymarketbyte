@@ -38,6 +38,10 @@ def run_status(*, out_dir: str | None = None, json_output: bool = False) -> tupl
              f"Completed: {latest.get('completed_at')}"]
     lsr = latest.get("latest_session_result") or {}
     lines.append(_line("Latest session", f"{lsr.get('session')}  action={lsr.get('action')}"))
+    cr = lsr.get("canonical_report") or {}
+    if cr:
+        lines.append(_line("Canonical report",
+                           f"{cr.get('status')} (expected {cr.get('expected_session')})"))
     summary = latest.get("summary") or {}
     for key in ("sessions_audited", "sessions_fully_recoverable",
                "sessions_partially_recoverable"):

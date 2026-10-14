@@ -46,26 +46,82 @@ def inspect_latest(out_dir: str, now: dt.datetime, calendar=None) -> dict:
            "last_run_status": records[-1].get("run_status") if records else None}
 
 
+def _canonical_report_status(out_dir: str, session: dt.date) -> dict:
+    """The TRUE end-state for `session`'s canonical report, independently re-verified against
+    the artifact itself - never trusts a report_job run-record file alone (a record can say
+    SUCCESS while the artifact it describes was never actually persisted or has since been
+    lost)."""
+    from readiness.evidence import open_history
+    from operations.report_lookup import find_canonical_report
+    entry = {"expected_session": session.isoformat()}
+    try:
+        history = open_history(out_dir)
+    except FileNotFoundError:
+        entry.update(status="MISSING", report_id=None, path=None,
+                     reason="no history database yet")
+        return entry
+    except Exception as exc:
+        entry.update(status="HISTORY_UNAVAILABLE", report_id=None, path=None,
+                     reason=f"{type(exc).__name__}: {exc}")
+        return entry
+    try:
+        lookup = find_canonical_report(session, history=history)
+    finally:
+        history.close()
+    entry.update(status="COMPLETE" if lookup.found else lookup.status,
+                report_id=lookup.report_id, path=lookup.path, reason=lookup.reason)
+    return entry
+
+
 def ensure_latest(out_dir: str, now: dt.datetime, *, dry_run: bool = False,
                   report_job_fn=None, calendar=None) -> dict:
     """Ensure the latest final session has a successful REPORT job run. Never calls
     `report_job_fn` when `dry_run` is True, or when a session can't be resolved, or when a
-    successful run already exists for it today."""
+    successful run already exists for it today AND the canonical report artifact it describes
+    genuinely exists (a stale/orphaned run-record whose artifact is missing still triggers a
+    rebuild attempt - safe and idempotent, since `run_report_job` itself no-ops when a valid
+    report already exists)."""
     inspected = inspect_latest(out_dir, now, calendar)
     if inspected["session"] is None:
-        return {"action": "SKIPPED", "reason": inspected["reason"], "session": None}
-    if inspected["already_run"]:
+        return {"action": "SKIPPED", "reason": inspected["reason"], "session": None,
+                "canonical_report": {"expected_session": None, "status": "UNKNOWN"}}
+
+    session = dt.date.fromisoformat(inspected["session"])
+    canonical = _canonical_report_status(out_dir, session)
+
+    if inspected["already_run"] and canonical["status"] == "COMPLETE":
         return {"action": "SKIPPED", "reason": "ALREADY_RUN", "session": inspected["session"],
-                "report_job_run_status": inspected["last_run_status"]}
+                "report_job_run_status": inspected["last_run_status"],
+                "canonical_report": canonical}
+
     if dry_run:
         return {"action": "WOULD_RUN", "session": inspected["session"],
-                "reason": "last_run_status=" + str(inspected["last_run_status"])}
+                "reason": "last_run_status=" + str(inspected["last_run_status"]),
+                "canonical_report": canonical}
 
     report_job_fn = report_job_fn or _default_report_job_fn
-    record = report_job_fn(now=now, calendar=calendar)
-    return {"action": "RAN", "session": inspected["session"],
-           "report_job_run_status": record.get("run_status"),
-           "report_job_record_path": _record_relpath(out_dir, record)}
+    exception_info = None
+    try:
+        record = report_job_fn(now=now, calendar=calendar)
+    except Exception as exc:
+        # run_report_job already wrote its own FAILED/EXCEPTION record before re-raising
+        # (products/report_job.py) - recover it so one transient failure degrades this run
+        # instead of crashing the whole refresh (and skipping the unrelated 30-day reconciler).
+        records = _report_job_records(out_dir, session)
+        record = dict(records[-1]) if records else {}
+        record.setdefault("run_status", "FAILED")
+        record.setdefault("target_session", inspected["session"])
+        exception_info = f"{type(exc).__name__}: {exc}"
+
+    result = {"action": "RAN", "session": inspected["session"],
+             "report_job_run_status": record.get("run_status"),
+             "report_job_record_path": _record_relpath(out_dir, record),
+             "canonical_report": _canonical_report_status(out_dir, session)}
+    if inspected["already_run"]:
+        result["rebuilt_stale_record"] = True
+    if exception_info is not None:
+        result["exception"] = exception_info
+    return result
 
 
 def _record_relpath(out_dir: str, record: dict) -> str | None:

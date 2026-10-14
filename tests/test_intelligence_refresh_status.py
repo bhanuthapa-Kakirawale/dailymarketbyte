@@ -45,6 +45,17 @@ def test_status_never_calls_any_repair_or_fetch_function(tmp_path, monkeypatch):
     run_status(out_dir=str(tmp_path))
 
 
+def test_status_text_output_includes_canonical_report_line(tmp_path):
+    man = models.RunManifest(run_id="r1", orchestrator_status=models.SUCCESS,
+                             latest_session_result={"session": "2026-10-09", "action": "RAN",
+                                 "canonical_report": {"status": "COMPLETE",
+                                                      "expected_session": "2026-10-09"}})
+    manifest.write_manifest(str(tmp_path), man)
+    _, text = run_status(out_dir=str(tmp_path))
+    assert "Canonical report" in text
+    assert "COMPLETE (expected 2026-10-09)" in text
+
+
 def test_status_never_acquires_the_lock(tmp_path, monkeypatch):
     import os
     run_status(out_dir=str(tmp_path))

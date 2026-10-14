@@ -24,7 +24,9 @@ def _patch_common(monkeypatch, sessions, *, latest=None):
                         lambda *a, **k: (sessions, latest))
     monkeypatch.setattr(refresh, "ensure_latest",
                         lambda *a, **k: {"action": "SKIPPED", "reason": "ALREADY_RUN",
-                                        "session": str(latest)})
+                                        "session": str(latest),
+                                        "canonical_report": {"status": "COMPLETE",
+                                                             "expected_session": str(latest)}})
 
 
 def _all_present(out_dir, session, **kw):
@@ -130,6 +132,85 @@ def test_latest_session_blocked_propagates_to_run_status(tmp_path, monkeypatch):
     assert man.orchestrator_status == models.BLOCKED
 
 
+def test_report_job_run_status_degraded_maps_to_orchestrator_degraded(tmp_path, monkeypatch):
+    _patch_common(monkeypatch, [])
+    monkeypatch.setattr(refresh, "ensure_latest",
+                        lambda *a, **k: {"action": "RAN", "session": "2026-10-09",
+                                        "report_job_run_status": "DEGRADED",
+                                        "canonical_report": {"status": "COMPLETE"}})
+    man = refresh.run_refresh(out_dir=str(tmp_path), now=NOW)
+    assert man.orchestrator_status == models.DEGRADED
+
+
+def test_report_job_run_status_failed_maps_to_orchestrator_degraded(tmp_path, monkeypatch):
+    _patch_common(monkeypatch, [])
+    monkeypatch.setattr(refresh, "ensure_latest",
+                        lambda *a, **k: {"action": "RAN", "session": "2026-10-09",
+                                        "report_job_run_status": "FAILED",
+                                        "exception": "RuntimeError: boom",
+                                        "canonical_report": {"status": "MISSING"}})
+    man = refresh.run_refresh(out_dir=str(tmp_path), now=NOW)
+    assert man.orchestrator_status == models.DEGRADED
+
+
+def test_canonical_report_non_complete_forces_degraded_even_with_odd_report_job_run_status(
+        tmp_path, monkeypatch):
+    _patch_common(monkeypatch, [])
+    monkeypatch.setattr(refresh, "ensure_latest",
+                        lambda *a, **k: {"action": "RAN", "session": "2026-10-09",
+                                        "report_job_run_status": "WEIRD_UNRECOGNIZED",
+                                        "canonical_report": {"status": "ARTIFACT_MISSING"}})
+    man = refresh.run_refresh(out_dir=str(tmp_path), now=NOW)
+    assert man.orchestrator_status == models.DEGRADED
+
+
+def test_run_refresh_recovers_from_report_job_exception_runs_price_chain_anyway(
+        tmp_path, monkeypatch):
+    # The real ensure_latest (not stubbed) with a report_job_fn that raises - closes Bug A: one
+    # transient data failure must not crash the whole refresh or skip the unrelated 30-day
+    # reconciliation.
+    monkeypatch.setattr(scan, "sessions_to_audit", lambda *a, **k: ([S1], dt.date(2026, 10, 9)))
+    monkeypatch.setattr(coverage, "scan_session", _all_present)
+
+    def boom(*, now, calendar):
+        raise RuntimeError("Only 0 stocks had clean data")
+
+    man = refresh.run_refresh(out_dir=str(tmp_path), now=NOW, report_job_fn=boom)
+    assert man.orchestrator_status == models.DEGRADED
+    assert man.session_results, "the independent 30-day reconciliation must still run"
+    assert man.latest_session_result["report_job_run_status"] == "FAILED"
+    assert "RuntimeError" in man.latest_session_result["exception"]
+
+
+def test_30_day_reconciler_never_builds_canonical_reports_for_historical_sessions(
+        tmp_path, monkeypatch):
+    _patch_common(monkeypatch, [S1, S2, S3])
+    monkeypatch.setattr(coverage, "scan_session", _missing_all)
+    monkeypatch.setattr(price_chain_backfill, "fetch_benchmark_context",
+                        lambda out_dir, universe_name: {"status": "OK", "bench": ["b"],
+                                                        "spine": [S1, S2, S3], "universe": {}})
+    monkeypatch.setattr(price_chain_backfill, "backfill_market_structure",
+                        lambda session, universe_name, out_dir: {"status": registry.BACKFILLED,
+                                                                 "artifact": "x.json"})
+
+    def fake_candidates(sessions, *, spine, universe, benchmark_series, out_dir, store=None):
+        class _R:
+            processed_sessions = list(sessions)
+            already_complete_sessions = []
+            failed_sessions = []
+            warnings = []
+        return _R()
+    monkeypatch.setattr(price_chain_backfill, "backfill_radar_candidates", fake_candidates)
+
+    man = refresh.run_refresh(out_dir=str(tmp_path), now=NOW)
+    expected = registry.COMPONENTS["canonical_report"].backfill_mode
+    assert expected == "LATEST_SESSION_ONLY"
+    for row in man.session_results:
+        # the 30-day historical reconciler only ever touches PRICE_CHAIN_KEYS - canonical_report
+        # for any non-latest session stays its static classification, never an attempted build.
+        assert row["components"]["canonical_report"] == expected
+
+
 def test_idempotent_second_run_makes_no_new_backfill_calls(tmp_path, monkeypatch):
     _patch_common(monkeypatch, [S1, S2])
     monkeypatch.setattr(coverage, "scan_session", _all_present)
@@ -140,6 +221,8 @@ def test_idempotent_second_run_makes_no_new_backfill_calls(tmp_path, monkeypatch
     man2 = refresh.run_refresh(out_dir=str(tmp_path), now=NOW)
     assert man1.summary == man2.summary
     assert man1.orchestrator_status == man2.orchestrator_status == models.SUCCESS
+    assert man1.latest_session_result["canonical_report"]["status"] == \
+        man2.latest_session_result["canonical_report"]["status"] == "COMPLETE"
 
 
 def test_dry_run_never_calls_any_repair_function(tmp_path, monkeypatch):

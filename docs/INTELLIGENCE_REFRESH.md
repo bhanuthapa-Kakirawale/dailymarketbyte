@@ -45,10 +45,17 @@ Research against the real call chain established these hard constraints:
 6. Market Regime is already **lazy/on-demand** - nothing to trigger.
 
 So "refresh" = (a) ensure the latest final session has a successful REPORT job run (covers 6
-of the 10 tracked components in one already-idempotent call), plus (b) a 30-day
-price-chain-only self-heal for every other session in the window. Everything else for a
-non-latest session is reported as `HISTORICAL_UNAVAILABLE` / `UNSUPPORTED_HISTORICALLY`,
-never attempted, never fabricated.
+of the 10 tracked components in one call), plus (b) a 30-day price-chain-only self-heal for
+every other session in the window. Everything else for a non-latest session is reported as
+`HISTORICAL_UNAVAILABLE` / `UNSUPPORTED_HISTORICALLY`, never attempted, never fabricated.
+
+`ensure_latest` (`intelligence_refresh/latest_session.py`) does **not** simply trust
+`run_report_job`'s own idempotency and a run-record file saying SUCCESS/DEGRADED for today - it
+independently re-verifies the canonical report *artifact* via
+`operations.report_lookup.find_canonical_report` before treating a session as already
+satisfied. A stale/orphaned run-record whose artifact is missing (or was never actually
+persisted) still triggers a rebuild attempt; this is safe because `run_report_job` itself
+no-ops when a valid report already exists (`ALREADY_BUILT`). See section 6.
 
 ## 3. Capability registry (`intelligence_refresh/registry.py`)
 
@@ -97,7 +104,58 @@ internally on every call. Backfilling N historical sessions' Market Structure th
 N separate (redundant) benchmark fetches. This is an accepted, documented limitation of reusing
 that tool completely unmodified, not something this project engineers around.
 
-## 5. CLI reference
+## 6. Self-healing invariant (latest completed session's canonical report)
+
+Every normal `refresh` run (morning or evening) must ensure: **latest completed session -> a
+valid canonical report exists.** If one already does, it's a no-op. If not, the existing
+`products.report_job.run_report_job` is invoked to build it (never a second report-building
+path, never a fabricated report, never an older session substituted).
+
+- **Morning (e.g. 06:40 IST) repairs the previous session if its evening build was missed or
+  failed.** If the prior evening's REPORT job never ran (laptop off) or failed (a transient
+  data gap - see the 2026-10-13 incident below), the morning run resolves
+  `latest_final_session` to that prior session and builds it, so the same morning's PRE can
+  consume it.
+- **Evening (e.g. 19:15 IST) repairs the current session once it is final**, supporting that
+  evening's own REPORT/POST path and the next morning's PRE.
+- **An unfinished current session is never built.** `latest_final_session`
+  (`operations/sessions.py`, `SESSION_FINAL_TIME` = 15:40 IST) is the only session-finality
+  rule used; before that cutoff, the *previous* session is still "latest" and is what gets
+  self-healed - never the in-progress one.
+- **The 30-day historical reconciliation never builds canonical reports.** It only ever
+  touches `registry.PRICE_CHAIN_KEYS` (`ohlcv_benchmark`, `market_structure`,
+  `radar_candidate_history`) for non-latest sessions; `canonical_report` for any such session
+  stays its static `LATEST_SESSION_ONLY` classification, never an attempted build.
+- **A REPORT job failure/degradation is never hidden behind refresh `SUCCESS`.**
+  `report_job_run_status` of `FAILED`/`DEGRADED`, or an independently re-verified
+  `canonical_report.status` other than `COMPLETE`, makes the whole refresh `DEGRADED` (see
+  section 8's schema). An exception raised by the REPORT job (its own top-level handler writes
+  a FAILED/`EXCEPTION`-stage record, then re-raises for its other callers such as `main.py
+  --mode report`'s own CLI path) is caught at the `ensure_latest` call site, recovered from
+  that record, and reported as `report_job_run_status: "FAILED"` with an `exception` field -
+  it no longer crashes the entire refresh (which would otherwise also skip the unrelated
+  30-day reconciliation).
+- **PRE remains strict, unchanged.** It still requires an exact previous-session canonical
+  report and blocks (`PREVIOUS_SESSION_MISSING`) if one genuinely doesn't exist at the moment
+  it runs - this refresh only makes that report more likely to already exist by then.
+
+### Known limitation: a catch-up/PRE scheduling race
+
+Confirmed from the real 2026-10-13/14 incident: at both 19:15 and 19:30 IST on 2026-10-13,
+yfinance had a transient data gap (`RuntimeError: Only 0 stocks had clean data for
+2026-10-13` - the documented NaN-Close-lag limitation), so neither the evening
+`intelligence_refresh` run nor the independent evening REPORT job built that session's report.
+The next morning, PK-E's `shadow_scheduler` fired both `intelligence_am` (06:40 slot) and `pre`
+(07:00 slot) within the same few seconds around 07:03:19-22 IST (both delayed from their
+nominal times). PRE's own readiness check genuinely found the report MISSING at 07:03:22 IST
+and correctly BLOCKED in ~1.2s; `intelligence_am`'s self-heal didn't finish persisting the
+report until 07:06:39 IST, about 3 minutes later. The self-heal worked exactly as designed -
+just a few minutes too late for that specific PRE invocation. **This is a PK-E
+scheduling/locking concern, explicitly out of scope here** - this packet fixes the refresh's
+own correctness/observability (never silently reporting SUCCESS when the report didn't get
+built in time), not the race between two independently-scheduled jobs.
+
+## 7. CLI reference
 
 ```
 python -m intelligence_refresh refresh [--days 30] [--from D] [--to D] [--session-date D]
@@ -125,7 +183,7 @@ job was blocked by its data-quality gate), `30` = FAILED or a held lock.
 Paths: `output/intelligence_refresh/run.lock`, `output/intelligence_refresh/latest.json`,
 `output/intelligence_refresh/runs/<run_id>.json`.
 
-## 6. Coverage report schema
+## 8. Coverage report schema
 
 Run manifest, schema `dmb.intelligence_refresh.run/1`:
 
@@ -137,8 +195,18 @@ Run manifest, schema `dmb.intelligence_refresh.run/1`:
   "cli": {"days": 30, "from": null, "to": null, "session_date": null,
           "resume": false, "dry_run": false, "no_network": false},
   "resumed_from_run_id": null,
-  "latest_session_result": {"action": "SKIPPED|RAN|WOULD_RUN", "session": "...",
-                            "report_job_run_status": "SUCCESS|DEGRADED|BLOCKED|null"},
+  "latest_session_result": {
+    "action": "SKIPPED|RAN|WOULD_RUN", "session": "...",
+    "report_job_run_status": "SUCCESS|DEGRADED|BLOCKED|FAILED|null",
+    "report_job_record_path": "report_jobs/<session>/report_job_<run_id>.json",
+    "canonical_report": {"expected_session": "...",
+                         "status": "COMPLETE|MISSING|ARTIFACT_MISSING|UNREADABLE|"
+                                   "SESSION_MISMATCH|HISTORY_UNAVAILABLE|UNKNOWN",
+                         "report_id": "...", "path": "...", "reason": "..."},
+    "exception": "RuntimeError: ... (only present if the REPORT job raised)",
+    "rebuilt_stale_record": "true (only present if a run-record said SUCCESS/DEGRADED but the "
+                            "artifact was missing, forcing a rebuild attempt)"
+  },
   "session_results": [
     {"session": "2026-09-15",
      "components": {"ohlcv_benchmark": "...", "market_structure": "...",
@@ -155,15 +223,17 @@ Run manifest, schema `dmb.intelligence_refresh.run/1`:
 }
 ```
 
-## 7. Private Desk panel
+## 9. Private Desk panel
 
 `private_desk/services/intelligence_freshness.py` reads `output/intelligence_refresh/
 latest.json` only - no acquisition import, no write path - and is wired into
 `private_desk/services/quality.py::data_quality()`'s `"intelligence_refresh"` key. The Data
 Quality page shows a new "Intelligence refresh" panel (last run status/time, latest-session
-catch-up outcome, session/component summary counts, warnings/blocking reasons).
+catch-up outcome, session/component summary counts, warnings/blocking reasons) plus a compact
+"Canonical report" column (OK / MISSING / FAILED / UNKNOWN + the expected session), derived
+from `latest_session_result.canonical_report.status`.
 
-## 8. Relationship to `production_orchestrator` / `readiness` / REPORT job
+## 10. Relationship to `production_orchestrator` / `readiness` / REPORT job
 
 `intelligence_refresh` has its own `lock.py`/`manifest.py`/`models.py`, independently
 implemented (not imported) from `production_orchestrator`'s, so the two orchestrators stay
@@ -172,7 +242,7 @@ skipped refresh never blocks PRE/POST (they already build/consume REPORT state o
 paths unchanged). It calls `products.report_job.run_report_job` exactly as `run_evening.bat`/
 `run_evening_full.bat` already do - never a second implementation of the REPORT job.
 
-## 9. Operational runbook
+## 11. Operational runbook
 
 - `scripts\run_intelligence_refresh.bat` - thin wrapper, `python -m intelligence_refresh
   refresh %*`.

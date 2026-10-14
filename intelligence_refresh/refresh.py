@@ -151,10 +151,22 @@ def _summarize(historical_sessions: list, session_results: list) -> dict:
 
 
 def _derive_status(latest_result: dict, session_results: list) -> str:
-    if latest_result.get("report_job_run_status") == "BLOCKED":
-        return models.BLOCKED
     if latest_result.get("reason") == "SESSION_UNKNOWN":
         return models.BLOCKED
+    rj_status = latest_result.get("report_job_run_status")
+    if rj_status == "BLOCKED":
+        return models.BLOCKED
+    # A FAILED or DEGRADED REPORT job run must never be silently reported as refresh SUCCESS -
+    # the 30-day price-chain reconciliation can still be usable even when the latest-session
+    # catch-up itself failed/degraded, so DEGRADED (not a new FAILED branch) is the right map.
+    if rj_status in ("FAILED", "DEGRADED"):
+        return models.DEGRADED
+    # Defense in depth: even if report_job_run_status looks clean, an independent re-check of
+    # the canonical report artifact (latest_session._canonical_report_status) is authoritative -
+    # it catches a stale/orphaned "SUCCESS" record whose artifact never actually landed.
+    canonical_status = (latest_result.get("canonical_report") or {}).get("status")
+    if canonical_status not in (None, "COMPLETE", "UNKNOWN"):
+        return models.DEGRADED
     for row in session_results:
         for status in row["components"].values():
             if status == registry.FAILED:

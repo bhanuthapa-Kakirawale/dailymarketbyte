@@ -112,9 +112,11 @@
   <h2>Intelligence refresh <span class="dim lc">30-day coverage self-heal · read-only</span></h2>
   {% set ir = q.intelligence_refresh or {} %}
   {% if ir.status in ('NO_RUN', 'UNREADABLE') %}<p class="na">{{ ir.status | replace('_', ' ') }}{% if ir.error %} - {{ ir.error }}{% endif %}</p>{% else %}
-  <table><thead><tr><th>Status</th><th>Latest session</th><th>Completed</th><th>Run</th></tr></thead><tbody>
+  {% set cr = ir.canonical_report or {} %}
+  <table><thead><tr><th>Status</th><th>Latest session</th><th>Canonical report</th><th>Completed</th><th>Run</th></tr></thead><tbody>
   <tr><td><span class="b {{ 'ok' if ir.status in ('SUCCESS', 'DEGRADED') else ('warn' if ir.status == 'RUNNING' else 'bad') }}">{{ ir.status }}</span></td>
     <td class="mono">{{ (ir.latest_session_result or {}).session | na }} <span class="note">{{ (ir.latest_session_result or {}).action | na }}</span></td>
+    <td class="mono"><span class="b {{ 'ok' if cr.display == 'OK' else ('warn' if cr.display == 'UNKNOWN' else 'bad') }}">{{ cr.display | na }}</span> <span class="note">{{ cr.expected_session | na }}</span></td>
     <td class="mono">{{ ir.completed_at | na }}</td>
     <td class="wrap note mono">{{ ir.run_id | na }}{% for b in ir.blocking %}<br>BLOCKING {{ b | truncate(160) }}{% endfor %}{% for w in ir.warnings %}<br>WARN {{ w | truncate(160) }}{% endfor %}</td></tr>
   </tbody></table>

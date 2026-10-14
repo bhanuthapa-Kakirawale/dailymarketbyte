@@ -222,8 +222,11 @@ def _publication(built, intent):
             "recap_str": pres.session_date.strftime("%a, %d %b %Y")}
     meta = PU.post_metadata(sb, pres, info)
     scan = scan_publication(collect_public_text(sb, meta))
+    # pre-render capability only (readiness mirrors up to, never including, the Composer): this
+    # run's actual outcome (real track / procedural / silent fallback) is reported by the
+    # Composer itself once it renders, not predicted here.
     audit = audit_storyboard(sb, "POST_UNIFIED", metadata=meta, video_path=None, synthetic=False,
-                             audio={"audio_stream": False, "audio_phase_enabled": AUDIO_ENABLED})
+                             audio={"audio_stream": AUDIO_ENABLED, "audio_phase_enabled": AUDIO_ENABLED})
     built["audit"] = audit
     return C.check_publication(EDITION, intent, audit, scan.status is SafetyStatus.SAFE)
 

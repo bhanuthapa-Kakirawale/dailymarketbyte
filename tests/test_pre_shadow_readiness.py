@@ -475,7 +475,11 @@ FROZEN = {
     "daily_video/annotations.py": "fa13f1470f655792786c9704343f80e6f8649df030cb87d55d1dcc57d43f2ec7",
     "daily_video/chartkit.py": "6b878b0d5152c3d0e2d5c148b758841984f1482dd974951b782023a910ec0706",
     "daily_video/chrome.py": "d702e1707531f90e1ce5db5204ac8eb9951692ef476d19818532fb246ee02ffe",
-    "daily_video/composer.py": "dd41781a54d79ddfd3463902c2617a6caa75b4dc35ee6ca007c7c66e4acd0c38",
+    # Re-pinned (feature/background-music-rotation-v1, owner-approved plan): composer.py's
+    # AUDIO_ENABLED is now env-gated (config.DMB_AUDIO_ENABLED) and render() gained an ffmpeg
+    # audio stage (deterministic music selection, pre-flight validation, silent fallback on any
+    # failure) plus a `music` field in its return dict. No scene drawing/timing code changed.
+    "daily_video/composer.py": "beaa74b603396227f6544d6a8991025d6c6e39320cf2c00a027582e25ebc18cf",
     "daily_video/hook_kit.py": "65054d18a31ce549a9da2ea5adbdcadda7fc9e1366283fcff0d71c462e688cee",
     "daily_video/hook_scene.py": "f6af246492bc2d0d5b92f24b18ed84cccd7fdbfddd99f26930ec865d88759d2f",
     "daily_video/market_scenes.py": "e2b981425c12d98def8ed3da62d58a405f54eaab411c168bbd4b8f669820e12d",

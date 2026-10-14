@@ -13,6 +13,8 @@ import time
 import numpy as np
 from PIL import Image
 
+import config
+import music
 from video import _ffmpeg, ease
 
 from . import theme
@@ -76,9 +78,45 @@ REQUIRED_MARKS = {
 }
 
 
-# V2 is SILENT: no music, no narration, no synthetic silence track. Audio is a separate future
-# phase; until it is explicitly enabled the MP4 carries no audio stream at all ("-an").
-AUDIO_ENABLED = False
+# Background music rotation (docs/BACKGROUND_MUSIC.md). Env-gated via config.DMB_AUDIO_ENABLED
+# (default on) so the owner can kill music instantly, without a code revert, if it ever causes
+# a problem in production. A music failure of any kind never blocks the render - see render()'s
+# audio stage below, which always falls back to "-an" (no audio stream) rather than fail.
+AUDIO_ENABLED = config.DMB_AUDIO_ENABLED
+
+
+def _select_music(session_date, total_seconds: float, out_dir: str) -> "music.MusicSelection":
+    """Deterministic selection + pre-flight validation, keyed on the storyboard's own
+    `session_date` (never wall-clock) so PRE and POST for the same session pick the same track.
+    Never raises - any problem here just means a silent render, never a blocked one."""
+    try:
+        sel = music.get_music(config.ASSETS_DIR, out_dir, seconds=total_seconds, date=session_date)
+    except Exception as exc:
+        return music.MusicSelection(path=None, status=music.SILENT_FALLBACK,
+                                    selection_method="error",
+                                    reason=f"selection failed: {type(exc).__name__}: {exc}")
+    if sel.status == music.APPLIED_REAL:
+        from qa.video_qa import probe_media
+        info = probe_media(sel.path)
+        if not info.get("audio"):
+            return music.MusicSelection(
+                path=None, status=music.SILENT_FALLBACK, track_id=sel.track_id,
+                filename=sel.filename, title=sel.title, selection_method=sel.selection_method,
+                reason=f"track file failed audio probe: {sel.filename}")
+    return sel
+
+
+def _music_manifest_dict(sel) -> dict:
+    """A reference for the production manifest/publication audit, not a duplicate of the full
+    music manifest (task packet section 12)."""
+    base = {"volume": config.MUSIC_VOLUME, "fade_in_seconds": config.MUSIC_FADE_IN_SECONDS,
+            "fade_out_seconds": config.MUSIC_FADE_OUT_SECONDS, "audio_enabled": AUDIO_ENABLED}
+    if sel is None:
+        return {**base, "status": music.SILENT_FALLBACK, "track_id": None, "filename": None,
+                "title": None, "selection_method": "",
+                "reason": "audio phase disabled (DMB_AUDIO_ENABLED=false)"}
+    return {**base, "status": sel.status, "track_id": sel.track_id, "filename": sel.filename,
+            "title": sel.title, "selection_method": sel.selection_method, "reason": sel.reason}
 
 
 def build_scenes(storyboard) -> list:
@@ -86,11 +124,19 @@ def build_scenes(storyboard) -> list:
 
 
 class Composer:
-    def __init__(self, storyboard, watermark: str | None = None):
+    def __init__(self, storyboard, watermark: str | None = None, music_session_date=None):
         """`watermark`: a red corner badge on every frame (e.g. "SYNTHETIC DATA - NOT REAL")
-        so preview renders built from fixtures can never be mistaken for a real session."""
+        so preview renders built from fixtures can never be mistaken for a real session.
+
+        `music_session_date`: the MARKET SESSION this edition is about, for background-music
+        rotation (docs/BACKGROUND_MUSIC.md). Defaults to `storyboard.session_date`, which is
+        correct for POST (the session it recaps) but NOT for PRE - a PRE storyboard's
+        `session_date` is the edition's own morning date (`brief.pre_date`), while the session it
+        discusses is `brief.previous_session`; `products/premarket.py` passes that explicitly so
+        PRE and POST for the same session still pick the same track."""
         self.sb = storyboard
         self.watermark = watermark
+        self.music_session_date = music_session_date or storyboard.session_date
         self.scenes = build_scenes(storyboard)
         self.starts = storyboard.starts()
         self.total = storyboard.total_duration
@@ -144,22 +190,51 @@ class Composer:
         return frame
 
     def render(self, out_path: str, fps: int = theme.FPS) -> dict:
-        os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
-        cmd = [_ffmpeg(), "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
-               "-s", f"{theme.CANVAS_W}x{theme.CANVAS_H}", "-r", str(fps), "-i", "-",
-               "-c:v", "libx264", "-preset", "medium", "-crf", "19", "-pix_fmt", "yuv420p",
-               *([] if AUDIO_ENABLED else ["-an"]),
-               "-movflags", "+faststart", "-t", f"{self.total:.3f}", out_path]
+        out_dir = os.path.dirname(os.path.abspath(out_path))
+        os.makedirs(out_dir, exist_ok=True)
+        music_sel = _select_music(self.music_session_date, self.total, out_dir) if AUDIO_ENABLED else None
+        audio_args = []
+        if music_sel is not None and music_sel.path:
+            fade_out_start = max(0.0, self.total - config.MUSIC_FADE_OUT_SECONDS)
+            audio_args = [
+                "-stream_loop", "-1", "-i", music_sel.path, "-map", "0:v", "-map", "1:a",
+                "-c:a", "aac", "-b:a", "160k",
+                "-af", f"volume={config.MUSIC_VOLUME},"
+                       f"afade=t=in:st=0:d={config.MUSIC_FADE_IN_SECONDS},"
+                       f"afade=t=out:st={fade_out_start:.3f}:d={config.MUSIC_FADE_OUT_SECONDS}"]
+
+        def _cmd(with_audio: bool) -> list:
+            return [_ffmpeg(), "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
+                    "-s", f"{theme.CANVAS_W}x{theme.CANVAS_H}", "-r", str(fps), "-i", "-",
+                    *(audio_args if with_audio else []),
+                    "-c:v", "libx264", "-preset", "medium", "-crf", "19", "-pix_fmt", "yuv420p",
+                    *([] if with_audio else ["-an"]),
+                    "-movflags", "+faststart", "-t", f"{self.total:.3f}", out_path]
+
         t0 = time.time()
-        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
         frames = int(round(self.total * fps))
-        for fi in range(frames):
-            proc.stdin.write(self.frame(fi / fps).convert("RGB").tobytes())
-        proc.stdin.close()
-        ok = proc.wait() == 0
+
+        def _run(cmd: list) -> bool:
+            proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+            for fi in range(frames):
+                proc.stdin.write(self.frame(fi / fps).convert("RGB").tobytes())
+            proc.stdin.close()
+            return proc.wait() == 0
+
+        ok = _run(_cmd(with_audio=bool(audio_args)))
+        if not ok and audio_args:
+            # the mux itself failed despite passing pre-flight validation (rare): never let a
+            # music problem turn a valid render into a production failure - re-render silent.
+            ok = _run(_cmd(with_audio=False))
+            music_sel = music.MusicSelection(
+                path=None, status=music.SILENT_FALLBACK, track_id=music_sel.track_id,
+                filename=music_sel.filename, title=music_sel.title,
+                selection_method=music_sel.selection_method,
+                reason="ffmpeg audio mux failed; re-rendered silent")
         return {"output_path": out_path if ok else None, "ok": ok, "frames": frames,
                 "fps": fps, "duration": round(frames / fps, 3),
-                "render_seconds": round(time.time() - t0, 1)}
+                "render_seconds": round(time.time() - t0, 1),
+                "music": _music_manifest_dict(music_sel if AUDIO_ENABLED else None)}
 
     # ------------------------------------------------------------------ freeze-frame QA
     def freeze(self, index: int, t_local: float | None = None):

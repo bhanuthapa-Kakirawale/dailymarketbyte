@@ -16,6 +16,7 @@ import sys
 
 import pytest
 
+import config
 import main
 from products import MODES
 from products import post_unified as PU
@@ -246,28 +247,38 @@ def test_post_unified_sequence_shape_offline(offline_pipeline, monkeypatch, tmp_
 
 
 # 12 -----------------------------------------------------------------------------------------
-def test_production_post_is_silent(offline_pipeline, tmp_path, monkeypatch):
+def test_production_post_audio_qa_is_dynamic_not_hardcoded(offline_pipeline, tmp_path, monkeypatch):
+    """Background Music Rotation V1: AUDIO_ENABLED is env-gated (config.DMB_AUDIO_ENABLED,
+    default on), and main.py's video_qa's expect_audio reflects THIS render's own music result
+    (daily_video.composer's `music` sub-dict) rather than a hardcoded literal - an audio stream
+    is a FAILURE only when this specific render did NOT apply music."""
     from daily_video import composer
     from qa.video_qa import MIN_PLAUSIBLE_BYTES, QAStatus, check_video
-    assert composer.AUDIO_ENABLED is False
-    main_src = open(os.path.join(ROOT, "main.py"), encoding="utf-8").read()
-    assert "expect_audio=False" in main_src and "video_qa(" in _run_source()
+    assert composer.AUDIO_ENABLED == config.DMB_AUDIO_ENABLED
+    run_src = _run_source()
+    assert "expect_audio=expect_audio" in run_src and "expect_audio=False" not in run_src
     video = tmp_path / "silent.mp4"
     video.write_bytes(b"x" * (MIN_PLAUSIBLE_BYTES + 1000))
     frames = lambda p, ts: [{"t": t, "decoded": True, "mean": 40.0, "stddev": 45.0} for t in ts]
     probe = {"duration": 37.0, "video": {"codec": "h264", "width": 1080, "height": 1920,
                                          "fps": 30.0}}
 
-    def _audio_check(with_audio):
+    def _audio_check(with_audio, expect_audio):
         res = check_video(str(video), 37.0, probe=lambda p: dict(
             probe, **({"audio": {"codec": "aac", "sample_rate": 44100}} if with_audio else {})),
-            sample=frames, expect_audio=False)
+            sample=frames, expect_audio=expect_audio)
         return next(c for c in res.checks if c.name == "audio_stream").status
 
-    assert _audio_check(False) is QAStatus.PASS
-    assert _audio_check(True) is QAStatus.FAIL          # audio may not sneak into V2
+    # expect_audio=False (music disabled/silent-fallback for this render): no stream is PASS
+    assert _audio_check(False, expect_audio=False) is QAStatus.PASS
+    assert _audio_check(True, expect_audio=False) is QAStatus.FAIL
+    # expect_audio=True (this render actually applied music): a stream is required
+    assert _audio_check(True, expect_audio=True) is QAStatus.PASS
+    assert _audio_check(False, expect_audio=True) is QAStatus.FAIL
     assert main.run(_Args())
-    assert _audit(tmp_path)["audio"]["audio_phase_enabled"] is False
+    m = _manifest(tmp_path)
+    assert m["music"]["status"] in ("APPLIED_REAL", "APPLIED_PROCEDURAL", "SILENT_FALLBACK")
+    assert _audit(tmp_path)["audio"]["audio_phase_enabled"] is config.DMB_AUDIO_ENABLED
 
 
 def test_unreachable_ipo_source_is_source_unavailable_not_no_event(tmp_path):

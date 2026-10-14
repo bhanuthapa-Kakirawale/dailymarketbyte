@@ -542,10 +542,12 @@ def build_intelligence(report, history, demo=False):
         return None
 
 
-def video_qa(out, meta_path, report_path, expected_duration, upload_requested):
-    """Deterministic artifact QA. Failure blocks publication but preserves every artifact."""
+def video_qa(out, meta_path, report_path, expected_duration, upload_requested, expect_audio=False):
+    """Deterministic artifact QA. Failure blocks publication but preserves every artifact.
+    `expect_audio` reflects this render's own outcome (daily_video.composer's `music` result) -
+    an audio stream is a FAILURE unless this specific render actually applied music."""
     result = check_video(out, expected_duration=expected_duration, metadata_path=meta_path,
-                         report_path=report_path, expect_audio=False)
+                         report_path=report_path, expect_audio=expect_audio)
     if result.passed:
         note = f" ({len(result.warnings)} warning(s))" if result.warnings else ""
         print(f"      video QA: {result.status.value}{note}")
@@ -886,7 +888,10 @@ def run(args):
         # Gates 2-5 are operational: they decide whether this artifact may be published and
         # record that decision in the QA artifact and publication_runs. None reopens the
         # canonical report, its JSON, or its rows.
-        qa_result = video_qa(out, meta_path, report_path, total, args.upload)
+        music_info = (rendered.get("render") or {}).get("music") or {}
+        expect_audio = music_info.get("status") in ("APPLIED_REAL", "APPLIED_PROCEDURAL")
+        qa_result = video_qa(out, meta_path, report_path, total, args.upload,
+                             expect_audio=expect_audio)
         read_result = _FrameQA(rendered["frames_qa"])
         scan = final_qa(sb, meta, out, args.upload)
         content_ok = scan.status is SafetyStatus.SAFE
@@ -931,7 +936,7 @@ def run(args):
             doc = PU.manifest(entry_point="main.py -> products.route -> main.run",
                               report_source=outcome.source, report_id=report.report_id,
                               session=session, sb=sb, audit=audit, upload_status=upload_status,
-                              video_path=out, out_dir=OUT_DIR,
+                              video_path=out, out_dir=OUT_DIR, music=music_info,
                               qa={"video_qa": qa_result.status.value,
                                   "video_qa_blocking": list(qa_result.blocking_issues),
                                   "frames_qa": rendered["frames_qa"],

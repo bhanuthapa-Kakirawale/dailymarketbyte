@@ -1,16 +1,29 @@
 """Generates copyright-free procedural background tracks (made from maths, no samples).
 Five distinct mood/tempo presets rotate by calendar date so consecutive sessions don't sound
-the same. Drop your own audio to override:
-  - assets/music.mp3 (or .wav/.m4a)      -> always used, every day (single fixed track)
-  - assets/music/1.mp3 .. 5.mp3 (or .wav/.m4a) -> one real track per rotation slot
-Playback volume is set in config.py (MUSIC_VOLUME), not here."""
+the same. Real audio can override the generator via assets/music/music_manifest.json (see
+docs/BACKGROUND_MUSIC.md): only entries marked license_status="CLEARED" and enabled=true are
+ever picked automatically - everything else (missing, unreviewed, disabled) is treated as "no
+real track" and falls back to the procedural generator, which carries no rights risk since
+nothing is sourced externally.
+Playback volume/fades are set in config.py (MUSIC_VOLUME, MUSIC_FADE_IN_SECONDS,
+MUSIC_FADE_OUT_SECONDS), not here."""
 import datetime as dt
+import json
 import os
 import wave
+from dataclasses import dataclass
 
 import numpy as np
 
 SR = 44100
+MANIFEST_NAME = "music_manifest.json"
+CLEARED = "CLEARED"
+NEEDS_RIGHTS_CONFIRMATION = "NEEDS_RIGHTS_CONFIRMATION"
+
+APPLIED_REAL = "APPLIED_REAL"
+APPLIED_PROCEDURAL = "APPLIED_PROCEDURAL"
+SILENT_FALLBACK = "SILENT_FALLBACK"
+NO_CLEARED_TRACK = "NO_CLEARED_TRACK"
 
 # Five presets (tempo + chord progression) so the rotation actually sounds different each day.
 PRESETS = [
@@ -114,20 +127,82 @@ def _variant_index(date: dt.date) -> int:
     return date.toordinal() % len(PRESETS)
 
 
-def get_music(assets_dir: str, out_dir: str, seconds: float = 76.0, swells=(), date: dt.date = None) -> str:
-    """Picks the day's track. A single assets/music.* file always wins (fixed track every day).
-    Otherwise rotates through 5 presets by date, so each weekday's recap sounds different -
-    numbered assets/music/<slot>.* files let you swap in real royalty-free audio per slot."""
-    for name in ("music.mp3", "music.wav", "music.m4a"):
-        p = os.path.join(assets_dir, name)
-        if os.path.exists(p):
-            return p
+@dataclass
+class MusicSelection:
+    """What get_music() picked, for QA/manifest reporting - never used to drive content."""
+    path: str | None
+    status: str                      # APPLIED_REAL | APPLIED_PROCEDURAL | SILENT_FALLBACK
+    track_id: str | None = None
+    filename: str | None = None
+    title: str | None = None
+    selection_method: str = ""
+    reason: str = ""
+
+
+def _load_manifest(assets_dir: str) -> list:
+    """Only CLEARED + enabled entries are eligible for automatic rotation. A missing/malformed
+    manifest is treated as "no real tracks" (falls through to the procedural generator), never
+    a crash. Sorted by track_id for a stable rotation order."""
+    path = os.path.join(assets_dir, "music", MANIFEST_NAME)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return []
+    if not isinstance(raw, list):
+        return []
+    tracks = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("license_status") != CLEARED or not entry.get("enabled"):
+            continue
+        track_id, filename = entry.get("track_id"), entry.get("filename")
+        if not track_id or not filename:
+            continue
+        tracks.append({"track_id": str(track_id), "filename": str(filename),
+                       "title": entry.get("title", "")})
+    tracks.sort(key=lambda t: t["track_id"])
+    return tracks
+
+
+def get_music(assets_dir: str, out_dir: str, seconds: float = 76.0, swells=(),
+             date: dt.date = None) -> MusicSelection:
+    """Picks the day's track, keyed off `date` - the DMB session date, never wall-clock - so the
+    same session always resolves to the same track and PRE/POST share it for that session.
+
+    1. A CLEARED + enabled real track from assets/music/music_manifest.json, chosen
+       deterministically by `date` among the eligible tracks (docs/BACKGROUND_MUSIC.md).
+    2. If none are configured at all, the procedural generator - self-synthesized, so it carries
+       no rights risk, and is the right default while the owner's cleared library is still empty.
+
+    A manifest entry that IS eligible but whose file is missing/unreadable is NOT silently
+    swapped for the generator (that would mask a real asset problem going unnoticed) - it comes
+    back as SILENT_FALLBACK and the caller (daily_video/composer.py) renders without audio."""
     date = date or dt.date.today()
+    tracks = _load_manifest(assets_dir)
+    if tracks:
+        idx = date.toordinal() % len(tracks)
+        chosen = tracks[idx]
+        path = os.path.join(assets_dir, "music", chosen["filename"])
+        if os.path.exists(path):
+            return MusicSelection(path=path, status=APPLIED_REAL, track_id=chosen["track_id"],
+                                  filename=chosen["filename"], title=chosen["title"],
+                                  selection_method="manifest_rotation")
+        return MusicSelection(
+            path=None, status=SILENT_FALLBACK, track_id=chosen["track_id"],
+            filename=chosen["filename"], title=chosen["title"], selection_method="manifest_rotation",
+            reason=f"manifest track {chosen['track_id']!r} file not found: {chosen['filename']}")
     idx = _variant_index(date)
-    for ext in ("mp3", "wav", "m4a"):
-        p = os.path.join(assets_dir, "music", f"{idx + 1}.{ext}")
-        if os.path.exists(p):
-            return p
     preset = PRESETS[idx]
     out = os.path.join(out_dir, f"bg_music_{idx}.wav")
-    return generate(out, seconds + 1, bpm=preset["bpm"], seed=preset["seed"], chords=preset["chords"], swells=swells)
+    try:
+        path = generate(out, seconds + 1, bpm=preset["bpm"], seed=preset["seed"],
+                        chords=preset["chords"], swells=swells)
+    except Exception as exc:
+        return MusicSelection(path=None, status=SILENT_FALLBACK, selection_method="procedural",
+                              reason=f"procedural generation failed: {type(exc).__name__}: {exc}")
+    return MusicSelection(path=path, status=APPLIED_PROCEDURAL,
+                          track_id=f"procedural:{preset['name']}", filename=os.path.basename(path),
+                          title=preset["name"], selection_method="procedural_rotation",
+                          reason="no CLEARED/enabled real track configured")

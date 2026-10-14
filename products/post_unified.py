@@ -166,14 +166,14 @@ def data_readiness(sb, out_dir: str | None, session) -> dict:
 
 
 def manifest(*, entry_point, report_source, report_id, session, sb, audit, upload_status,
-             video_path, qa, out_dir=None) -> dict:
+             video_path, qa, out_dir=None, music=None) -> dict:
     return {"product": PRODUCT, "entry_point": entry_point, "planner": PLANNER,
             "renderer": RENDERER, "legacy_renderer_invoked": False,
             "report_source": report_source, "report_id": report_id,
             "session_date": str(session), "publication_profile": sb.publication_profile,
             "scenes": [s.kind for s in sb.scenes],
             "sections": [s[1] or s[0] for s in sb.sections()],
-            "duration": sb.total_duration, "video": video_path, "qa": qa,
+            "duration": sb.total_duration, "video": video_path, "qa": qa, "music": music,
             "optional_sections": (sb.public_audit or {}).get("omitted_sections", {}),
             # Every section's SELECTED/OMITTED decision + reason, and (when relevant) whether an
             # omission was a timing gap rather than a planner choice - docs/PRODUCTION_SCHEDULE.md.

@@ -13,7 +13,7 @@ import sys
 import tempfile
 
 from .matrix import requirement
-from .models import PASS, SKIP, CheckResult, unmet
+from .models import PASS, CheckResult, unmet
 
 RENDER_PACKAGES = ("numpy", "pandas", "matplotlib", "PIL", "imageio_ffmpeg")
 MIN_FREE_FAIL = 200 * 1024 * 1024        # below this a render (frames + MP4) cannot finish
@@ -125,10 +125,13 @@ def check_audio(edition: str) -> CheckResult:
     except Exception:
         AUDIO_ENABLED = False
     if not AUDIO_ENABLED:
-        return _mk(edition, "AUDIO_ASSETS", "RENDERING", "AUDIO_ASSETS", SKIP,
-                   "silent video (AUDIO_ENABLED is False) - no music asset needed")
+        return _mk(edition, "AUDIO_ASSETS", "RENDERING", "AUDIO_ASSETS",
+                   unmet(requirement("AUDIO_ASSETS", edition)),
+                   "silent video (DMB_AUDIO_ENABLED=false) - no music asset needed")
     return _mk(edition, "AUDIO_ASSETS", "RENDERING", "AUDIO_ASSETS", PASS,
-               "audio enabled - music.py generates a track when no asset exists")
+               "audio enabled - music.py selects a cleared manifest track or generates a "
+               "procedural one when none is configured; a bad asset falls back to silent, "
+               "never blocks")
 
 
 def _probe_write(directory: str) -> None:

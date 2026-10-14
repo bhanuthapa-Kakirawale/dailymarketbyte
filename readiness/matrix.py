@@ -44,7 +44,8 @@ MATRIX = {
     "RENDERER":           (REQ, REQ, "daily_video.composer imports"),
     "FFMPEG":             (REQ, REQ, "video._ffmpeg / imageio_ffmpeg"),
     "FONTS":              (REQ, REQ, "daily_video.typography.font_report (a TrueType font resolves)"),
-    "AUDIO_ASSETS":       (NA, NA, "daily_video.composer.AUDIO_ENABLED is False"),
+    "AUDIO_ASSETS":       (OPT, OPT, "daily_video.composer.AUDIO_ENABLED (env DMB_AUDIO_ENABLED, "
+                                      "default on) - music.py's manifest rotation / generator"),
     "STORAGE":            (REQ, REQ, "output root writable, history DB readable, disk space"),
 }
 

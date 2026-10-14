@@ -92,7 +92,14 @@ def offline_pipeline(monkeypatch, tmp_path, market_dict, movers, sectors, tiles,
         rendered["watermark"] = watermark
         open(out_path, "wb").write(b"stub")
         return {"frames_qa": {"passed": True, "issues": {}},
-                "render": {"ok": True, "output_path": out_path}}
+                "render": {"ok": True, "output_path": out_path,
+                          "music": {"status": "APPLIED_PROCEDURAL",
+                                    "track_id": "procedural:lofi_dreamy",
+                                    "filename": "bg_music_0.wav", "title": "lofi_dreamy",
+                                    "selection_method": "procedural_rotation",
+                                    "reason": "no CLEARED/enabled real track configured",
+                                    "volume": 0.22, "fade_in_seconds": 0.75,
+                                    "fade_out_seconds": 1.25, "audio_enabled": True}}}
 
     monkeypatch.setattr(post_unified, "render_post", _render_post)
     real_meta = post_unified.post_metadata

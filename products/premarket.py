@@ -383,7 +383,10 @@ def render_pre(brief, out_dir: str, watermark: str | None = None, frames_only: b
         dump(f"pre_result_{tag}.json", result)
         return result
 
-    comp = Composer(sb, watermark=watermark)
+    # background music (docs/BACKGROUND_MUSIC.md): PRE discusses `previous_session`, not its own
+    # edition date (`sb.session_date` here is `brief.pre_date`) - so POST for that same session
+    # picks the same track.
+    comp = Composer(sb, watermark=watermark, music_session_date=brief.previous_session)
     names = []
     seen = {}
     for s in sb.scenes:

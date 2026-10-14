@@ -92,7 +92,8 @@ not fetch anything or compute a new market fact.
 | Presentation   | `presentation/`                    | the renderer boundary               |
 | PRE-MARKET     | `products/` (router + runner), `providers/premarket.py`, `core/freshness.py`, `core/event_calendar.py`, `presentation/pre_plan.py`, `daily_video/pre_storyboard.py`, `daily_video/pre_scenes.py` | PRE V1 - "before the bell" Short from the previous session's canonical report + dated/timestamped pre-open readings + verified schedules; deterministic `PreEditorialPlanner`; reuses the POST design system and the hook engine; never writes canonical history, never uploads (`docs/PRE_MARKET.md`) |
 | Rendering      | `products/post_unified.py`, `daily_video/` | POST_UNIFIED: one planner / storyboard / renderer / audit for scheduled and review POST (production cut-over) |
-| Legacy render  | `video.py`, `chart.py`, `music.py` | LEGACY / NON-PRODUCTION `video.py` Short - kept, unit-tested, reached by no mode or flag |
+| Legacy render  | `video.py`, `chart.py` | LEGACY / NON-PRODUCTION `video.py` Short - kept, unit-tested, reached by no mode or flag |
+| Background music | `music.py`, `assets/music/` | Background Music Rotation V1 (docs/BACKGROUND_MUSIC.md): deterministic manifest/procedural rotation, keyed on `session_date`, wired into `daily_video/composer.py`'s `Composer.render()` (env-gated `AUDIO_ENABLED` / `DMB_AUDIO_ENABLED`) - no longer legacy-only |
 | Artifact QA    | `qa/`                              | deterministic video + readability checks |
 | Publication    | `upload.py`                        | unchanged                           |
 | Orchestration  | `main.py`                          | thin: obtain the canonical report (reuse it, else `produce_report`: collect → report → persist) → gate → plan → present → render → QA → publish; `--mode report` / `--mode premarket` route through `products.route(VideoRequest)` (POST is the default and runs `main.run`) |

@@ -478,13 +478,19 @@ def test_30_renderer_import_failure_blocks():
     assert check_renderer("POST").status == PASS
 
 
-def test_31_optional_asset_absent_has_the_right_severity():
+def test_31_optional_asset_absent_has_the_right_severity(monkeypatch):
     from readiness.environment import check_audio, check_fonts
     assert check_fonts("PRE", reporter=lambda: FONTS_OK).status == PASS   # system font: normal
     none = {"bold": {"resolved_path": None}, "regular": {"resolved_path": None}}
     assert check_fonts("PRE", reporter=lambda: none).status == FAIL       # PIL bitmap default
+    # Background Music Rotation V1: AUDIO_ASSETS is OPTIONAL (never blocking) - enabled (the
+    # default) passes, and disabling DMB_AUDIO_ENABLED degrades (WARN) rather than skipping.
+    assert check_audio("POST").status == PASS
+    import daily_video.composer as comp
+    monkeypatch.setattr(comp, "AUDIO_ENABLED", False)
     a = check_audio("POST")
-    assert a.status == SKIP and a.requirement == "NOT_APPLICABLE"          # silent V2 video
+    assert a.status == WARN and a.requirement == "OPTIONAL"
+
 
 
 def _write_post_manifest(out, qa=None, failed=("publication_rights",), duration=38.0):

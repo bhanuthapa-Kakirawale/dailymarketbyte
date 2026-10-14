@@ -225,9 +225,11 @@ def test_scheduled_post_upload_is_refused_under_the_default(monkeypatch):
 
 
 # --------------------------------------------------------------------------- 10. audio
-def test_v2_mp4_has_no_audio_unless_the_audio_phase_is_enabled(monkeypatch, tmp_path):
+def test_v2_mp4_has_no_audio_when_the_audio_phase_is_disabled(monkeypatch, tmp_path):
+    """Background Music Rotation V1: AUDIO_ENABLED is env-gated and on by default, but disabling
+    it (DMB_AUDIO_ENABLED=false) must still produce a silent MP4 with exactly one input."""
     import daily_video.composer as comp
-    assert comp.AUDIO_ENABLED is False
+    monkeypatch.setattr(comp, "AUDIO_ENABLED", False)
     captured = {}
 
     class _P:
@@ -241,8 +243,9 @@ def test_v2_mp4_has_no_audio_unless_the_audio_phase_is_enabled(monkeypatch, tmp_
     monkeypatch.setattr(comp.subprocess, "Popen", _P)
     sb = _post()
     sb.scenes = sb.scenes[-1:]
-    comp.Composer(sb).render(str(tmp_path / "x.mp4"), fps=1)
+    render = comp.Composer(sb).render(str(tmp_path / "x.mp4"), fps=1)
     cmd = captured["cmd"]
     assert "-an" in cmd and cmd.count("-i") == 1          # one input: the raw video pipe
+    assert render["music"]["status"] == "SILENT_FALLBACK"
     audit = audit_storyboard(_post(), "POST_UNIFIED")
     assert audit["audio"]["audio_stream"] is False

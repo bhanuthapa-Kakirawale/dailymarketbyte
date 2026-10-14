@@ -44,6 +44,14 @@ DURATION = 75.0   # target length; scenes that can't get data are dropped and ot
 
 # Background music volume (0.0-1.0), mixed low under the captions by default. Override via env.
 MUSIC_VOLUME = float(os.getenv("MUSIC_VOLUME", "0.22"))
+# Short fades so the track never cuts in/out abruptly; fade-out always ends exactly with the
+# video (daily_video/composer.py anchors it at total_duration - MUSIC_FADE_OUT_SECONDS).
+MUSIC_FADE_IN_SECONDS = float(os.getenv("MUSIC_FADE_IN_SECONDS", "0.75"))
+MUSIC_FADE_OUT_SECONDS = float(os.getenv("MUSIC_FADE_OUT_SECONDS", "1.25"))
+
+# Background music phase (daily_video/composer.py's AUDIO_ENABLED). Default on; set to
+# "false"/"0"/"no" to kill music instantly in production without a code revert.
+DMB_AUDIO_ENABLED = os.getenv("DMB_AUDIO_ENABLED", "true").strip().lower() not in ("0", "false", "no")
 
 # Stock universe for gainers/losers: NIFTY50 | NIFTY100 | NIFTY200 | NIFTY500
 UNIVERSE = os.getenv("DAILY_BYTE_UNIVERSE", "NIFTY100").upper()

@@ -92,6 +92,20 @@ def test_job_registry_is_the_only_source_of_bat_relpaths():
                         "scripts/run_production_post.bat"}
 
 
+def test_dependency_module_never_builds_a_child_command_or_reads_business_state():
+    """dependency.py (scheduler-level dependency ordering) only ever reads shadow_scheduler's
+    OWN run records (records.read_latest) for the upstream job - never business state (the
+    canonical report, readiness, production_runs' business latest.json, intelligence_refresh's
+    own latest.json), and never invokes/launches the dependency job itself."""
+    path = os.path.join(PKG_DIR, "dependency.py")
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    assert "subprocess" not in src
+    assert "child_command" not in src
+    assert "business_latest_relpath" not in src
+    assert "business_root" not in src
+
+
 def test_config_module_never_imports_subprocess():
     path = os.path.join(PKG_DIR, "config.py")
     with open(path, encoding="utf-8") as fh:

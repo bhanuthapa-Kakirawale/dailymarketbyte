@@ -16,7 +16,7 @@ import os
 from shadow_scheduler import config, records, runner, status
 from shadow_scheduler.lock import RunLock, lock_path
 from shadow_scheduler.models import COMPLETED, EXPIRED, LOCKED, MISSED, NOT_EXPECTED, PENDING, \
-    WAITING
+    RunRecord, WAITING
 
 UTC = dt.timezone.utc
 IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
@@ -57,13 +57,30 @@ class _FakeClock:
         self.utc += dt.timedelta(seconds=seconds)
 
 
-def _run(tmp_path, job, utcnow, **kwargs):
+def _seed_dependency_satisfied(out_dir, job, utcnow):
+    """This file is about the execution-window boundary, not dependency ordering (that's
+    test_shadow_scheduler_dependency.py / the dependency-ordering section of
+    test_shadow_scheduler_runner.py) - pre-seed `job`'s upstream dependency (if any) as already
+    COMPLETED today so these tests exercise exactly the window/lock behavior they document,
+    unaffected by the dependency-wait layer."""
+    dep_job = config.DEPENDENCIES.get(job)
+    if not dep_job:
+        return
+    started = utcnow()
+    rec = RunRecord(job=dep_job, run_id=f"seed-{dep_job}", started_at=started.isoformat(),
+                    completed_at=started.isoformat(), duration=1.0, runner_status=COMPLETED)
+    records.write_record(out_dir, rec)
+
+
+def _run(tmp_path, job, utcnow, seed_dependency=True, **kwargs):
     kwargs.setdefault("out_dir", str(tmp_path / "shadow_scheduler"))
     kwargs.setdefault("business_root", str(tmp_path / "output"))
     kwargs.setdefault("repo_root", str(tmp_path / "repo"))
     kwargs.setdefault("python_executable", "D:\\repo\\venv\\Scripts\\python.exe")
     kwargs.setdefault("subprocess_run", _FakeSubprocess(returncode=0))
     fake = kwargs["subprocess_run"]
+    if seed_dependency:
+        _seed_dependency_satisfied(kwargs["out_dir"], job, utcnow)
     exit_code = runner.run_job(job, utcnow=utcnow, **kwargs)
     return exit_code, fake
 
@@ -156,6 +173,7 @@ def test_i_lock_wait_carries_the_job_past_its_deadline_is_expired_no_child(tmp_p
     holder.acquire("holder-run", "intelligence_pm", [])
 
     clock = _FakeClock(dt.datetime(2026, 10, 9, 14, 55, 0, tzinfo=UTC))   # 20:25:00 IST
+    _seed_dependency_satisfied(out_dir, "post", clock.utcnow)   # isolate the LOCK-vs-deadline
     fake = _FakeSubprocess(returncode=0)
     exit_code = runner.run_job(
         "post", out_dir=out_dir, business_root=str(tmp_path / "output"),
@@ -181,6 +199,7 @@ def test_j_lock_becomes_available_before_deadline_launches_the_child(tmp_path):
     holder.acquire("holder-run", "intelligence_pm", [])
 
     clock = _FakeClock(dt.datetime(2026, 10, 9, 14, 5, 0, tzinfo=UTC))   # 19:35:00 IST
+    _seed_dependency_satisfied(out_dir, "post", clock.utcnow)   # isolate the lock-wait behavior
     released = {"done": False}
     real_sleep = clock.sleep
 

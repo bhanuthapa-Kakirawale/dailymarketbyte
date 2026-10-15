@@ -130,6 +130,69 @@ def test_overall_status_never_writes_anything(tmp_path, monkeypatch):
     assert s["overall"] in (HEALTHY, ATTENTION, BROKEN)
 
 
+# --- dependency ordering (PK-E follow-up) ---------------------------------------------------
+
+def test_job_status_exposes_the_dependency_fields_from_the_scheduler_record(tmp_path):
+    from shadow_scheduler.models import COMPLETED, RunRecord
+    out_dir = str(tmp_path)
+    rec = RunRecord(job="pre", run_id="r1", started_at="2026-10-09T01:30:00+00:00",
+                    runner_status=COMPLETED, dependency_job="intelligence_am",
+                    dependency_status="SATISFIED", dependency_wait_seconds=12.5)
+    records.write_record(out_dir, rec)
+    now_ist = dt.datetime(2026, 10, 9, 8, 0, tzinfo=IST)
+    spec = config.JOB_REGISTRY["pre"]
+    row = status.job_status(out_dir, out_dir, spec, now_ist, _FixedCalendar(True))
+    assert row["dependency_job"] == "intelligence_am"
+    assert row["dependency_status"] == "SATISFIED"
+    assert row["dependency_wait_seconds"] == 12.5
+
+
+def test_waiting_dependency_is_shown_but_does_not_push_overall_away_from_healthy(tmp_path):
+    """An in-flight WAITING_DEPENDENCY checkpoint is not itself unhealthy - same treatment the
+    ordinary RUNNING checkpoint already gets."""
+    from shadow_scheduler.models import WAITING_DEPENDENCY, RunRecord
+    out_dir = str(tmp_path / "ss")
+    business_root = str(tmp_path / "out")
+    rec = RunRecord(job="pre", run_id="r1", started_at="2026-10-09T01:35:00+00:00",
+                    runner_status=WAITING_DEPENDENCY, dependency_job="intelligence_am")
+    records.write_record(out_dir, rec)
+    now_ist = dt.datetime(2026, 10, 9, 7, 36, tzinfo=IST)   # inside PRE's window
+    s = status.overall_status(out_dir, business_root=business_root, now=now_ist,
+                              calendar=_FixedCalendar(True))
+    assert s["overall"] == HEALTHY
+    assert s["jobs"]["pre"]["runner_status"] == WAITING_DEPENDENCY
+
+
+def test_dependency_failed_pushes_overall_to_attention_not_broken(tmp_path):
+    from shadow_scheduler.models import DEPENDENCY_FAILED, RunRecord
+    out_dir = str(tmp_path / "ss")
+    business_root = str(tmp_path / "out")
+    rec = RunRecord(job="pre", run_id="r1", started_at="2026-10-09T01:35:00+00:00",
+                    runner_status=DEPENDENCY_FAILED, dependency_job="intelligence_am",
+                    dependency_status="FAILED", error="dependency failed")
+    records.write_record(out_dir, rec)
+    now_ist = dt.datetime(2026, 10, 9, 7, 36, tzinfo=IST)
+    s = status.overall_status(out_dir, business_root=business_root, now=now_ist,
+                              calendar=_FixedCalendar(True))
+    assert s["overall"] == ATTENTION
+    assert s["overall"] != BROKEN
+
+
+def test_render_human_shows_dependency_failed_status_and_counts_it(tmp_path):
+    from shadow_scheduler.models import DEPENDENCY_FAILED, RunRecord
+    out_dir = str(tmp_path / "ss")
+    business_root = str(tmp_path / "out")
+    rec = RunRecord(job="post", run_id="r1", started_at="2026-10-09T14:00:00+00:00",
+                    runner_status=DEPENDENCY_FAILED)
+    records.write_record(out_dir, rec)
+    now_ist = dt.datetime(2026, 10, 9, 20, 0, tzinfo=IST)
+    s = status.overall_status(out_dir, business_root=business_root, now=now_ist,
+                              calendar=_FixedCalendar(True))
+    text = status.render_human(s)
+    assert "DEPENDENCY_FAILED" in text
+    assert "Dependency failures: 1" in text
+
+
 def test_render_human_contains_every_job_and_the_overall_verdict(tmp_path):
     out_dir = str(tmp_path / "ss")
     business_root = str(tmp_path / "out")

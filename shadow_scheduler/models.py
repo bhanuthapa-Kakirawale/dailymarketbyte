@@ -29,14 +29,29 @@ JOBS = ("intelligence_am", "pre", "intelligence_pm", "post")
 # never retried.
 RUNNING, COMPLETED, CHILD_NONZERO, LOCKED, FAILED, EXPIRED = (
     "RUNNING", "COMPLETED", "CHILD_NONZERO", "LOCKED", "FAILED", "EXPIRED")
-TERMINAL_STATUSES = frozenset({COMPLETED, CHILD_NONZERO, LOCKED, FAILED, EXPIRED})
+
+# Dependency ordering (PK-E follow-up): WAITING_DEPENDENCY is a non-terminal checkpoint, written
+# only while `pre`/`post` is genuinely blocked on its upstream intelligence job - the same
+# mechanism the ordinary RUNNING checkpoint already uses, so `status` can show it live with no
+# extra process-introspection machinery. DEPENDENCY_FAILED is a terminal outcome: the upstream
+# job reached FAILED/LOCKED/EXPIRED today (a terminal, non-satisfying attempt) or the dependency
+# state could not be re-confirmed immediately before the lock/child launch. Neither is ever
+# produced for intelligence_am/intelligence_pm themselves - they have no dependency of their own
+# (shadow_scheduler.config.DEPENDENCIES).
+WAITING_DEPENDENCY, DEPENDENCY_FAILED = "WAITING_DEPENDENCY", "DEPENDENCY_FAILED"
+
+TERMINAL_STATUSES = frozenset({COMPLETED, CHILD_NONZERO, LOCKED, FAILED, EXPIRED,
+                               DEPENDENCY_FAILED})
 
 # Infra-only exit codes, used ONLY when no child exit code exists to propagate (lock timeout,
-# launch failure before/while starting the subprocess). COMPLETED/CHILD_NONZERO always exit
-# with the child's own exit code, verbatim - never one of these two numbers. Deliberately
-# small and disjoint from production_orchestrator's {0,20,30,40} and intelligence_refresh's
-# {0,20,30} so a 3 or 4 can never be misread as one of those business codes.
-INFRA_EXIT_CODES = {LOCKED: 3, FAILED: 4}
+# launch failure before/while starting the subprocess, or a dependency that never became
+# satisfied). COMPLETED/CHILD_NONZERO always exit with the child's own exit code, verbatim -
+# never one of these numbers. Deliberately small and disjoint from production_orchestrator's
+# {0,20,30,40} and intelligence_refresh's {0,20,30} so none of these can ever be misread as one
+# of those business codes. DEPENDENCY_FAILED is nonzero (unlike EXPIRED) because, unlike an
+# unremarkable deliberately-skipped window, it is worth a look - but it must never trigger a
+# Windows Task Scheduler retry; RestartCount=0 is already configured repo-wide for all 4 tasks.
+INFRA_EXIT_CODES = {LOCKED: 3, FAILED: 4, DEPENDENCY_FAILED: 5}
 
 # EXPIRED's own exit code: deliberately 0, NOT one of INFRA_EXIT_CODES' nonzero codes. There is
 # no infrastructure failure to report (the lock and every cmdlet worked fine) and nothing here
@@ -96,6 +111,13 @@ class RunRecord:
     window_start: str | None = None   # == scheduled_dt
     window_end: str | None = None     # == deadline_dt; EXPIRED means started_at (IST) >= this
     child_started: bool = True        # False only for LOCKED/FAILED-before-launch/EXPIRED
+    # Dependency ordering (PK-E follow-up) - all stay None for intelligence_am/intelligence_pm,
+    # which have no entry in config.DEPENDENCIES:
+    dependency_job: str | None = None       # e.g. "intelligence_am", or None if no dependency
+    dependency_status: str | None = None    # "SATISFIED" | "FAILED" | "TIMED_OUT" | None
+    dependency_run_id: str | None = None    # the upstream job's own run_id, once SATISFIED
+    dependency_wait_seconds: float | None = None
+    dependency_satisfied_at: str | None = None   # UTC ISO-8601, only when SATISFIED
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -104,10 +126,13 @@ class RunRecord:
         return {"schema": LATEST_SCHEMA, "job": self.job, "run_id": self.run_id, "path": path,
                 "runner_status": self.runner_status, "child_exit_code": self.child_exit_code,
                 "started_at": self.started_at, "completed_at": self.completed_at,
-                "updated_at": self.completed_at or self.started_at}
+                "updated_at": self.completed_at or self.started_at,
+                "dependency_job": self.dependency_job,
+                "dependency_status": self.dependency_status,
+                "dependency_wait_seconds": self.dependency_wait_seconds}
 
 
 __all__ = ["SCHEMA", "LATEST_SCHEMA", "JOBS", "RUNNING", "COMPLETED", "CHILD_NONZERO", "LOCKED",
-          "FAILED", "EXPIRED", "TERMINAL_STATUSES", "INFRA_EXIT_CODES", "EXPIRED_EXIT_CODE",
-          "PENDING", "MISSED", "NOT_EXPECTED", "OK", "UNKNOWN", "WAITING", "HEALTHY",
-          "ATTENTION", "BROKEN", "JobSpec", "RunRecord"]
+          "FAILED", "EXPIRED", "WAITING_DEPENDENCY", "DEPENDENCY_FAILED", "TERMINAL_STATUSES",
+          "INFRA_EXIT_CODES", "EXPIRED_EXIT_CODE", "PENDING", "MISSED", "NOT_EXPECTED", "OK",
+          "UNKNOWN", "WAITING", "HEALTHY", "ATTENTION", "BROKEN", "JobSpec", "RunRecord"]

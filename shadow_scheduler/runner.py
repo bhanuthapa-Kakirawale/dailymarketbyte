@@ -29,10 +29,10 @@ import subprocess
 import sys
 import time
 
-from . import config, records
+from . import config, dependency, records
 from .lock import RunLock, ShadowLockTimeout
-from .models import (CHILD_NONZERO, COMPLETED, EXPIRED, EXPIRED_EXIT_CODE, FAILED,
-                     INFRA_EXIT_CODES, LOCKED, RunRecord)
+from .models import (CHILD_NONZERO, COMPLETED, DEPENDENCY_FAILED, EXPIRED, EXPIRED_EXIT_CODE,
+                     FAILED, INFRA_EXIT_CODES, LOCKED, RunRecord, WAITING_DEPENDENCY)
 
 
 def _utc_now() -> dt.datetime:
@@ -56,6 +56,7 @@ def run_job(job: str, *, cli_argv: list | None = None, out_dir: str | None = Non
            business_root: str | None = None, repo_root: str | None = None,
            python_executable: str | None = None, subprocess_run=subprocess.run,
            utcnow=None, lock_timeout_s: float | None = None, lock_poll_s: float | None = None,
+           dependency_poll_s: float | None = None,
            sleep=time.sleep, clock_monotonic=time.monotonic) -> int:
     if job not in config.JOB_REGISTRY:
         raise KeyError(f"unknown shadow_scheduler job: {job!r}")
@@ -95,6 +96,18 @@ def run_job(job: str, *, cli_argv: list | None = None, out_dir: str | None = Non
         records.write_record(out_dir, record)
         return EXPIRED_EXIT_CODE
 
+    def _dependency_failed(reason: str) -> int:
+        record.runner_status = DEPENDENCY_FAILED
+        record.child_exit_code = None
+        record.child_started = False
+        record.dependency_status = "FAILED"
+        record.error = reason
+        completed_at_dt = utcnow()
+        record.completed_at = completed_at_dt.isoformat()
+        record.duration = (completed_at_dt - started_at_dt).total_seconds()
+        records.write_record(out_dir, record)
+        return INFRA_EXIT_CODES[DEPENDENCY_FAILED]
+
     # Check 1 of 2: before even attempting the global lock. A job invoked at/after its own
     # deadline (e.g. StartWhenAvailable firing hours late) must never even try to acquire the
     # lock, let alone wait on it.
@@ -102,11 +115,69 @@ def run_job(job: str, *, cli_argv: list | None = None, out_dir: str | None = Non
         return _expire(f"invoked at {now_ist.isoformat()} IST, at/after the execution window "
                        f"deadline {deadline_dt.isoformat()} - child was not started")
 
+    # Dependency ordering (PK-E follow-up): pre depends on intelligence_am, post depends on
+    # intelligence_pm (config.DEPENDENCIES). This happens entirely BEFORE the global scheduler
+    # lock is even attempted - a job must never wait for its dependency WHILE holding that lock,
+    # or the two jobs could starve each other (the dependency can only ever acquire the lock
+    # once the waiting job gives up or releases it). Bounded by this job's own execution-window
+    # deadline; never touches/invokes the dependency job itself.
+    dep_job = config.DEPENDENCIES.get(job)
+    if dep_job:
+        import config as root_config
+        record.dependency_job = dep_job
+        quick_outcome, quick_record = dependency.check(out_dir, dep_job, now_ist.date(),
+                                                       root_config.IST)
+        if quick_outcome == dependency.DEP_FAILED:
+            return _dependency_failed(
+                f"dependency {dep_job!r} had already reached a terminal non-satisfying outcome "
+                f"today ({(quick_record or {}).get('runner_status')!r}) before {job!r} began")
+        if quick_outcome == dependency.PENDING:
+            # An actual wait is about to happen - checkpoint it (WAITING_DEPENDENCY) so a
+            # concurrent `status` call can see it live, the same way the ordinary RUNNING
+            # checkpoint is already visible once the lock is held.
+            record.runner_status = WAITING_DEPENDENCY
+            records.write_record(out_dir, record)
+            effective_poll = (config.DEPENDENCY_POLL_SECONDS if dependency_poll_s is None
+                             else dependency_poll_s)
+            wait_result = dependency.wait(out_dir, dep_job, deadline_dt, utcnow=utcnow,
+                                          ist=root_config.IST, sleep=sleep,
+                                          poll_s=effective_poll, clock=clock_monotonic)
+            record.dependency_wait_seconds = round(wait_result.waited_seconds, 3)
+            if wait_result.outcome == "TIMED_OUT":
+                return _expire(
+                    f"own execution window deadline {deadline_dt.isoformat()} reached while "
+                    f"waiting for dependency {dep_job!r} to complete today")
+            if wait_result.outcome == dependency.DEP_FAILED:
+                return _dependency_failed(
+                    f"dependency {dep_job!r} reached a terminal non-satisfying outcome today "
+                    f"while {job!r} was waiting")
+            record.dependency_satisfied_at = wait_result.satisfied_at
+            record.dependency_run_id = (wait_result.record or {}).get("run_id")
+            record.runner_status = "RUNNING"   # restore the ordinary in-flight checkpoint status
+        else:
+            record.dependency_wait_seconds = 0.0
+            record.dependency_run_id = (quick_record or {}).get("run_id")
+        record.dependency_status = "SATISFIED"
+
     # The bounded lock wait must never itself carry this job past its own deadline: cap the
-    # effective timeout at whatever remains of the window.
+    # effective timeout at whatever remains of the window. Recomputed here (not reusing the
+    # `now_ist` from above) because the dependency wait just above may have consumed real time.
+    now_ist = _ist(utcnow())
     configured_wait = config.LOCK_WAIT_SECONDS if lock_timeout_s is None else lock_timeout_s
     remaining_window_s = (deadline_dt - now_ist).total_seconds()
     effective_wait = max(0.0, min(configured_wait, remaining_window_s))
+
+    # Checkpoint B: a cheap, non-waiting re-validation immediately before attempting the global
+    # lock. In practice a SATISFIED (terminal) upstream record cannot regress - this guards only
+    # the genuine edge case of an operator manually re-running the dependency job mid-window.
+    # Fails closed rather than re-entering a nested wait.
+    if dep_job:
+        recheck_outcome, _recheck_record = dependency.check(out_dir, dep_job, now_ist.date(),
+                                                            root_config.IST)
+        if recheck_outcome != dependency.SATISFIED:
+            return _dependency_failed(
+                f"dependency {dep_job!r} was no longer SATISFIED immediately before acquiring "
+                f"the scheduler lock (recheck outcome={recheck_outcome!r})")
 
     run_lock = RunLock(out_dir)
     try:
@@ -139,6 +210,17 @@ def run_job(job: str, *, cli_argv: list | None = None, out_dir: str | None = Non
         run_lock.release()
         return _expire(f"lock acquired at/after the execution window deadline "
                        f"{deadline_dt.isoformat()} - child was not started")
+
+    # Checkpoint C: the last cheap, non-waiting dependency re-validation, immediately before
+    # the child actually launches (lock already held - this does not wait, only observes).
+    if dep_job:
+        recheck_outcome, _recheck_record = dependency.check(
+            out_dir, dep_job, _ist(utcnow()).date(), root_config.IST)
+        if recheck_outcome != dependency.SATISFIED:
+            run_lock.release()
+            return _dependency_failed(
+                f"dependency {dep_job!r} was no longer SATISFIED immediately before launching "
+                f"the child (recheck outcome={recheck_outcome!r})")
 
     try:
         log_abspath = os.path.join(out_dir, record.log_path)

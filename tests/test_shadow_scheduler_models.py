@@ -8,7 +8,8 @@ from shadow_scheduler import config, models
 
 def test_runner_vocabulary_is_disjoint_from_readiness_and_orchestrator_vocabularies():
     runner_terms = {models.RUNNING, models.COMPLETED, models.CHILD_NONZERO, models.LOCKED,
-                    models.FAILED, models.EXPIRED}
+                    models.FAILED, models.EXPIRED, models.WAITING_DEPENDENCY,
+                    models.DEPENDENCY_FAILED}
     readiness_terms = {"READY", "DEGRADED", "BLOCKED"}
     orchestrator_terms = {"SUCCESS", "DEGRADED", "BLOCKED", "FAILED", "SKIPPED",
                           "ALREADY_COMPLETED", "LOCKED", "PLANNED", "RUNNING"}
@@ -87,7 +88,9 @@ def test_run_record_to_dict_round_trips_every_packet_field():
     for field in ("schema_version", "job", "run_id", "started_at", "completed_at", "duration",
                  "hostname", "pid", "repo_path", "python_executable", "child_command",
                  "child_exit_code", "runner_status", "log_path", "scheduled_time",
-                 "window_start", "window_end", "child_started"):
+                 "window_start", "window_end", "child_started", "dependency_job",
+                 "dependency_status", "dependency_run_id", "dependency_wait_seconds",
+                 "dependency_satisfied_at"):
         assert field in d, field
 
 
@@ -112,3 +115,23 @@ def test_expired_is_a_terminal_status_with_a_zero_exit_code():
 def test_waiting_is_distinct_from_pending_and_missed():
     assert models.WAITING not in (models.PENDING, models.MISSED, models.NOT_EXPECTED,
                                   models.OK, models.UNKNOWN)
+
+
+def test_dependency_failed_is_a_terminal_status_with_its_own_nonzero_exit_code():
+    assert models.DEPENDENCY_FAILED in models.TERMINAL_STATUSES
+    assert models.INFRA_EXIT_CODES[models.DEPENDENCY_FAILED] == 5
+    # Distinct from the two existing infra exit codes - a reader must be able to tell
+    # "dependency never satisfied" apart from "lock busy" (3) and "launch failed" (4).
+    assert models.INFRA_EXIT_CODES[models.DEPENDENCY_FAILED] not in (
+        models.INFRA_EXIT_CODES[models.LOCKED], models.INFRA_EXIT_CODES[models.FAILED])
+
+
+def test_waiting_dependency_is_non_terminal():
+    assert models.WAITING_DEPENDENCY not in models.TERMINAL_STATUSES
+
+
+def test_dependencies_map_only_covers_pre_and_post():
+    from shadow_scheduler import config
+    assert config.DEPENDENCIES == {"pre": "intelligence_am", "post": "intelligence_pm"}
+    assert "intelligence_am" not in config.DEPENDENCIES
+    assert "intelligence_pm" not in config.DEPENDENCIES

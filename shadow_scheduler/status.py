@@ -38,6 +38,13 @@ from .models import (ATTENTION, BROKEN, HEALTHY, JOBS, MISSED, NOT_EXPECTED, OK,
 # failures).
 _BUSINESS_ATTENTION_STATUSES = frozenset({"BLOCKED", "FAILED", "LOCKED"})
 
+# Runner statuses that mean "needs a look" at the SCHEDULER layer (never BROKEN - nothing
+# crashed). DEPENDENCY_FAILED joins LOCKED/EXPIRED here: the upstream intelligence job did not
+# reach a usable outcome today, which is an operational/business-adjacent concern, not an infra
+# crash. WAITING_DEPENDENCY is deliberately excluded - an in-flight wait is not itself unhealthy,
+# the same treatment the ordinary RUNNING checkpoint already gets.
+_RUNNER_ATTENTION_STATUSES = frozenset({"LOCKED", "EXPIRED", "DEPENDENCY_FAILED"})
+
 
 def _read_json(path: str) -> dict | None:
     try:
@@ -99,6 +106,9 @@ def job_status(out_dir: str, business_root: str, job_spec, now_ist: dt.datetime,
         "run_id": (scheduler_latest or {}).get("run_id"),
         "business_status": business_status,
         "missed_state": _missed_state(job_spec, scheduler_latest, now_ist, calendar),
+        "dependency_job": (scheduler_latest or {}).get("dependency_job"),
+        "dependency_status": (scheduler_latest or {}).get("dependency_status"),
+        "dependency_wait_seconds": (scheduler_latest or {}).get("dependency_wait_seconds"),
     }
 
 
@@ -125,7 +135,7 @@ def overall_status(out_dir: str | None = None, *, business_root: str | None = No
         if row["runner_status"] == "FAILED":
             overall = BROKEN
         elif overall != BROKEN and (row["missed_state"] == MISSED
-                                    or row["runner_status"] in ("LOCKED", "EXPIRED")
+                                    or row["runner_status"] in _RUNNER_ATTENTION_STATUSES
                                     or row["business_status"] in _BUSINESS_ATTENTION_STATUSES):
             overall = ATTENTION
 
@@ -141,11 +151,12 @@ def render_human(status: dict) -> str:
     missed = 0
     locked = 0
     expired = 0
+    dependency_failed = 0
     for job in JOBS:
         row = status["jobs"][job]
         label = _JOB_LABELS.get(job, job)
         shown = row["runner_status"] or row["missed_state"]
-        lines.append(f"{label:<18} {shown:<10} {row['scheduled_time']}  "
+        lines.append(f"{label:<18} {shown:<18} {row['scheduled_time']}  "
                      f"business={row['business_status'] or '-'}")
         if row["missed_state"] == MISSED:
             missed += 1
@@ -153,10 +164,13 @@ def render_human(status: dict) -> str:
             locked += 1
         if row["runner_status"] == "EXPIRED":
             expired += 1
+        if row["runner_status"] == "DEPENDENCY_FAILED":
+            dependency_failed += 1
     lines.append("")
     lines.append(f"Missed tasks:      {missed}")
     lines.append(f"Lock conflicts:    {locked}")
     lines.append(f"Expired windows:   {expired}")
+    lines.append(f"Dependency failures: {dependency_failed}")
     lines.append("")
     lines.append("AUTOMATION HEALTH:")
     lines.append(status["overall"])

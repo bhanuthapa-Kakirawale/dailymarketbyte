@@ -32,6 +32,18 @@ EXECUTION_TIME_LIMIT = "PT50M"   # ISO-8601 duration; midpoint of the suggested 
 # late, but the Python runner is what actually enforces the cutoff.
 EXECUTION_WINDOW_MINUTES = 60
 
+# Scheduler-level dependency ordering (PK-E follow-up, dependency ordering V1): a small static,
+# trusted map - never derived from data/config/content - of which job must reach a terminal,
+# ATTEMPTED outcome (see shadow_scheduler/dependency.py) before another job is allowed to launch
+# its own child. intelligence_am before pre; intelligence_pm before post. The two intelligence
+# jobs have no entry (no dependency of their own). This is ordering only: it never decides
+# whether the dependent job's render is actually safe - PK-C remains the sole authority on that.
+DEPENDENCIES: dict[str, str] = {"pre": "intelligence_am", "post": "intelligence_pm"}
+
+# Poll interval for `dependency.wait()`'s bounded wait loop - short enough that a dependency
+# satisfied early in the window doesn't cost meaningful wall-clock time, long enough not to spin.
+DEPENDENCY_POLL_SECONDS = 10
+
 JOB_REGISTRY: dict[str, JobSpec] = {
     "intelligence_am": JobSpec(
         job="intelligence_am",
@@ -87,5 +99,6 @@ def execution_window(spec: JobSpec, now_ist: dt.datetime) -> tuple[dt.datetime, 
 
 
 __all__ = ["OUT_SUBDIR", "LOCK_WAIT_SECONDS", "LOCK_POLL_SECONDS", "TASK_SCHEDULER_FOLDER",
-          "EXECUTION_TIME_LIMIT", "EXECUTION_WINDOW_MINUTES", "JOB_REGISTRY", "shadow_out_dir",
-          "repo_root", "execution_window"]
+          "EXECUTION_TIME_LIMIT", "EXECUTION_WINDOW_MINUTES", "DEPENDENCIES",
+          "DEPENDENCY_POLL_SECONDS", "JOB_REGISTRY", "shadow_out_dir", "repo_root",
+          "execution_window"]

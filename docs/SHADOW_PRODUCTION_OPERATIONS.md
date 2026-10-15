@@ -23,7 +23,8 @@ Package: `shadow_scheduler/`.
 | `models.py` | `JobSpec`, `RunRecord`, runner status vocabulary, infra exit codes |
 | `config.py` | the static, trusted job registry (`JOB_REGISTRY`) and lock/schedule constants |
 | `lock.py` | the scheduler-wide run lock (PID + hostname + liveness) + bounded wait |
-| `runner.py` | the thin runner: lock, launch, capture, record, release |
+| `dependency.py` | scheduler-level dependency ordering: `intelligence_am` before `pre`, `intelligence_pm` before `post` |
+| `runner.py` | the thin runner: dependency wait, lock, launch, capture, record, release |
 | `records.py` | reading/writing shadow_scheduler's OWN run records + `latest/<job>.json` |
 | `status.py` | the read-only status read (structurally write-free) |
 | `__main__.py` | the CLI |
@@ -68,21 +69,26 @@ outcome and is `CHILD_NONZERO`, never a scheduler failure, never retried.
 
 | `runner_status` | Meaning | Exit code |
 |---|---|---|
-| `RUNNING` | transient - written as a checkpoint right after the lock is acquired | - |
+| `RUNNING` | transient - written as a checkpoint right after the lock is acquired (or once the dependency wait resolves) | - |
+| `WAITING_DEPENDENCY` | transient - written as a checkpoint while `pre`/`post` is genuinely blocked waiting for its own upstream intelligence job | - |
 | `COMPLETED` | the child launched and exited 0 | `0` |
 | `CHILD_NONZERO` | the child launched and exited nonzero - a business outcome, preserved verbatim | the child's own exit code |
 | `LOCKED` | the global scheduler lock was still held past the bounded wait | `3` |
 | `FAILED` | the child could not even be launched (missing executable, launch exception) | `4` |
-| `EXPIRED` | invoked (or finished waiting for the lock) at/after the job's own 1-hour execution-window deadline - the child was deliberately never launched | `0` |
+| `DEPENDENCY_FAILED` | the upstream intelligence job never reached a usable outcome today (its own `FAILED`/`LOCKED`/`EXPIRED`), or the dependency state could not be re-confirmed immediately before the lock/child launch - the child was deliberately never launched | `5` |
+| `EXPIRED` | invoked (or finished waiting for the lock, or for the dependency) at/after the job's own 1-hour execution-window deadline - the child was deliberately never launched | `0` |
 
-`3`/`4` are deliberately disjoint from `production_orchestrator`'s `{0,20,30,40}` and
-`intelligence_refresh`'s `{0,20,30}` - never used for anything except these two infra-only
-cases, so a reader can never mistake a scheduler infra code for a business one. `EXPIRED`'s
-exit code is deliberately `0`, not one of those infra codes: there is no infrastructure
-failure to report (the lock and every cmdlet worked fine) and nothing about a skipped-window
-invocation should ever be auto-retried by Task Scheduler - only the `runner_status` field
-(`EXPIRED`, never `COMPLETED`) actually distinguishes it from an ordinary successful run; see
-the run-record fields below.
+`3`/`4`/`5` are deliberately disjoint from `production_orchestrator`'s `{0,20,30,40}` and
+`intelligence_refresh`'s `{0,20,30}` - never used for anything except these infra-only
+cases, so a reader can never mistake a scheduler infra code for a business one. `DEPENDENCY_FAILED`
+is nonzero (unlike `EXPIRED`) because, unlike an unremarkable deliberately-skipped window, it is
+worth a look - but it must never trigger a Windows Task Scheduler retry; `RestartCount=0` is
+already configured for all 4 tasks (see "PowerShell layer" below). `EXPIRED`'s exit code is
+deliberately `0`, not one of those infra codes: there is no infrastructure failure to report
+(the lock and every cmdlet worked fine) and nothing about a skipped-window invocation should
+ever be auto-retried by Task Scheduler - only the `runner_status` field (`EXPIRED`, never
+`COMPLETED`) actually distinguishes it from an ordinary successful run; see the run-record
+fields below.
 
 ## Execution windows (PK-E follow-up, 2026-10-12)
 
@@ -151,6 +157,72 @@ independently-implemented PID+hostname+liveness lock).
   it's found stale, not blindly waited out. On timeout the job records `LOCKED`/BUSY and exits
   (code `3`) - it never kills the holder's process and never deletes a live lock.
 
+## Dependency ordering (PK-E follow-up)
+
+**The wake-up race this solves**: on a laptop that was off overnight, `StartWhenAvailable` can
+fire `intelligence_am` and `pre` (or `intelligence_pm` and `post`) almost simultaneously on
+resume. The scheduler lock alone only guarantees the two don't *overlap* - it says nothing
+about *order*. If `pre` happened to run to completion before `intelligence_am` had self-healed
+the latest canonical REPORT, PK-C's readiness gate could legitimately `BLOCK` `pre` even though
+`intelligence_am` would have fixed the underlying state moments later. This is scheduler-level
+ordering only - **PK-C remains the sole authority on whether a render is actually safe.**
+
+A small static, trusted map (`config.DEPENDENCIES`), never derived from data/config/content:
+
+```
+pre              -> intelligence_am
+post             -> intelligence_pm
+intelligence_am  -> (no dependency)
+intelligence_pm  -> (no dependency)
+```
+
+`shadow_scheduler/dependency.py` answers exactly one question - "has TODAY's upstream
+invocation reached a terminal, attempted outcome?" - by reading shadow_scheduler's OWN run
+records for the upstream job (never business state: the canonical report, readiness, Radar,
+Market Structure, publication status are never inspected here).
+
+- **Satisfied**: upstream's `runner_status` is `COMPLETED` or `CHILD_NONZERO` *today* (IST). A
+  nonzero business exit code (e.g. PK-D's own `BLOCKED=20`) still counts - "the refresh ATTEMPT
+  finished" is all this layer asks; duplicating PK-C's business judgement here is exactly what
+  must not happen.
+- **Failed** (never satisfies, and never worth waiting out): upstream's `runner_status` is
+  `FAILED`, `LOCKED`, or `EXPIRED` *today* - a terminal, non-satisfying attempt. If `pre`/`post`
+  sees this immediately (e.g. `intelligence_am` was itself invoked after its own 07:40 deadline
+  and reached `EXPIRED` at 07:45, while `pre` still has until 08:00), it stops right away rather
+  than waiting out the rest of its own window pointlessly.
+- **Pending** (keep waiting): no record for today, a record from a **prior day** (current-day
+  only - yesterday's completion never satisfies today's dependency), or still `RUNNING`/
+  `WAITING_DEPENDENCY`.
+
+**Critical lock rule**: the wait happens entirely **before** the global scheduler lock is even
+attempted - a job must never wait for its dependency *while holding* that lock, or the two jobs
+could starve each other (the dependency can only ever acquire the lock once the waiting job
+gives up or releases it). `dependency.wait()` never touches `lock.py` at all.
+
+**Bounded by the waiting job's own execution-window deadline**, never indefinite: each poll
+iteration checks the deadline *first* - even if the dependency becomes `SATISFIED` at the exact
+instant the deadline is reached, this is still `TIMED_OUT` → `EXPIRED`, never a late launch. The
+window's deadline authority always wins. A dependency that only finishes after the dependent's
+own deadline (e.g. `intelligence_am` finishes at 08:01, after PRE's 08:00 cutoff) means `pre`
+simply never launches that day - no extension, no fallback to a stale prior refresh.
+
+Checked at **three points** (state can change while waiting or acquiring the lock): once before
+any wait, once immediately before attempting the lock, and once immediately before the child
+actually launches (lock already held). The second and third checks are cheap, non-blocking
+re-validations, not a renewed wait - any regression at that late stage (in practice only a
+manually re-run upstream job mid-window) is treated as `DEPENDENCY_FAILED`, fail-closed, rather
+than opening a second nested wait loop.
+
+**No retry, no second scheduler**: `pre`/`post` never invoke
+`scripts\run_intelligence_refresh.bat` themselves - the upstream job remains its own
+independently scheduled Task Scheduler entry; the dependent only waits/observes. A manual
+`python -m shadow_scheduler run pre` obeys the same ordering as the scheduled task (both call
+the same `runner.run_job`) - there is no bypass flag in V1.
+
+**Healthy daily operation** (the common case - refresh already completed before the dependent
+job starts) costs one or two cheap local JSON reads, no sleep, no network call, negligible
+latency.
+
 ## Run records
 
 ```
@@ -166,8 +238,12 @@ the actual invocation time), `duration`, `hostname`, `pid`, `repo_path`, `python
 the business package's own `latest.json`, never its content), `reclaimed_stale_lock`, `error`
 (free-text diagnostic - a launch-failure message, or the `EXPIRED` reason), plus the execution-
 window fields: `scheduled_time` (`"HH:MM"`), `window_start`/`window_end` (the scheduled/deadline
-instants, IST ISO-8601), `child_started` (`False` only for `LOCKED`/`FAILED`/`EXPIRED` - no
-child process was ever launched).
+instants, IST ISO-8601), `child_started` (`False` only for `LOCKED`/`FAILED`/`EXPIRED`/
+`DEPENDENCY_FAILED` - no child process was ever launched), plus the dependency-ordering fields
+(all `None` for `intelligence_am`/`intelligence_pm`, which have no dependency):
+`dependency_job` (e.g. `"intelligence_am"`), `dependency_status` (`"SATISFIED"`/`"FAILED"`/
+`"TIMED_OUT"`/`None`), `dependency_run_id` (the upstream job's own `run_id`, once `SATISFIED`),
+`dependency_wait_seconds`, `dependency_satisfied_at` (UTC ISO-8601, only when `SATISFIED`).
 
 Write order is correctness-critical, the same rule as every other package here: the immutable
 run file is written first (tmp + `os.replace`), **then** the job's `latest/<job>.json` pointer
@@ -196,12 +272,17 @@ hasn't run yet. `UNKNOWN` (outside the hardcoded holiday-year coverage) is never
 either MISSED or NOT_EXPECTED.
 
 Once a run record exists for today, a job's own `runner_status` (`COMPLETED`/`CHILD_NONZERO`/
-`LOCKED`/`FAILED`/`EXPIRED`) always takes display precedence over this `missed_state` - see
-`render_human`'s `shown = runner_status or missed_state`.
+`LOCKED`/`FAILED`/`EXPIRED`/`WAITING_DEPENDENCY`/`DEPENDENCY_FAILED`) always takes display
+precedence over this `missed_state` - see `render_human`'s `shown = runner_status or
+missed_state`. A `pre`/`post` job genuinely waiting on its upstream intelligence job shows
+`WAITING_DEPENDENCY` live (not a generic `WAITING`) while the wait is in progress.
 
 **HEALTHY / ATTENTION / BROKEN** (overall): a business `BLOCKED`/`FAILED`/`LOCKED`, a scheduler
-`LOCKED` or `EXPIRED`, or a `MISSED` job is `ATTENTION` - still a business/operational outcome,
-not an infrastructure failure. Only a runner-level `FAILED` (a launch failure) is `BROKEN`.
+`LOCKED`/`EXPIRED`/`DEPENDENCY_FAILED`, or a `MISSED` job is `ATTENTION` - still a business/
+operational outcome, not an infrastructure failure. `WAITING_DEPENDENCY` is deliberately
+**not** an ATTENTION trigger - an in-flight wait is not itself unhealthy, the same treatment the
+ordinary `RUNNING` checkpoint already gets. Only a runner-level `FAILED` (a launch failure) is
+`BROKEN`.
 Task-registration drift (a task missing, disabled, or pointing at the wrong path) is a
 **separate** signal, surfaced only by `check_shadow_tasks.ps1` - `status.py` never shells out
 to PowerShell or a Task Scheduler API, keeping it read-only in the strictest sense.
@@ -245,6 +326,14 @@ could drift out of sync.
   start is actually safe to render; PK-E never bypasses that decision or encodes any further
   business/market rule of its own. Outside the window, the runner refuses to launch at all
   (`EXPIRED`) - see "Execution windows" above.
+- No developer bypass flag for dependency ordering in V1 (deliberate) - a manual
+  `python -m shadow_scheduler run pre` during a genuine dependency wait will actually block for
+  up to its own window's remaining time, the same as the scheduled task.
+- If the `pre`/`post` process is killed mid-dependency-wait (not mid-lock), its
+  `WAITING_DEPENDENCY` checkpoint is left stuck until the next day's run overwrites it - the
+  same latent class of gap the ordinary `RUNNING` checkpoint already has if a process is killed
+  right after acquiring the lock but before the terminal record is written; not a new
+  regression, just inherited.
 
 ## Manual rerun procedure
 
@@ -283,6 +372,19 @@ exact start/deadline boundaries for all four jobs, the lock-wait-vs-deadline int
 `LOCKED`; a lock that frees up before the deadline still launches normally), a late-but-
 in-window invocation launching normally, and the `status` `PENDING`/`WAITING`/`MISSED`
 boundary - every clock is injected, no test depends on the real wall clock.
+
+`test_shadow_scheduler_dependency.py` covers `dependency.check()`/`wait()` in isolation: every
+`runner_status` mapping (`SATISFIED`/`FAILED`/`PENDING`), current-day-only semantics (a
+prior-day record is rejected), immediate-satisfy with zero overhead, poll-then-satisfy/
+poll-then-fail (a fake `sleep` mutates the dependency's own run record mid-wait, the same idiom
+`test_shadow_scheduler_lock.py` uses for "lock goes stale mid-wait"), and the exact-boundary
+cases (satisfied strictly before the deadline vs. the deadline winning even when the dependency
+completes at the same instant). The `# --- dependency ordering ---` section of
+`test_shadow_scheduler_runner.py` covers the full `run_job()` integration end to end: the
+morning/evening wake-up races (proving the global lock is acquirable by a second `RunLock`
+instance *while* the dependent job is mid-wait), every upstream terminal state
+(`CHILD_NONZERO`→proceeds, `FAILED`/`EXPIRED`→`DEPENDENCY_FAILED` fast, never waiting out the
+rest of the window), and the window-deadline interaction.
 
 ```
 python -m pytest tests/test_shadow_scheduler_*.py -q

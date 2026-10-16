@@ -317,6 +317,13 @@ pip install -r requirements-desk.txt</pre>
 <section id="daily">
   <h2><span class="n">04</span>Daily routine</h2>
   <p class="sub">Two pipeline commands plus a structured desk review. The desk is end-of-day intelligence; it has no intraday data.</p>
+  <div class="callout i"><b>If the 4 shadow jobs are installed (PK-E)</b>
+    The commands below may already be running automatically on schedule (Intelligence AM 06:40,
+    PRE 07:00, Intelligence PM 19:15, POST 19:30 IST) instead of by hand. Check
+    <code>scripts\check_shadow_operations.bat</code> first (today's actual run times and
+    outcomes) before running anything manually - see <a href="#reference">section 10</a>. As of
+    the 2026-10-16 power-policy fix, these jobs are allowed to run on battery, inside their own
+    execution window; a fully shut-down laptop still needs a manual boot either way.</div>
   <ul class="tl">
     <li><span class="when">07:00</span><div class="what"><b>Morning PRE (before 09:15)</b>
       <code>scripts\run_morning_pre.bat</code>. Expect the verdict <code>REVIEW THE VIDEO</code>, then review the video (USER_GUIDE §5). It never uploads. If it is BLOCKED with <code>PREVIOUS_SESSION_MISSING</code>, run the evening command first.</div></li>
@@ -371,6 +378,8 @@ pip install -r requirements-desk.txt</pre>
       <tr><td><span class="badge">REFERENCE</span></td><td><code>VALIDATION_RULES.md</code> · <code>OHLCV_STORE.md</code></td><td>Session alignment, holiday placeholders, benchmark gap recovery; why a number may be missing.</td></tr>
       <tr><td><span class="badge">REFERENCE</span></td><td><code>PRODUCTION_SCHEDULE.md</code> · <code>STATE_STORE.md</code></td><td>Job order (REPORT → PRE / POST), durable state.</td></tr>
       <tr><td><span class="badge">REFERENCE</span></td><td><code>CLEANUP_POLICY.md</code></td><td>What is safe to delete and what to back up.</td></tr>
+      <tr><td><span class="badge">AUTOMATION</span></td><td><code>SHADOW_PRODUCTION_OPERATIONS.md</code></td><td>If the 4 Windows Task Scheduler jobs are installed (PK-E): what each one does, today-vs-historical status semantics, and the battery/sleep/wake power policy.</td></tr>
+      <tr><td><span class="badge">AUTOMATION</span></td><td><code>PRODUCTION_READINESS.md</code></td><td>The READY/DEGRADED/BLOCKED gate behind every PRE/POST run, and the read-only <code>production_quality.pre-degradation</code> audit for recurring warnings.</td></tr>
       <tr><td><span class="badge">LATER</span></td><td><code>PRIVATE_DESK_ROADMAP.md</code> · <code>PRIVATE_DESK_KITE_INTEGRATION.md</code></td><td>Future phases and the context-only candidate packet contract (no order fields).</td></tr>
       <tr><td><span class="badge">PUBLIC SIDE</span></td><td><code>PUBLICATION_POLICY.md</code> · <code>CONTENT_SAFETY.md</code></td><td>Why private intelligence never appears in the public Short.</td></tr>
     </tbody>
@@ -541,6 +550,8 @@ scripts\clean_test_artifacts.bat</pre>
       <tr><td>Morning PRE</td><td><code>scripts\run_morning_pre.bat</code></td></tr>
       <tr><td>Evening REPORT + POST</td><td><code>scripts\run_evening_full.bat</code> (<code>--rerender-post</code> after a recovered snapshot)</td></tr>
       <tr><td>Full daily status</td><td><code>scripts\check_daily_run.bat</code></td></tr>
+      <tr><td>Shadow automation status (if installed)</td><td><code>scripts\check_shadow_operations.bat</code></td></tr>
+      <tr><td>PRE degradation audit (last 20 runs)</td><td><code>python -m production_quality pre-degradation --runs 20</code></td></tr>
       <tr><td>Desk health</td><td><code>scripts\check_private_desk.bat</code></td></tr>
       <tr><td>Start desk</td><td><code>scripts\run_private_desk.bat</code> → <a href="http://127.0.0.1:8765">127.0.0.1:8765</a> (<code>--port 8766</code> if busy)</td></tr>
       <tr><td>Regime detail</td><td><a href="http://127.0.0.1:8765/regime">127.0.0.1:8765/regime</a></td></tr>

@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}{{ symbol }} trade candidate {{ session }}{% endblock %}
+{% block content %}
+<h1>{{ symbol }} <span class="sub">trade candidate assessment · session {{ session }} · PROVISIONAL research priority, not a trade recommendation</span></h1>
+
+{% if detail is none %}
+<p class="na">No Trade Candidate Intelligence assessment for {{ symbol }} on {{ session }} - it was not a Radar candidate this session.</p>
+{% else %}
+<section class="panel">
+  <h2>Summary</h2>
+  <dl class="facts">
+    <dt>Company / sector</dt><dd>{{ detail.company | na }} / {{ detail.sector | na }}</dd>
+    <dt>Research state</dt><dd><span class="b {{ 'ok' if detail.research_priority == 'ELIGIBLE' else ('warn' if detail.research_priority == 'REVIEW' else 'unv') }}">{{ detail.research_priority | label }}</span></dd>
+    <dt>Quality score</dt><dd>{{ detail.score_total | num(0) }} / {{ detail.score_max | num(0) }} <span class="dim">(score policy {{ detail.score_policy_version }}, {{ detail.score_validation_status }})</span></dd>
+    <dt>Data quality</dt><dd>{{ detail.data_quality_tier | label }}</dd>
+    <dt>Capture mode</dt><dd>{{ detail.capture_mode | label }}</dd>
+    <dt>Eligibility reasons</dt><dd>{% for r in detail.eligibility_reasons %}{{ r }}{% if not loop.last %}; {% endif %}{% endfor %}</dd>
+    {% if detail.flags %}<dt>Flags</dt><dd>{% for f in detail.flags %}<span class="b warn">{{ f | label }}</span> {% endfor %}</dd>{% endif %}
+  </dl>
+</section>
+
+<section class="panel">
+  <h2>Why it ranked <span class="dim lc">every component is explainable - score, max, status, evidence</span></h2>
+  <table><thead><tr><th>Component</th><th class="n">Score</th><th>Status</th><th>Evidence</th><th>Reason</th></tr></thead><tbody>
+  {% for c in detail.components %}<tr>
+    <td>{{ c.component | label }}</td>
+    <td class="n">{{ c.quality_points | num(1) }} / {{ c.quality_max | num(0) }}</td>
+    <td>{{ c.status | label }}</td>
+    <td>{% for e in c.evidence %}{{ e }}<br>{% endfor %}{% if c.missing_data %}<span class="dim">missing: {{ c.missing_data | join(', ') }}</span>{% endif %}</td>
+    <td class="dim">{{ c.reason }}</td>
+  </tr>{% endfor %}
+  </tbody></table>
+</section>
+
+<section class="panel">
+  <h2>Range position / extension <span class="dim lc">distance from the prior 20-session mean, never a prediction</span></h2>
+  <dl class="facts">
+    <dt>Range position</dt><dd>{{ detail.range_position_pct | num(0) }}% of the way between the prior 20-session low and high</dd>
+    <dt>Extension</dt><dd>{{ detail.extension_state | label }}</dd>
+    <dt>Pullback state</dt><dd>{{ detail.pullback_state | label }}</dd>
+    <dt>Structural reference price</dt><dd>{{ detail.structural_reference_price | num(2) }} ({{ detail.structural_reference_kind | na }}) <span class="dim">a prior price level, not a stop order</span></dd>
+    <dt>Risk width</dt><dd>{{ detail.risk_width_label | label }} <span class="dim">distance to the structural reference in ATR units - never a reward:risk ratio</span></dd>
+    <dt>ATR14</dt><dd>{{ detail.atr14 | num(2) }} ({{ detail.atr14_pct | num(2) }}% of close)</dd>
+  </dl>
+</section>
+
+<section class="panel">
+  <h2>Market / sector context</h2>
+  <dl class="facts">
+    <dt>Regime</dt><dd>{{ detail.regime_label | na }} <span class="dim">streak {{ detail.regime_streak_sessions | na }} session(s)</span> · {{ detail.regime_alignment | na | label }}</dd>
+    <dt>Weekly timeframe</dt><dd>{{ detail.weekly_alignment | label }}</dd>
+    <dt>Sector-relative (20d)</dt><dd>{{ detail.sector_relative_20d_pp | pp }}</dd>
+    <dt>Sector FPI context</dt><dd>{{ detail.sector_rotation_context | na }} <span class="dim">sector-level only, never a stock-specific claim</span></dd>
+  </dl>
+</section>
+
+<section class="panel">
+  <h2>Liquidity / volatility / event</h2>
+  <dl class="facts">
+    <dt>Liquidity band</dt><dd>{{ detail.liquidity_band | label }}</dd>
+    <dt>Volatility band</dt><dd>{{ detail.volatility_band | label }}</dd>
+    <dt>Event proximity</dt><dd>{{ detail.event_proximity | label }} {% if detail.event_family %}({{ detail.event_family | label }}, {{ detail.sessions_to_event }} trading session(s) away){% endif %}</dd>
+  </dl>
+</section>
+
+<section class="panel">
+  <h2>What weakens this candidate</h2>
+  {% if detail.risk_evidence %}<ul>{% for r in detail.risk_evidence %}<li>{{ r }}</li>{% endfor %}</ul>
+  {% else %}<p class="dim">No notable weakening evidence recorded.</p>{% endif %}
+  {% if detail.missing_context %}<p class="dim">Missing context: {{ detail.missing_context | join(', ') }}</p>{% endif %}
+  <h2 style="margin-top:8px">Why it is interesting</h2>
+  {% if detail.positive_evidence %}<ul>{% for p in detail.positive_evidence %}<li>{{ p }}</li>{% endfor %}</ul>
+  {% else %}<p class="dim">No strong positive evidence recorded.</p>{% endif %}
+</section>
+
+<p class="dim">{% for n in detail.notes %}{{ n }} {% endfor %}</p>
+{% endif %}
+{% endblock %}

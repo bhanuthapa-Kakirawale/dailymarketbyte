@@ -18,6 +18,7 @@ from . import market as mk
 from . import market_events as mev
 from . import quality as qa
 from . import stock as st
+from . import trade_candidates as tc
 from .freshness import compute_freshness, session_context
 
 
@@ -130,6 +131,14 @@ class DeskService:
         """The dedicated Market Events page."""
         return mev.all_sections(self.repo, session)
 
+    def trade_candidates(self, session: dt.date) -> dict:
+        """The dedicated Trade Candidate Intelligence page - raw ranking + diversified
+        shortlist over today's Radar candidates. See docs/PRIVATE_TRADE_CANDIDATES.md."""
+        return tc.candidates_view(self.repo, self.settings.regime_dir, session)
+
+    def trade_candidate_detail(self, symbol: str, session: dt.date) -> dict | None:
+        return tc.candidate_detail(self.repo, self.settings.regime_dir, session, symbol)
+
     def stock(self, symbol: str, session: dt.date) -> dict:
         symbol = symbol.upper()
         r = self.radar(session)
@@ -167,6 +176,7 @@ class DeskService:
         out["regime"] = qa.regime_quality(self, session)
         out["institutional"] = inst.quality_rows(self.repo, session)
         out["market_events"] = mev.quality_rows(self.repo, session)
+        out["trade_candidates"] = tc.quality_rows(self.repo, self.settings.regime_dir, session)
         return out
 
     def universe_symbols(self, session: dt.date) -> dict:

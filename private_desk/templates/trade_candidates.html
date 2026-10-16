@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Trade Candidates {{ session }}{% endblock %}
+{% block content %}
+<h1>Trade Candidate Intelligence <span class="sub">session {{ session }} · PROVISIONAL, deterministic research priority over today's Radar candidates - never a trade recommendation</span></h1>
+
+<div class="banner info">Score policy <b>{{ d.quality_policy_version }}</b> · capture mode <b>{{ d.capture_mode | label }}</b> · {{ d.candidate_count }} Radar candidate(s), {{ d.eligible_count }} ELIGIBLE. A Radar candidate is NOT automatically a trade candidate - every candidate is scored on setup quality, market/sector alignment, range position, liquidity/volatility, event proximity and data quality, and the score is PROVISIONAL (not historically validated).</div>
+
+<section class="panel">
+  <h2>Diversified review shortlist <span class="dim lc">raw ranking, capped per sector - see "Raw ranking" below for the full, unfiltered order</span></h2>
+  {% if d.shortlist %}
+  <table class="sortable"><thead><tr><th class="sort n">Rank</th><th class="sort">Symbol</th><th class="sort">Sector</th>
+    <th class="sort n">Quality</th><th class="sort">Research state</th><th class="sort">Extension</th>
+    <th class="sort">Weekly</th><th class="sort">Volatility</th><th class="sort">Liquidity</th>
+    <th class="sort">Event</th></tr></thead><tbody>
+  {% for r in d.shortlist %}<tr>
+    <td class="n">{{ r.rank }}</td>
+    <td><a href="/trade-candidates/{{ r.symbol }}?session={{ session }}">{{ r.symbol }}</a></td>
+    <td>{{ r.sector | na }}</td>
+    <td class="n" data-v="{{ r.quality_points }}">{{ r.quality_points | num(0) }} / {{ r.quality_max | num(0) }}</td>
+    <td><span class="b {{ 'ok' if r.research_priority == 'ELIGIBLE' else ('warn' if r.research_priority == 'REVIEW' else 'unv') }}">{{ r.research_priority | label }}</span></td>
+    <td>{{ r.extension_state | label }}</td>
+    <td>{{ r.weekly_alignment | label }}</td>
+    <td>{{ r.volatility_band | label }}</td>
+    <td>{{ r.liquidity_band | label }}</td>
+    <td>{{ r.event_proximity | label }}</td>
+  </tr>{% endfor %}
+  </tbody></table>
+  {% if d.demoted %}
+  <h2 style="margin-top:8px">Demoted from the shortlist <span class="dim lc">still in the raw ranking - demoted here ONLY for portfolio-style diversification, never a score change</span></h2>
+  <table><thead><tr><th>Symbol</th><th>Reason</th><th>Detail</th></tr></thead><tbody>
+  {% for x in d.demoted %}<tr><td>{{ x.symbol }}</td><td>{{ x.demotion_reason | label }}</td>
+    <td class="dim">{{ x.detail }}</td></tr>{% endfor %}
+  </tbody></table>
+  {% endif %}
+  {% else %}<p class="na">No ELIGIBLE or REVIEW candidate for this session.</p>{% endif %}
+</section>
+
+<section class="panel">
+  <h2>Raw ranking <span class="dim lc">every ELIGIBLE/REVIEW candidate, full audit trail - nothing hidden</span></h2>
+  <table class="sortable"><thead><tr><th class="sort n">Rank</th><th class="sort">Symbol</th><th class="sort">Sector</th>
+    <th class="sort n">Quality</th><th class="sort">Research state</th><th class="sort">Data quality</th></tr></thead><tbody>
+  {% for r in d.raw_ranking %}<tr>
+    <td class="n">{{ r.rank }}</td>
+    <td><a href="/trade-candidates/{{ r.symbol }}?session={{ session }}">{{ r.symbol }}</a></td>
+    <td>{{ r.sector | na }}</td>
+    <td class="n" data-v="{{ r.quality_points }}">{{ r.quality_points | num(0) }} / {{ r.quality_max | num(0) }}</td>
+    <td>{{ r.research_priority | label }}</td>
+    <td>{{ r.data_quality_tier | label }}</td>
+  </tr>{% endfor %}
+  </tbody></table>
+</section>
+
+<section class="panel">
+  <h2>Every Radar candidate <span class="dim lc">retained for auditability, including NOT_ACTIONABLE / DATA_INCOMPLETE</span></h2>
+  <table class="sortable"><thead><tr><th class="sort">Symbol</th><th class="sort">Sector</th>
+    <th class="sort n">Quality</th><th class="sort">Research state</th><th class="sort">Data quality</th></tr></thead><tbody>
+  {% for r in d.all_candidates %}<tr>
+    <td><a href="/trade-candidates/{{ r.symbol }}?session={{ session }}">{{ r.symbol }}</a></td>
+    <td>{{ r.sector | na }}</td>
+    <td class="n" data-v="{{ r.quality_points }}">{{ r.quality_points | num(0) }} / {{ r.quality_max | num(0) }}</td>
+    <td>{{ r.research_priority | label }}</td>
+    <td>{{ r.data_quality_tier | label }}</td>
+  </tr>{% endfor %}
+  </tbody></table>
+</section>
+{% endblock %}

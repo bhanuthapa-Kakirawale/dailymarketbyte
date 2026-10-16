@@ -224,6 +224,25 @@ def create_app(settings: DeskSettings) -> FastAPI:
             return unavailable(request, notice, "events")
         return page(request, "events.html", s, notice, d=svc.market_events(s), family=family)
 
+    @app.get("/trade-candidates", response_class=HTMLResponse)
+    def trade_candidates(request: Request, session: str | None = None):
+        s, notice = svc.resolve_session(session)
+        if s is None:
+            return unavailable(request, notice, "trade-candidates")
+        return page(request, "trade_candidates.html", s, notice, d=svc.trade_candidates(s))
+
+    @app.get("/trade-candidates/{symbol}", response_class=HTMLResponse)
+    def trade_candidate_detail(request: Request, symbol: str, session: str | None = None):
+        s, notice = svc.resolve_session(session)
+        if s is None:
+            return unavailable(request, notice, "trade-candidates")
+        detail = svc.trade_candidate_detail(symbol, s)
+        if detail is None:
+            return page(request, "trade_candidate_detail.html", s, notice, symbol=symbol.upper(),
+                       detail=None)
+        return page(request, "trade_candidate_detail.html", s, notice, symbol=symbol.upper(),
+                   detail=detail)
+
     @app.get("/regime", response_class=HTMLResponse)
     def regime(request: Request, session: str | None = None):
         s, notice = svc.resolve_session(session)

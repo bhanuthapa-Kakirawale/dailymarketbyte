@@ -254,6 +254,15 @@ def check_market_events(edition, out_dir, ref_session, cutoff, record) -> list:
                                     "the cutoff")
         elif capture.get("market_events_status") == "FAILED":
             health, why = SOURCE_FAILURE, f"capture FAILED ({capture.get('error')})"
+        elif not capture:
+            # The selected REPORT-job record itself never reached the market_events capture
+            # step - distinct from a per-family SOURCE_UNAVAILABLE fetch failure. Confirmed
+            # real case (2026-10-13 -> 14 PRE): two evening REPORT attempts FAILED on an
+            # unrelated data issue, and the retry that succeeded completed a few seconds
+            # AFTER this PRE's own readiness cutoff - "not captured" alone doesn't say that.
+            health = MISSING
+            why = (f"REPORT job for {ref_session} last {record.get('run_status') or 'UNKNOWN'}, "
+                  "market events never ran")
         else:
             r = results.get(fam) or {}
             st = r.get("status")

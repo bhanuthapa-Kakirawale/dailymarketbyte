@@ -291,6 +291,34 @@ def test_14_optional_market_events_failure_degrades_pre(built, healthy, monkeypa
     assert r.overall_status == DEGRADED and "MARKET_EVENTS" in r.decision
 
 
+def test_14b_market_events_never_captured_names_the_report_jobs_own_run_status(tmp_path):
+    """PK-E Part E wording fix: when the selected REPORT-job record never reached the
+    market_events capture step at all (confirmed real case, 2026-10-13->14 PRE: two evening
+    REPORT attempts FAILED on an unrelated data issue before the successful retry), the
+    message must name that run's own run_status - not the bare, ambiguous "not captured"
+    that could also describe a genuine per-family SOURCE_UNAVAILABLE."""
+    rec = {"run_status": "FAILED", "completed_at": None, "details": {}}
+    rows = C.check_market_events("PRE", str(tmp_path), FRIDAY, PRE_AS_OF, rec)
+    assert rows
+    for r in rows:
+        assert r.status == WARN and r.source_health == "MISSING"
+        assert "REPORT job for" in r.message and "last FAILED" in r.message
+        assert "market events never ran" in r.message
+
+
+def test_14c_market_events_source_unavailable_keeps_its_own_distinct_wording(tmp_path):
+    """A genuine per-family fetch failure (capture DID run) must keep its own SOURCE_FAILURE
+    wording, never the "REPORT job never ran" text added above."""
+    rec = {"run_status": "DEGRADED", "completed_at": RECORD_DONE.isoformat(), "details": {
+        "market_events": {"market_events_status": "CAPTURED", "results": {
+            "EARNINGS": {"status": "SOURCE_UNAVAILABLE", "events": []}}}}}
+    rows = C.check_market_events("PRE", str(tmp_path), FRIDAY, PRE_AS_OF, rec)
+    row = next(r for r in rows if r.check_id == "MARKET_EVENTS.EARNINGS")
+    assert row.status == WARN and row.source_health == "SOURCE_FAILURE"
+    assert "REPORT job for" not in row.message
+    assert "SOURCE_UNAVAILABLE" in row.message
+
+
 def test_15_optional_institutional_failure_degrades_never_blocks(built, healthy, monkeypatch):
     monkeypatch.setattr(C, "check_institutional", _ORIG["check_institutional"])
     r = _pre(built)                                     # no CDSL / NSDL / NSE snapshot at all

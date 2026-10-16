@@ -15,6 +15,14 @@ deterministic and testable without a real wall clock. A job's own `runner_status
 EXPIRED - invoked at/after its deadline, child never launched) always takes display precedence
 over `missed_state` once a run record exists for today; see `render_human`.
 
+TODAY vs HISTORICAL (PK-E follow-up, 2026-10-16): `runner_status`/`business_status` in a
+`job_status()` row are each `None` unless that record's OWN `started_at` (business falls back to
+`completed_at`) converts to TODAY's IST calendar date - never simply the most recent record from
+any prior day. A job that last ran yesterday evening shows as `PENDING`/`WAITING`/`MISSED` this
+morning, not as yesterday's `COMPLETED`. The raw, undated historical value stays available under
+`last_run` for a separate "most recent result" display; it must never be read as today's
+operational state or folded into `overall_status()`'s counters.
+
 Task-registration drift (a task missing/disabled/pointing at the wrong path) is a SEPARATE
 signal, surfaced only by `scripts\\check_shadow_tasks.ps1` - this module never shells out to
 PowerShell or a Task Scheduler API, keeping it read-only in the strictest sense. "Automation
@@ -61,6 +69,19 @@ def _parse_iso(value) -> dt.datetime | None:
         return None
 
 
+def _ist_dt(value) -> dt.datetime | None:
+    """`value` is a UTC ISO-8601 string (every run record / business latest.json in this repo
+    stores `started_at`/`completed_at` that way); returns it converted to IST, or `None` if
+    `value` is missing/unparsable. The ONE place this conversion happens, so `_missed_state`,
+    `job_status` and `render_human` can never disagree on what "today" means for a given
+    timestamp."""
+    parsed = _parse_iso(value)
+    if parsed is None:
+        return None
+    import config as root_config
+    return parsed.astimezone(root_config.IST)
+
+
 def _missed_state(job_spec, scheduler_latest: dict | None, now_ist: dt.datetime,
                   calendar) -> str:
     today = now_ist.date()
@@ -73,11 +94,8 @@ def _missed_state(job_spec, scheduler_latest: dict | None, now_ist: dt.datetime,
     scheduled_dt, deadline_dt = config.execution_window(job_spec, now_ist)
     ran_today = False
     if scheduler_latest:
-        started = _parse_iso(scheduler_latest.get("started_at"))
-        if started is not None:
-            import config as root_config
-            started_ist = started.astimezone(root_config.IST)
-            ran_today = started_ist.date() == today
+        started_ist = _ist_dt(scheduler_latest.get("started_at"))
+        ran_today = started_ist is not None and started_ist.date() == today
     if now_ist < scheduled_dt:
         return PENDING
     if ran_today:
@@ -91,24 +109,47 @@ def _missed_state(job_spec, scheduler_latest: dict | None, now_ist: dt.datetime,
 
 def job_status(out_dir: str, business_root: str, job_spec, now_ist: dt.datetime,
                calendar) -> dict:
-    scheduler_latest = records.read_latest(out_dir, job_spec.job)
-    business_latest = _read_json(os.path.join(business_root, job_spec.business_latest_relpath))
-    business_status = None
-    if business_latest:
-        business_status = (business_latest.get("orchestrator_status")
+    today = now_ist.date()
+    scheduler_latest = records.read_latest(out_dir, job_spec.job) or {}
+    business_latest = _read_json(os.path.join(business_root, job_spec.business_latest_relpath)) or {}
+
+    sched_started_ist = _ist_dt(scheduler_latest.get("started_at"))
+    sched_date = sched_started_ist.date() if sched_started_ist else None
+    sched_is_today = sched_date == today
+
+    business_status_raw = (business_latest.get("orchestrator_status")
                            or business_latest.get("status"))
+    business_ts_ist = (_ist_dt(business_latest.get("started_at"))
+                      or _ist_dt(business_latest.get("completed_at")))
+    business_date = business_ts_ist.date() if business_ts_ist else None
+    # intelligence_am and intelligence_pm share ONE intelligence_refresh/latest.json (one
+    # module, invoked on two schedules) - a bare "business file's own date is today" is not
+    # enough: it would attribute the morning run's SUCCESS to the evening row before the
+    # evening run has even happened. Requiring THIS job's own scheduler record to also be
+    # from today ties the shown business result to this job's own today's invocation.
+    business_is_today = business_date == today and sched_is_today
+
     return {
         "job": job_spec.job,
         "task_name": job_spec.task_name,
         "scheduled_time": job_spec.scheduled_time,
-        "runner_status": (scheduler_latest or {}).get("runner_status"),
-        "child_exit_code": (scheduler_latest or {}).get("child_exit_code"),
-        "run_id": (scheduler_latest or {}).get("run_id"),
-        "business_status": business_status,
+        "runner_status": scheduler_latest.get("runner_status") if sched_is_today else None,
+        "child_exit_code": scheduler_latest.get("child_exit_code") if sched_is_today else None,
+        "run_id": scheduler_latest.get("run_id") if sched_is_today else None,
+        "ran_at": sched_started_ist.strftime("%H:%M") if sched_is_today else None,
+        "business_status": business_status_raw if business_is_today else None,
         "missed_state": _missed_state(job_spec, scheduler_latest, now_ist, calendar),
-        "dependency_job": (scheduler_latest or {}).get("dependency_job"),
-        "dependency_status": (scheduler_latest or {}).get("dependency_status"),
-        "dependency_wait_seconds": (scheduler_latest or {}).get("dependency_wait_seconds"),
+        "dependency_job": scheduler_latest.get("dependency_job") if sched_is_today else None,
+        "dependency_status": scheduler_latest.get("dependency_status") if sched_is_today else None,
+        "dependency_wait_seconds": (scheduler_latest.get("dependency_wait_seconds")
+                                    if sched_is_today else None),
+        # Historical/latest business result - always the raw value, whatever day it's from.
+        # Never used for today's operational state or `overall_status()`'s counters.
+        "last_run": {
+            "date": sched_date.isoformat() if sched_date else None,
+            "runner_status": scheduler_latest.get("runner_status"),
+            "business_status": business_status_raw,
+        },
     }
 
 
@@ -147,7 +188,10 @@ _JOB_LABELS = {"intelligence_am": "Intelligence AM", "pre": "PRE",
 
 
 def render_human(status: dict) -> str:
-    lines = ["DMB SHADOW OPERATIONS", "-" * 50]
+    """All counters and the state word shown per job come from TODAY-filtered fields only
+    (see `job_status`) - a prior day's terminal record can never inflate these or make a
+    not-yet-due job look COMPLETED. See `docs/SHADOW_PRODUCTION_OPERATIONS.md`."""
+    lines = ["DMB SHADOW OPERATIONS", "-" * 62]
     missed = 0
     locked = 0
     expired = 0
@@ -156,8 +200,9 @@ def render_human(status: dict) -> str:
         row = status["jobs"][job]
         label = _JOB_LABELS.get(job, job)
         shown = row["runner_status"] or row["missed_state"]
-        lines.append(f"{label:<18} {shown:<18} {row['scheduled_time']}  "
-                     f"business={row['business_status'] or '-'}")
+        ran = row["ran_at"] or "-"
+        business = f"  {row['business_status']}" if row["business_status"] else ""
+        lines.append(f"{label:<18} {shown:<11} sched={row['scheduled_time']} ran={ran}{business}")
         if row["missed_state"] == MISSED:
             missed += 1
         if row["runner_status"] == "LOCKED":
@@ -166,15 +211,15 @@ def render_human(status: dict) -> str:
             expired += 1
         if row["runner_status"] == "DEPENDENCY_FAILED":
             dependency_failed += 1
-    lines.append("")
-    lines.append(f"Missed tasks:      {missed}")
-    lines.append(f"Lock conflicts:    {locked}")
-    lines.append(f"Expired windows:   {expired}")
+    lines.append("-" * 62)
+    lines.append(f"Missed tasks:        {missed}")
+    lines.append(f"Lock conflicts:      {locked}")
+    lines.append(f"Expired windows:     {expired}")
     lines.append(f"Dependency failures: {dependency_failed}")
     lines.append("")
     lines.append("AUTOMATION HEALTH:")
     lines.append(status["overall"])
-    lines.append("-" * 50)
+    lines.append("-" * 62)
     return "\n".join(lines)
 
 

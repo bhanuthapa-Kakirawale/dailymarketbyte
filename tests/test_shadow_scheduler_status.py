@@ -82,7 +82,15 @@ def test_overall_attention_on_business_blocked(tmp_path):
     pre_latest_dir = os.path.join(business_root, "production_runs", "PRE")
     os.makedirs(pre_latest_dir, exist_ok=True)
     with open(os.path.join(pre_latest_dir, "latest.json"), "w", encoding="utf-8") as fh:
-        json.dump({"orchestrator_status": "BLOCKED"}, fh)
+        json.dump({"orchestrator_status": "BLOCKED", "started_at": "2026-10-09T01:00:00+00:00"},
+                 fh)
+    # A business result only ever appears today because the scheduler's OWN run record for
+    # this job is also from today - the runner always writes its own record before invoking
+    # the child that eventually updates the business latest.json.
+    from shadow_scheduler.models import CHILD_NONZERO, RunRecord
+    records.write_record(out_dir, RunRecord(job="pre", run_id="r1",
+                                            started_at="2026-10-09T01:00:00+00:00",
+                                            runner_status=CHILD_NONZERO, child_exit_code=20))
     now_ist = dt.datetime(2026, 10, 9, 6, 0, tzinfo=IST)
     s = status.overall_status(out_dir, business_root=business_root, now=now_ist,
                               calendar=_FixedCalendar(True))
@@ -203,3 +211,121 @@ def test_render_human_contains_every_job_and_the_overall_verdict(tmp_path):
     for label in ("Intelligence AM", "PRE", "Intelligence PM", "POST"):
         assert label in text
     assert "AUTOMATION HEALTH" in text
+
+
+# --- TODAY vs HISTORICAL (PK-E power/status hardening, 2026-10-16) -------------------------
+# A prior day's terminal scheduler/business record must never be read as today's operational
+# state - this is exactly the defect that let shadow status show yesterday evening's
+# Intelligence PM/POST as COMPLETED at 07:30 this morning, before today's 19:15/19:30 runs.
+
+def _write_latest_business(business_root, edition_dir, status_value, started_at_utc):
+    d = os.path.join(business_root, *edition_dir)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "latest.json"), "w", encoding="utf-8") as fh:
+        json.dump({"orchestrator_status": status_value, "started_at": started_at_utc}, fh)
+
+
+def test_a_yesterday_evening_completed_run_shows_as_pending_this_morning(tmp_path):
+    """Case A: yesterday's PM COMPLETED + today 07:30 -> Intelligence PM must be PENDING
+    (or WAITING/MISSED per the window), never COMPLETED carried over from yesterday."""
+    out_dir = str(tmp_path / "ss")
+    from shadow_scheduler.models import COMPLETED, RunRecord
+    rec = RunRecord(job="intelligence_pm", run_id="r1",
+                    started_at="2026-10-08T13:45:00+00:00",   # 2026-10-08 19:15 IST
+                    runner_status=COMPLETED, child_exit_code=0)
+    records.write_record(out_dir, rec)
+    now_ist = dt.datetime(2026, 10, 9, 7, 30, tzinfo=IST)   # next morning, well before 19:15
+    spec = config.JOB_REGISTRY["intelligence_pm"]
+    row = status.job_status(out_dir, out_dir, spec, now_ist, _FixedCalendar(True))
+    assert row["runner_status"] is None
+    assert row["missed_state"] == PENDING
+    assert row["last_run"]["runner_status"] == COMPLETED
+    assert row["last_run"]["date"] == "2026-10-08"
+
+
+def test_yesterdays_post_success_is_not_shown_as_todays_business_result(tmp_path):
+    """Case B: yesterday's POST SUCCESS must not appear as today's business result."""
+    out_dir = str(tmp_path / "ss")
+    business_root = str(tmp_path / "out")
+    _write_latest_business(business_root, ("production_runs", "POST"), "SUCCESS",
+                           "2026-10-08T14:47:00+00:00")   # yesterday 20:17 IST
+    now_ist = dt.datetime(2026, 10, 9, 7, 30, tzinfo=IST)
+    spec = config.JOB_REGISTRY["post"]
+    row = status.job_status(out_dir, business_root, spec, now_ist, _FixedCalendar(True))
+    assert row["business_status"] is None
+    assert row["last_run"]["business_status"] == "SUCCESS"
+
+
+def test_todays_am_run_displays_its_actual_run_time(tmp_path):
+    """Case C: today's AM run must show its own IST run time via `ran_at` / render_human's
+    `ran=`, not a historical placeholder."""
+    out_dir = str(tmp_path / "ss")
+    from shadow_scheduler.models import COMPLETED, RunRecord
+    rec = RunRecord(job="intelligence_am", run_id="r1",
+                    started_at="2026-10-09T01:54:00+00:00",   # 07:24 IST
+                    runner_status=COMPLETED, child_exit_code=0)
+    records.write_record(out_dir, rec)
+    now_ist = dt.datetime(2026, 10, 9, 8, 0, tzinfo=IST)
+    spec = config.JOB_REGISTRY["intelligence_am"]
+    row = status.job_status(out_dir, out_dir, spec, now_ist, _FixedCalendar(True))
+    assert row["ran_at"] == "07:24"
+    s = {"jobs": {"intelligence_am": row, "pre": row, "intelligence_pm": row, "post": row},
+        "overall": HEALTHY}
+    text = status.render_human(s)
+    assert "ran=07:24" in text
+
+
+def test_todays_waiting_dependency_is_the_correct_state(tmp_path):
+    """Case D: today's PRE WAITING_DEPENDENCY checkpoint must be shown as such, not folded
+    into a historical record."""
+    from shadow_scheduler.models import WAITING_DEPENDENCY, RunRecord
+    out_dir = str(tmp_path)
+    rec = RunRecord(job="pre", run_id="r1", started_at="2026-10-09T01:35:00+00:00",
+                    runner_status=WAITING_DEPENDENCY, dependency_job="intelligence_am")
+    records.write_record(out_dir, rec)
+    now_ist = dt.datetime(2026, 10, 9, 7, 36, tzinfo=IST)
+    spec = config.JOB_REGISTRY["pre"]
+    row = status.job_status(out_dir, out_dir, spec, now_ist, _FixedCalendar(True))
+    assert row["runner_status"] == WAITING_DEPENDENCY
+
+
+def test_missed_after_todays_deadline_with_no_invocation_at_all(tmp_path):
+    """Case E: after today's deadline with no run today (even if a much older record exists for
+    a different day), the job must be MISSED."""
+    out_dir = str(tmp_path)
+    from shadow_scheduler.models import COMPLETED, RunRecord
+    rec = RunRecord(job="post", run_id="r1", started_at="2026-10-01T14:00:00+00:00",
+                    runner_status=COMPLETED, child_exit_code=0)
+    records.write_record(out_dir, rec)
+    now_ist = dt.datetime(2026, 10, 9, 21, 0, tzinfo=IST)   # well after POST's window
+    spec = config.JOB_REGISTRY["post"]
+    row = status.job_status(out_dir, out_dir, spec, now_ist, _FixedCalendar(True))
+    assert row["missed_state"] == MISSED
+    assert row["runner_status"] is None
+
+
+def test_weekend_holiday_is_not_expected_regardless_of_old_records(tmp_path):
+    """Case F: a non-trading day is NOT_EXPECTED even if an old (any-day) record exists."""
+    out_dir = str(tmp_path)
+    from shadow_scheduler.models import COMPLETED, RunRecord
+    rec = RunRecord(job="pre", run_id="r1", started_at="2026-10-08T01:30:00+00:00",
+                    runner_status=COMPLETED, child_exit_code=0)
+    records.write_record(out_dir, rec)
+    now_ist = dt.datetime(2026, 10, 10, 8, 0, tzinfo=IST)   # Saturday
+    spec = config.JOB_REGISTRY["pre"]
+    row = status.job_status(out_dir, out_dir, spec, now_ist, _FixedCalendar(False))
+    assert row["missed_state"] == NOT_EXPECTED
+    assert row["runner_status"] is None
+
+
+def test_overall_status_not_pushed_to_attention_by_a_stale_business_record(tmp_path):
+    """07:30 IST, PM/POST still PENDING, but yesterday's POST business result was BLOCKED -
+    automation health must stay HEALTHY, not ATTENTION, until today's own run exists."""
+    out_dir = str(tmp_path / "ss")
+    business_root = str(tmp_path / "out")
+    _write_latest_business(business_root, ("production_runs", "POST"), "BLOCKED",
+                           "2026-10-08T14:00:00+00:00")   # yesterday
+    now_ist = dt.datetime(2026, 10, 9, 7, 30, tzinfo=IST)
+    s = status.overall_status(out_dir, business_root=business_root, now=now_ist,
+                              calendar=_FixedCalendar(True))
+    assert s["overall"] == HEALTHY

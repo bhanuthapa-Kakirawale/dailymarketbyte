@@ -123,7 +123,8 @@ function Get-ScheduledTask {
     if (-not $match) { return $null }
     $action = [pscustomobject]@{ Execute = $match.Execute; Arguments = $match.Arguments; WorkingDirectory = $match.WorkingDirectory }
     $trigger = [pscustomobject]@{ StartBoundary = "2026-10-09T$($match.Time):00"; DaysOfWeek = 62 }
-    $settings = [pscustomobject]@{ MultipleInstances = "IgnoreNew"; StartWhenAvailable = $true; ExecutionTimeLimit = "PT50M"; RestartCount = 0 }
+    $settings = [pscustomobject]@{ MultipleInstances = "IgnoreNew"; StartWhenAvailable = $true; ExecutionTimeLimit = "PT50M"; RestartCount = 0;
+        DisallowStartIfOnBatteries = $false; StopIfGoingOnBatteries = $false; WakeToRun = $true }
     [pscustomobject]@{ TaskName = $TaskName; TaskPath = $TaskPath; State = "Ready"; Actions = @($action); Triggers = @($trigger); Settings = $settings }
 }
 $plan = Get-ShadowTaskPlan -RepoRoot "D:\repo" -PythonExe "D:\repo\venv\Scripts\python.exe"
@@ -134,6 +135,33 @@ $plan | ForEach-Object { Write-Host "$($_.Name)=$($_.Plan)" }
     for name in ("DMB-Shadow-Intelligence-AM", "DMB-Shadow-PRE", "DMB-Shadow-Intelligence-PM",
                 "DMB-Shadow-POST"):
         assert f"{name}=UNCHANGED" in proc.stdout
+
+
+def test_old_power_defaults_on_a_live_task_are_config_drift(tmp_path):
+    """PK-E power hardening: a task installed before this change (cmdlet's own power
+    defaults - DisallowStartIfOnBatteries=True, StopIfGoingOnBatteries=True, WakeToRun=False)
+    must show CONFIG_DRIFT until the owner re-runs the installer - it must never silently
+    read as UNCHANGED just because every other field already matches."""
+    body = r"""
+function Get-ScheduledTask {
+    param($TaskPath, $TaskName, $ErrorAction)
+    $expected = Get-ExpectedShadowTasks -RepoRoot "D:\repo" -PythonExe "D:\repo\venv\Scripts\python.exe"
+    $match = $expected | Where-Object { $_.Name -eq $TaskName }
+    if (-not $match) { return $null }
+    $action = [pscustomobject]@{ Execute = $match.Execute; Arguments = $match.Arguments; WorkingDirectory = $match.WorkingDirectory }
+    $trigger = [pscustomobject]@{ StartBoundary = "2026-10-09T$($match.Time):00"; DaysOfWeek = 62 }
+    $settings = [pscustomobject]@{ MultipleInstances = "IgnoreNew"; StartWhenAvailable = $true; ExecutionTimeLimit = "PT50M"; RestartCount = 0;
+        DisallowStartIfOnBatteries = $true; StopIfGoingOnBatteries = $true; WakeToRun = $false }
+    [pscustomobject]@{ TaskName = $TaskName; TaskPath = $TaskPath; State = "Ready"; Actions = @($action); Triggers = @($trigger); Settings = $settings }
+}
+$plan = Get-ShadowTaskPlan -RepoRoot "D:\repo" -PythonExe "D:\repo\venv\Scripts\python.exe"
+$plan | ForEach-Object { Write-Host "$($_.Name)=$($_.Plan) DRIFT=$($_.Drift -join ',')" }
+"""
+    proc = _run_ps(tmp_path, body)
+    assert proc.returncode == 0, proc.stderr
+    for name in ("DMB-Shadow-Intelligence-AM", "DMB-Shadow-PRE", "DMB-Shadow-Intelligence-PM",
+                "DMB-Shadow-POST"):
+        assert f"{name}=UPDATE DRIFT=CONFIG_DRIFT" in proc.stdout
 
 
 def test_foreign_task_is_collision_and_install_refuses_the_whole_run(tmp_path):
@@ -206,7 +234,7 @@ Write-Host "CREATED_COUNT=$($created.Count)"
 _SAFE_SHIMS = r"""
 function New-ScheduledTaskAction { param($Execute, $Argument, $WorkingDirectory, $ErrorAction) [pscustomobject]@{} }
 function New-ScheduledTaskTrigger { param([switch]$Weekly, $DaysOfWeek, $At, $ErrorAction) [pscustomobject]@{} }
-function New-ScheduledTaskSettingsSet { param($MultipleInstances, [switch]$StartWhenAvailable, $ExecutionTimeLimit, $RestartCount, $ErrorAction) [pscustomobject]@{} }
+function New-ScheduledTaskSettingsSet { param($MultipleInstances, [switch]$StartWhenAvailable, $ExecutionTimeLimit, $RestartCount, $DisallowStartIfOnBatteries, $StopIfGoingOnBatteries, $WakeToRun, $ErrorAction) [pscustomobject]@{} }
 function New-ScheduledTaskPrincipal { param($UserId, $LogonType, $RunLevel, $ErrorAction) [pscustomobject]@{} }
 function Register-ScheduledTask { param($TaskName, $TaskPath, $Action, $Trigger, $Settings, $Principal, $ErrorAction) $null }
 """
@@ -217,20 +245,32 @@ def test_execution_time_limit_passed_to_the_cmdlet_is_a_50_minute_timespan(tmp_p
     minutes, never the ISO-8601 string "PT50M" that caused the real conversion error."""
     body = _SAFE_SHIMS + r"""
 $script:CapturedLimit = $null
+$script:CapturedPower = $null
 function New-ScheduledTaskSettingsSet {
-    param($MultipleInstances, [switch]$StartWhenAvailable, $ExecutionTimeLimit, $RestartCount, $ErrorAction)
+    param($MultipleInstances, [switch]$StartWhenAvailable, $ExecutionTimeLimit, $RestartCount,
+         $DisallowStartIfOnBatteries, $StopIfGoingOnBatteries, $WakeToRun, $ErrorAction)
     $script:CapturedLimit = $ExecutionTimeLimit
+    $script:CapturedPower = [pscustomobject]@{ DisallowStartIfOnBatteries = $DisallowStartIfOnBatteries;
+        StopIfGoingOnBatteries = $StopIfGoingOnBatteries; WakeToRun = $WakeToRun }
     [pscustomobject]@{}
 }
 $expected = Get-ExpectedShadowTasks -RepoRoot "D:\repo" -PythonExe "D:\repo\venv\Scripts\python.exe"
 New-ShadowScheduledTask -Expected $expected[0]
 Write-Host "TYPE=$($script:CapturedLimit.GetType().FullName)"
 Write-Host "MINUTES=$($script:CapturedLimit.TotalMinutes)"
+Write-Host "DISALLOW=$($script:CapturedPower.DisallowStartIfOnBatteries)"
+Write-Host "STOPIFBATT=$($script:CapturedPower.StopIfGoingOnBatteries)"
+Write-Host "WAKETORUN=$($script:CapturedPower.WakeToRun)"
 """
     proc = _run_ps(tmp_path, body)
     assert proc.returncode == 0, proc.stderr
     assert "TYPE=System.TimeSpan" in proc.stdout
     assert "MINUTES=50" in proc.stdout
+    # PK-E power hardening: DMB tasks must be allowed to run on battery and be woken for their
+    # execution window - the laptop missed the 2026-10-16 AM/PRE run because these were unset.
+    assert "DISALLOW=False" in proc.stdout
+    assert "STOPIFBATT=False" in proc.stdout
+    assert "WAKETORUN=True" in proc.stdout
 
 
 def test_registration_failure_cannot_produce_a_created_message(tmp_path):
@@ -242,7 +282,8 @@ def test_registration_failure_cannot_produce_a_created_message(tmp_path):
 function Get-ScheduledTask { param($TaskPath, $TaskName, $ErrorAction) $null }
 function Get-TimeZone { [pscustomobject]@{ Id = "India Standard Time" } }
 function New-ScheduledTaskSettingsSet {
-    param($MultipleInstances, [switch]$StartWhenAvailable, $ExecutionTimeLimit, $RestartCount, $ErrorAction)
+    param($MultipleInstances, [switch]$StartWhenAvailable, $ExecutionTimeLimit, $RestartCount,
+         $DisallowStartIfOnBatteries, $StopIfGoingOnBatteries, $WakeToRun, $ErrorAction)
     throw "Cannot convert value `"PT50M`" to type `"System.TimeSpan`"."
 }
 $code = Invoke-ShadowTaskInstall -RepoRoot "D:\repo" -PythonExe "D:\repo\venv\Scripts\python.exe"
@@ -282,7 +323,7 @@ function Get-ScheduledTask { param($TaskPath, $TaskName, $ErrorAction) $null }
 function Get-TimeZone { [pscustomobject]@{ Id = "India Standard Time" } }
 function New-ScheduledTaskAction { param($Execute, $Argument, $WorkingDirectory, $ErrorAction) [pscustomobject]@{} }
 function New-ScheduledTaskTrigger { param([switch]$Weekly, $DaysOfWeek, $At, $ErrorAction) [pscustomobject]@{} }
-function New-ScheduledTaskSettingsSet { param($MultipleInstances, [switch]$StartWhenAvailable, $ExecutionTimeLimit, $RestartCount, $ErrorAction) [pscustomobject]@{} }
+function New-ScheduledTaskSettingsSet { param($MultipleInstances, [switch]$StartWhenAvailable, $ExecutionTimeLimit, $RestartCount, $DisallowStartIfOnBatteries, $StopIfGoingOnBatteries, $WakeToRun, $ErrorAction) [pscustomobject]@{} }
 function New-ScheduledTaskPrincipal { param($UserId, $LogonType, $RunLevel, $ErrorAction) [pscustomobject]@{} }
 $code = Invoke-ShadowTaskInstall -RepoRoot "D:\repo" -PythonExe "D:\repo\venv\Scripts\python.exe"
 Write-Host "EXIT=$code"

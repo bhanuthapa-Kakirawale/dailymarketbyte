@@ -57,6 +57,13 @@ function Get-ExpectedShadowTasks {
         $row | Add-Member -NotePropertyName Execute -NotePropertyValue $PythonExe
         $row | Add-Member -NotePropertyName Arguments -NotePropertyValue "-m shadow_scheduler run $($row.Job)"
         $row | Add-Member -NotePropertyName WorkingDirectory -NotePropertyValue $RepoRoot
+        # DMB is a lightweight scheduled workflow and is allowed to run inside its own one-hour
+        # execution window even on battery; the window itself (not these flags) is the safety
+        # boundary. WakeToRun can only wake a SLEEPING/HIBERNATING machine with wake-timer support
+        # - it can never power on a fully shut-down laptop. See docs\SHADOW_PRODUCTION_OPERATIONS.md.
+        $row | Add-Member -NotePropertyName DisallowStartIfOnBatteries -NotePropertyValue $false
+        $row | Add-Member -NotePropertyName StopIfGoingOnBatteries -NotePropertyValue $false
+        $row | Add-Member -NotePropertyName WakeToRun -NotePropertyValue $true
     }
     $rows
 }
@@ -108,7 +115,10 @@ function Compare-ShadowTask {
     $settings = $LiveTask.Settings
     if (($settings.MultipleInstances -ne "IgnoreNew") -or (-not $settings.StartWhenAvailable) -or
         ($settings.ExecutionTimeLimit -ne $script:ShadowExecutionTimeLimitIso8601) -or
-        ($settings.RestartCount -ne 0)) {
+        ($settings.RestartCount -ne 0) -or
+        ($settings.DisallowStartIfOnBatteries -ne $Expected.DisallowStartIfOnBatteries) -or
+        ($settings.StopIfGoingOnBatteries -ne $Expected.StopIfGoingOnBatteries) -or
+        ($settings.WakeToRun -ne $Expected.WakeToRun)) {
         $drift.Add("CONFIG_DRIFT")
     }
 
@@ -143,7 +153,10 @@ function New-ShadowScheduledTask {
     $trigger = New-ScheduledTaskTrigger -Weekly `
         -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday -At $Expected.Time -ErrorAction Stop
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable `
-        -ExecutionTimeLimit $script:ShadowExecutionTimeLimitSpan -RestartCount 0 -ErrorAction Stop
+        -ExecutionTimeLimit $script:ShadowExecutionTimeLimitSpan -RestartCount 0 `
+        -DisallowStartIfOnBatteries:$Expected.DisallowStartIfOnBatteries `
+        -StopIfGoingOnBatteries:$Expected.StopIfGoingOnBatteries `
+        -WakeToRun:$Expected.WakeToRun -ErrorAction Stop
     # Current interactive user, no stored password, no SYSTEM.
     $userId = "$env:USERDOMAIN\$env:USERNAME"
     $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited -ErrorAction Stop

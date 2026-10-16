@@ -105,12 +105,27 @@ How individual sources are graded:
   - SUCCESS with events is HEALTHY. SUCCESS with none is HEALTHY_EMPTY.
   - `NOT_SUPPORTED_YET` is UNSUPPORTED.
   - SOURCE_UNAVAILABLE, PARSE_ERROR or VALIDATION_FAILED is SOURCE_FAILURE, which WARNs.
-  - No REPORT record completed by the cutoff is MISSING, which WARNs.
+  - No entry for the family at all is MISSING, which WARNs. If the selected REPORT record
+    itself never reached the market_events capture step (its own `run_status` wasn't a
+    success), the message names that `run_status` explicitly (PK-E follow-up, 2026-10-16) -
+    e.g. `"EARNINGS source unavailable (REPORT job for 2026-10-13 last FAILED, market events
+    never ran)"` - rather than a bare, ambiguous "not captured" that could also describe a
+    real per-family SOURCE_UNAVAILABLE. Severity is unchanged either way.
 - **Market Structure.** It is graded by the aggregator's own per-metric status (PUBLISHABLE, PARTIAL ≥ 95%, SUPPRESSED).
   - POST reads the core breadth metrics: PARTIAL degrades, all SUPPRESSED degrades.
   - PRE reads only the 52-week metrics, the only kind PRE shows.
   - A PARTIAL 52-week coverage is the expected P3 state, never a zero reading: recent listings lack 252 sessions and count as uncovered. It is noted, not degraded.
 - **Institutional.** NSE's provisional figure is a per-session report, so it must be for the expected session (POST: the recap session; PRE: the previous session). CDSL and NSDL are aged in days, using the private desk's thresholds: 3 and 20.
+  - Audited against real history (PK-E follow-up, 2026-10-16): every observed CDSL/NSDL STALE
+    occurrence traced to CDSL/NSDL genuinely not having published a newer report yet at the
+    cutoff (confirmed against `output/institutional_flows/CDSL/*.json`'s own
+    `first_retrieved_at` sequence - e.g. CDSL's Friday report was still the latest as of the
+    following Monday evening's capture, and the next report, once published, jumped straight
+    to Tuesday, consistent with CDSL's own "upto the previous trading day(s)" disclaimer
+    spanning more than one session). No instance where a weekend/holiday alone pushed an
+    on-time report's calendar-day age past the 3/20-day buffer was found, so the calendar-day
+    age calculation was left unchanged - the buffer is already sized to absorb an ordinary
+    weekend, and the fixed threshold is not the same thing as "the gate is wrong."
 
 ## Editorial Planner V3 check
 
@@ -294,3 +309,4 @@ PK-C deliberately has no automated repair; recovery is a later packet.
 
 - `python -m pytest tests/test_readiness.py -q` runs offline in a clean checkout.
 - `python validate_readiness.py` is the bounded historical / shadow REPLAY over stored editions (PRE and POST, normal, Monday, holiday boundary, quiet, degraded scenarios). It writes `output/readiness_validation/` and reports the distribution as it is.
+- `python -m production_quality pre-degradation --runs 20 [--json]` (PK-E follow-up, 2026-10-16) is a read-only audit over the real, already-written `output/readiness/readiness_PRE_<date>.json` snapshots - never recomputed - grouping every non-PASS check into a normalized cause and tallying status counts / cause frequency / affected dates across real history, instead of reacting to one day's warning at a time. For any `MARKET_EVENTS.*:MISSING` cause it additionally cross-references that session's `output/report_jobs/<session>/` run records, to show whether a later successful capture existed that the PRE cutoff simply hadn't seen yet (see "Market events" above) vs. no successful attempt existing at all. Makes zero network calls, zero writes, zero render calls - it is an audit tool, not a second readiness implementation.

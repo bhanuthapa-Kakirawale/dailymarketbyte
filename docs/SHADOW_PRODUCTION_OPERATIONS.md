@@ -271,11 +271,45 @@ today. A job inside its window that simply hasn't fired yet (e.g. PRE checked at
 hasn't run yet. `UNKNOWN` (outside the hardcoded holiday-year coverage) is never asserted as
 either MISSED or NOT_EXPECTED.
 
-Once a run record exists for today, a job's own `runner_status` (`COMPLETED`/`CHILD_NONZERO`/
-`LOCKED`/`FAILED`/`EXPIRED`/`WAITING_DEPENDENCY`/`DEPENDENCY_FAILED`) always takes display
-precedence over this `missed_state` - see `render_human`'s `shown = runner_status or
-missed_state`. A `pre`/`post` job genuinely waiting on its upstream intelligence job shows
-`WAITING_DEPENDENCY` live (not a generic `WAITING`) while the wait is in progress.
+Once a run record exists **for today** (PK-E follow-up, 2026-10-16), a job's own
+`runner_status` (`COMPLETED`/`CHILD_NONZERO`/`LOCKED`/`FAILED`/`EXPIRED`/`WAITING_DEPENDENCY`/
+`DEPENDENCY_FAILED`) always takes display precedence over this `missed_state` - see
+`render_human`'s `shown = runner_status or missed_state`. A `pre`/`post` job genuinely waiting
+on its upstream intelligence job shows `WAITING_DEPENDENCY` live (not a generic `WAITING`)
+while the wait is in progress.
+
+### TODAY vs HISTORICAL (PK-E follow-up, 2026-10-16)
+
+`job_status()` only treats `runner_status`/`business_status` as belonging to today when that
+record's own `started_at` (IST; the business side falls back to `completed_at`) converts to
+TODAY's calendar date - never simply "the most recent record, from whichever day it's from".
+This fixed a real defect: before this change, `status` read each job's single most-recent
+record with no date filter at all, so at 07:30 IST it could show `Intelligence PM`/`POST` as
+`COMPLETED business=SUCCESS` from **yesterday evening**, hours before today's own 19:15/19:30
+runs. The raw historical value is still available under each job's `last_run` field (date,
+`runner_status`, `business_status`) for a separate "most recent result" view - it must never be
+read as today's operational state, and `overall_status()`'s HEALTHY/ATTENTION/BROKEN counters
+are computed only from the today-filtered fields, so a stale prior-day record can never inflate
+them (e.g. PM/POST still `PENDING` at 07:30 IST must not push health to `ATTENTION`).
+
+One further nuance: `intelligence_am` and `intelligence_pm` share ONE
+`intelligence_refresh/latest.json` (one module, invoked on two separate schedules) - showing
+"today's" business result for either of them also requires THAT job's own scheduler record to
+be from today, not just the shared file's timestamp. Otherwise the morning AM run's `SUCCESS`
+would bleed into the PM row's `business=` before the evening PM run has even happened.
+
+`render_human()`'s table now shows each job's actual run time (`ran=HH:MM` IST, or `-` if it
+hasn't run today) beside its scheduled time:
+
+```
+DMB SHADOW OPERATIONS
+--------------------------------------------------------------
+Intelligence AM    COMPLETED   sched=06:40 ran=07:36  SUCCESS
+PRE                COMPLETED   sched=07:00 ran=07:36  DEGRADED
+Intelligence PM    PENDING     sched=19:15 ran=-
+POST               PENDING     sched=19:30 ran=-
+--------------------------------------------------------------
+```
 
 **HEALTHY / ATTENTION / BROKEN** (overall): a business `BLOCKED`/`FAILED`/`LOCKED`, a scheduler
 `LOCKED`/`EXPIRED`/`DEPENDENCY_FAILED`, or a `MISSED` job is `ATTENTION` - still a business/
@@ -304,8 +338,40 @@ refuses the *entire* install run (fail closed, not skip-and-continue).
 Registration settings: `MultipleInstances=IgnoreNew`, `StartWhenAvailable=$true`,
 `ExecutionTimeLimit=PT50M` (50 minutes - comfortably above every observed PRE/POST/refresh
 runtime, well under the "hung process" range), `RestartCount=0` (no automatic restart-on-
-failure loop - a nonzero result may be an intentional PK-C safety block). Principal: the
-current interactive user, `LogonType=Interactive`, no stored password, never SYSTEM.
+failure loop - a nonzero result may be an intentional PK-C safety block),
+`DisallowStartIfOnBatteries=$false`, `StopIfGoingOnBatteries=$false`, `WakeToRun=$true` (power
+policy, see below). Principal: the current interactive user, `LogonType=Interactive`, no
+stored password, never SYSTEM.
+
+### Power policy (battery / sleep / wake) - PK-E follow-up, 2026-10-16
+
+Root cause of a real miss: on 2026-10-16 the Intelligence AM / PRE jobs did not run while the
+laptop was on battery, because `New-ScheduledTaskSettingsSet` was never given explicit power
+settings and so fell back to the cmdlet's own defaults - `DisallowStartIfOnBatteries=$true`,
+`StopIfGoingOnBatteries=$true`, `WakeToRun=$false`. The four DMB tasks now explicitly request
+the opposite: DMB is a lightweight scheduled workflow and is allowed to run inside its own
+one-hour execution window even on battery. The execution windows themselves (AM 06:40-07:40,
+PRE 07:00-08:00, PM 19:15-20:15, POST 19:30-20:30) remain the actual safety boundary - no new
+retry/reconnect logic is added; `StartWhenAvailable` plus the existing window is the whole
+mechanism.
+
+What these settings can and cannot do:
+
+- **SLEEP**: the task may wake the machine if Windows' own power plan and the hardware's wake
+  timers permit it (`WakeToRun=$true` asks Task Scheduler to try; it is not a guarantee on
+  every machine/BIOS).
+- **HIBERNATE**: depends on the same machine/Windows wake-timer support as sleep - not
+  guaranteed either.
+- **FULL SHUTDOWN**: Task Scheduler cannot power on a shut-down laptop under any setting here.
+  `StartWhenAvailable=$true` only means the task runs after the laptop is next booted by hand,
+  and only if the job's own execution window (above) is still open at that moment - a task
+  whose window has already closed is simply skipped, exactly as today.
+
+`Compare-ShadowTask`'s `CONFIG_DRIFT` check now also compares these three settings against the
+live task, so a task installed before this change shows `CONFIG_DRIFT` in both
+`install_shadow_tasks.ps1`'s preview and `check_shadow_tasks.ps1` until the owner re-runs the
+installer with `-Install` (see "Installing for real" below) - this packet never does that
+automatically.
 
 `check_shadow_tasks.ps1` and `remove_shadow_tasks.ps1` both dot-source
 `install_shadow_tasks.ps1` to reuse its comparison/ownership functions directly - there is only
@@ -352,7 +418,9 @@ could drift out of sync.
 real `output/`, a real Task Scheduler, or a real database), **except**
 `test_shadow_scheduler_powershell_syntax.py`, which intentionally runs the real, non-modifying
 `install_shadow_tasks.ps1` (default/`-WhatIf`) and `check_shadow_tasks.ps1` against the owner's
-actual machine (expecting every task reported `MISSING`, since none is installed). Covers: the
+actual machine (each task reported `MISSING` before the owner's first real `-Install`, or
+`Exists=Yes` afterward - the test asserts read-only behavior only, never which state it finds).
+Covers: the
 registry/vocabulary/exit-code model, lock acquire/conflict/stale-reclaim/bounded-wait/timeout,
 the run record schema and write order, the runner's healthy/`CHILD_NONZERO`/launch-failure/
 lock-timeout paths, the CLI, the read-only status aggregation and

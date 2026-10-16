@@ -337,6 +337,7 @@ Not needed on a normal day. Use these to redo or inspect one step.
 | `check_shadow_tasks.ps1` | Read-only: are the 4 DMB tasks registered correctly (missing/disabled/drift). Runs nothing. | - |
 | `remove_shadow_tasks.ps1 -Remove` | Removes only the 4 DMB-owned tasks. | `Unregister-ScheduledTask` |
 | `check_shadow_operations.bat` | Read-only: each shadow job's last run + MISSED/PENDING + HEALTHY/ATTENTION/BROKEN. Runs nothing. | `python -m shadow_scheduler status` |
+| (no script - run directly) | Read-only: audits the last N PRE readiness snapshots for recurring degradation causes, cross-referencing the REPORT job's own run records for any MARKET_EVENTS-missing cause. Runs nothing. | `python -m production_quality pre-degradation --runs 20` |
 | `run_morning_pre.bat` | **Normal morning command.** Generates PRE. | `python main.py --mode premarket --shadow` + PRE check |
 | `run_evening_full.bat` | **Normal evening command.** REPORT + same-day POST + summary. | `python -m operations.evening_full` |
 | `run_evening.bat` | Advanced / debug helper. REPORT / acquisition only, no video. | `python main.py --mode report` + evening check |

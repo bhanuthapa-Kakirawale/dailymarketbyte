@@ -581,6 +581,57 @@ caller - `service.py::_store_one`/`_lookup_open_event`/`_lookup_open_by_instrume
 the identical latent gap (`first_retrieved_at` carried forward the same way) but is explicitly
 NOT fixed here - out of this task's scope.
 
+## Readiness health classification and wording (PK-E follow-up, 2026-10-16)
+
+`readiness/checks.py::check_market_events` maps each family's capture status to a readiness
+health, read from the REPORT job's own capture record (`details.market_events.results`) -
+never recomputed:
+
+| Family status (from `service.capture()`) | Readiness health | PRE/POST effect |
+|---|---|---|
+| `SUCCESS` with >=1 event | `HEALTHY` | PASS |
+| `SUCCESS` with zero events | `HEALTHY_EMPTY` | PASS - a genuinely empty, successfully-checked day is never shown as a failure |
+| `NOT_SUPPORTED_YET` | `UNSUPPORTED` | PASS - a family with no verified-reachable source by design is never a warning |
+| `SOURCE_UNAVAILABLE` / `PARSE_ERROR` / `VALIDATION_FAILED` | `SOURCE_FAILURE` | WARN - a real fetch/parse failure this capture |
+| no entry for the family at all (the selected REPORT record never reached this step) | `MISSING` | WARN |
+
+`MARKET_EVENTS` is OPTIONAL for both PRE and POST (`readiness/matrix.py`), so none of these can
+ever BLOCK - only WARN (DEGRADED) or PASS.
+
+The bare `MISSING` case (last row) is ambiguous on its own - "not captured" could mean either
+"the REPORT job never reached this step" or (confusingly) look like a real source failure. The
+message now names the selected record's own `run_status` explicitly, e.g. `"EARNINGS source
+unavailable (REPORT job for 2026-10-13 last FAILED, market events never ran) - Market Events
+will omit it"`, keeping the existing `SOURCE_UNAVAILABLE`/`PARSE_ERROR`/`VALIDATION_FAILED`
+wording (a genuine per-family fetch failure, `SOURCE_FAILURE`) untouched and distinct.
+
+**Confirmed real root cause, not a code defect in the wording fix's target:** on 2026-10-13
+two evening REPORT-job attempts `FAILED` on an unrelated data issue ("Only 0 stocks had clean
+data for 2026-10-13"); a retry the next morning succeeded with real `market_events` results,
+but completed a few seconds AFTER that morning's PRE readiness cutoff - so the readiness
+evaluation genuinely had nothing to report yet at the exact instant it ran. This is a
+cutoff/retry-timing race in how close PRE's own window sits to the morning intelligence-refresh
+retry, not a Market Events adapter problem; `python -m production_quality pre-degradation`
+(docs/PRODUCTION_READINESS.md) found this exact instance and cross-references the REPORT-job
+run records whenever the same `MARKET_EVENTS.*:MISSING` cause recurs, so it can be told apart
+from a genuine capture gap on a future audit without re-tracing the whole chain by hand.
+
+**Family coverage inventory** (adapter exists and the daily REPORT-job capture actually invokes
+it - `capture_market_events` runs once per REPORT job, 19:30 IST evening, re-attempted by the
+morning Intelligence-refresh catch-up if the evening run didn't succeed; capture never runs
+during PRE itself, by design - PRE only ever reads what the REPORT job already captured):
+
+| Family | Adapter | Captured by REPORT job | Historical replay |
+|---|---|---|---|
+| EARNINGS | LIVE | yes | read-only replay of stored revisions |
+| OFS | LIVE | yes | same |
+| BUYBACK | LIVE | yes | same |
+| OPEN_OFFER | LIVE | yes | same |
+| DELISTING | LIVE | yes | same |
+| GOVT_SECURITIES_AUCTION | LIVE | yes | same |
+| IPO | read-only projection over `ipo_watch` (never re-acquired here) | n/a - excluded from `readiness.evidence.live_event_families()` by design | n/a |
+| SDL / Cash Management Bills / switches / any other family | `NOT_SUPPORTED_YET` stub | n/a | n/a |
+
 ## Rights
 
 Every new source defaults through `strictest_rights()`/`core.sources`'s `UNREVIEWED` registry

@@ -335,13 +335,37 @@ Ownership check: a task is provably DMB-owned only when its action's `Execute` e
 `\DMB\<ExpectedName>`. A same-named task that fails this check is reported `COLLISION` and
 refuses the *entire* install run (fail closed, not skip-and-continue).
 
+**UPDATE never unregisters first (PK-E follow-up, 2026-10-16).** A real owner `-Install` once
+hit the parameter-name bug above while building the replacement settings object - but by then
+the previous version of this script had already unregistered the existing, live
+`DMB-Shadow-Intelligence-AM` task, so the construction failure left it genuinely `MISSING`
+instead of merely drifted. `New-ShadowScheduledTask` now builds the FULL replacement (action,
+trigger, settings, principal) first; only once every step has succeeded does it call
+`Register-ScheduledTask -Force`, which replaces an existing same-path task atomically with no
+separate `Unregister-ScheduledTask` call and therefore no window where the old task is gone
+but the new one isn't registered yet. A construction or registration failure during an UPDATE
+now leaves the pre-existing task exactly as it was.
+
 Registration settings: `MultipleInstances=IgnoreNew`, `StartWhenAvailable=$true`,
 `ExecutionTimeLimit=PT50M` (50 minutes - comfortably above every observed PRE/POST/refresh
 runtime, well under the "hung process" range), `RestartCount=0` (no automatic restart-on-
-failure loop - a nonzero result may be an intentional PK-C safety block),
-`DisallowStartIfOnBatteries=$false`, `StopIfGoingOnBatteries=$false`, `WakeToRun=$true` (power
-policy, see below). Principal: the current interactive user, `LogonType=Interactive`, no
-stored password, never SYSTEM.
+failure loop - a nonzero result may be an intentional PK-C safety block), plus the power policy
+below. Principal: the current interactive user, `LogonType=Interactive`, no stored password,
+never SYSTEM.
+
+**Cmdlet parameter names vs. live settings property names (PK-E follow-up, 2026-10-16) -
+these are NOT the same surface, and a real owner `-Install` broke on exactly this.**
+`Get-Command New-ScheduledTaskSettingsSet -Syntax` on this machine's ScheduledTasks module
+shows plain switches `-AllowStartIfOnBatteries` / `-DontStopIfGoingOnBatteries` / `-WakeToRun`
+- there is no `-DisallowStartIfOnBatteries` or `-StopIfGoingOnBatteries` parameter on this
+cmdlet at all. `install_shadow_tasks.ps1` passes those three switches unconditionally (the
+policy is fixed, never varies per task). Once registered, the resulting **live task's own
+`.Settings` object** exposes the opposite-named properties -
+`DisallowStartIfOnBatteries=$false`, `StopIfGoingOnBatteries=$false`, `WakeToRun=$true` - which
+is what `Compare-ShadowTask`'s drift check actually reads back and compares (that part was
+always correct; only the construction call used the wrong names). Never assume a cmdlet
+accepts a parameter with the same name as the object property it produces - check
+`Get-Command -Syntax` against the actual local module first.
 
 ### Power policy (battery / sleep / wake) - PK-E follow-up, 2026-10-16
 

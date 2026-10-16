@@ -46,7 +46,7 @@ pytestmark = pytest.mark.skipif(shutil.which("powershell") is None,
 # guard instead, loudly, every time.
 _MUTATION_GUARD = r"""
 function Register-ScheduledTask {
-    param($TaskName, $TaskPath, $Action, $Trigger, $Settings, $Principal, $ErrorAction)
+    param($TaskName, $TaskPath, $Action, $Trigger, $Settings, $Principal, [switch]$Force, $ErrorAction)
     throw "TEST SAFETY GUARD: real Register-ScheduledTask called - this test must mock it explicitly."
 }
 function Unregister-ScheduledTask {
@@ -234,42 +234,51 @@ Write-Host "CREATED_COUNT=$($created.Count)"
 _SAFE_SHIMS = r"""
 function New-ScheduledTaskAction { param($Execute, $Argument, $WorkingDirectory, $ErrorAction) [pscustomobject]@{} }
 function New-ScheduledTaskTrigger { param([switch]$Weekly, $DaysOfWeek, $At, $ErrorAction) [pscustomobject]@{} }
-function New-ScheduledTaskSettingsSet { param($MultipleInstances, [switch]$StartWhenAvailable, $ExecutionTimeLimit, $RestartCount, $DisallowStartIfOnBatteries, $StopIfGoingOnBatteries, $WakeToRun, $ErrorAction) [pscustomobject]@{} }
+function New-ScheduledTaskSettingsSet { param($MultipleInstances, [switch]$StartWhenAvailable, $ExecutionTimeLimit, $RestartCount, [switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries, [switch]$WakeToRun, $ErrorAction) [pscustomobject]@{} }
 function New-ScheduledTaskPrincipal { param($UserId, $LogonType, $RunLevel, $ErrorAction) [pscustomobject]@{} }
-function Register-ScheduledTask { param($TaskName, $TaskPath, $Action, $Trigger, $Settings, $Principal, $ErrorAction) $null }
+function Register-ScheduledTask { param($TaskName, $TaskPath, $Action, $Trigger, $Settings, $Principal, [switch]$Force, $ErrorAction) $null }
 """
 
 
 def test_execution_time_limit_passed_to_the_cmdlet_is_a_50_minute_timespan(tmp_path):
     """Test A: New-ScheduledTaskSettingsSet must receive a System.TimeSpan of exactly 50
-    minutes, never the ISO-8601 string "PT50M" that caused the real conversion error."""
+    minutes, never the ISO-8601 string "PT50M" that caused the real conversion error. This
+    shim's param list is EXACTLY the real local cmdlet's own switch names
+    (`Get-Command New-ScheduledTaskSettingsSet -Syntax`: -AllowStartIfOnBatteries /
+    -DontStopIfGoingOnBatteries / -WakeToRun, not -DisallowStartIfOnBatteries:$bool /
+    -StopIfGoingOnBatteries:$bool, which don't exist on this cmdlet at all and is the exact bug
+    that made a real owner -Install fail) - if the production script ever passes a parameter
+    name this shim doesn't declare, PowerShell's own parameter binding fails loudly here."""
     body = _SAFE_SHIMS + r"""
 $script:CapturedLimit = $null
 $script:CapturedPower = $null
 function New-ScheduledTaskSettingsSet {
     param($MultipleInstances, [switch]$StartWhenAvailable, $ExecutionTimeLimit, $RestartCount,
-         $DisallowStartIfOnBatteries, $StopIfGoingOnBatteries, $WakeToRun, $ErrorAction)
+         [switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries, [switch]$WakeToRun,
+         $ErrorAction)
     $script:CapturedLimit = $ExecutionTimeLimit
-    $script:CapturedPower = [pscustomobject]@{ DisallowStartIfOnBatteries = $DisallowStartIfOnBatteries;
-        StopIfGoingOnBatteries = $StopIfGoingOnBatteries; WakeToRun = $WakeToRun }
+    $script:CapturedPower = [pscustomobject]@{ AllowStartIfOnBatteries = [bool]$AllowStartIfOnBatteries;
+        DontStopIfGoingOnBatteries = [bool]$DontStopIfGoingOnBatteries; WakeToRun = [bool]$WakeToRun }
     [pscustomobject]@{}
 }
 $expected = Get-ExpectedShadowTasks -RepoRoot "D:\repo" -PythonExe "D:\repo\venv\Scripts\python.exe"
 New-ShadowScheduledTask -Expected $expected[0]
 Write-Host "TYPE=$($script:CapturedLimit.GetType().FullName)"
 Write-Host "MINUTES=$($script:CapturedLimit.TotalMinutes)"
-Write-Host "DISALLOW=$($script:CapturedPower.DisallowStartIfOnBatteries)"
-Write-Host "STOPIFBATT=$($script:CapturedPower.StopIfGoingOnBatteries)"
+Write-Host "ALLOWBATT=$($script:CapturedPower.AllowStartIfOnBatteries)"
+Write-Host "DONTSTOPBATT=$($script:CapturedPower.DontStopIfGoingOnBatteries)"
 Write-Host "WAKETORUN=$($script:CapturedPower.WakeToRun)"
 """
     proc = _run_ps(tmp_path, body)
     assert proc.returncode == 0, proc.stderr
     assert "TYPE=System.TimeSpan" in proc.stdout
     assert "MINUTES=50" in proc.stdout
-    # PK-E power hardening: DMB tasks must be allowed to run on battery and be woken for their
-    # execution window - the laptop missed the 2026-10-16 AM/PRE run because these were unset.
-    assert "DISALLOW=False" in proc.stdout
-    assert "STOPIFBATT=False" in proc.stdout
+    # Test B: these three switches passed (all True) are what produce the resulting live task
+    # settings DisallowStartIfOnBatteries=False / StopIfGoingOnBatteries=False / WakeToRun=True
+    # - the laptop missed the 2026-10-16 AM/PRE run because the previous version of this
+    # script never passed any of them at all.
+    assert "ALLOWBATT=True" in proc.stdout
+    assert "DONTSTOPBATT=True" in proc.stdout
     assert "WAKETORUN=True" in proc.stdout
 
 
@@ -283,7 +292,8 @@ function Get-ScheduledTask { param($TaskPath, $TaskName, $ErrorAction) $null }
 function Get-TimeZone { [pscustomobject]@{ Id = "India Standard Time" } }
 function New-ScheduledTaskSettingsSet {
     param($MultipleInstances, [switch]$StartWhenAvailable, $ExecutionTimeLimit, $RestartCount,
-         $DisallowStartIfOnBatteries, $StopIfGoingOnBatteries, $WakeToRun, $ErrorAction)
+         [switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries, [switch]$WakeToRun,
+         $ErrorAction)
     throw "Cannot convert value `"PT50M`" to type `"System.TimeSpan`"."
 }
 $code = Invoke-ShadowTaskInstall -RepoRoot "D:\repo" -PythonExe "D:\repo\venv\Scripts\python.exe"
@@ -323,7 +333,7 @@ function Get-ScheduledTask { param($TaskPath, $TaskName, $ErrorAction) $null }
 function Get-TimeZone { [pscustomobject]@{ Id = "India Standard Time" } }
 function New-ScheduledTaskAction { param($Execute, $Argument, $WorkingDirectory, $ErrorAction) [pscustomobject]@{} }
 function New-ScheduledTaskTrigger { param([switch]$Weekly, $DaysOfWeek, $At, $ErrorAction) [pscustomobject]@{} }
-function New-ScheduledTaskSettingsSet { param($MultipleInstances, [switch]$StartWhenAvailable, $ExecutionTimeLimit, $RestartCount, $DisallowStartIfOnBatteries, $StopIfGoingOnBatteries, $WakeToRun, $ErrorAction) [pscustomobject]@{} }
+function New-ScheduledTaskSettingsSet { param($MultipleInstances, [switch]$StartWhenAvailable, $ExecutionTimeLimit, $RestartCount, [switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries, [switch]$WakeToRun, $ErrorAction) [pscustomobject]@{} }
 function New-ScheduledTaskPrincipal { param($UserId, $LogonType, $RunLevel, $ErrorAction) [pscustomobject]@{} }
 $code = Invoke-ShadowTaskInstall -RepoRoot "D:\repo" -PythonExe "D:\repo\venv\Scripts\python.exe"
 Write-Host "EXIT=$code"
@@ -332,3 +342,166 @@ Write-Host "EXIT=$code"
     assert "EXIT=1" in proc.stdout
     assert "CREATED" not in proc.stdout
     assert "TEST SAFETY GUARD" in proc.stderr or "TEST SAFETY GUARD" in proc.stdout
+
+
+# --- safe update ordering (PK-E follow-up, 2026-10-16: a real owner -Install unregistered
+# DMB-Shadow-Intelligence-AM, then failed to build the replacement settings object because of
+# the unsupported-parameter-name bug above, leaving AM MISSING) ----------------------------
+
+def _owned_live_task_fn(power_healthy: bool = False) -> str:
+    """A `Get-ScheduledTask` shim returning a provably-owned, live task for every expected
+    name - `power_healthy=False` (the real pre-fix state) makes every task plan UPDATE via
+    CONFIG_DRIFT; the one real mutating call an UPDATE should ever reach is
+    Register-ScheduledTask (with -Force), never Unregister-ScheduledTask first."""
+    power = ("DisallowStartIfOnBatteries = $false; StopIfGoingOnBatteries = $false; WakeToRun = $true"
+            if power_healthy else
+            "DisallowStartIfOnBatteries = $true; StopIfGoingOnBatteries = $true; WakeToRun = $false")
+    return (r"""
+function Get-ScheduledTask {
+    param($TaskPath, $TaskName, $ErrorAction)
+    $expected = Get-ExpectedShadowTasks -RepoRoot "D:\repo" -PythonExe "D:\repo\venv\Scripts\python.exe"
+    $match = $expected | Where-Object { $_.Name -eq $TaskName }
+    if (-not $match) { return $null }
+    $action = [pscustomobject]@{ Execute = $match.Execute; Arguments = $match.Arguments; WorkingDirectory = $match.WorkingDirectory }
+    $trigger = [pscustomobject]@{ StartBoundary = "2026-10-09T$($match.Time):00"; DaysOfWeek = 62 }
+    $settings = [pscustomobject]@{ MultipleInstances = "IgnoreNew"; StartWhenAvailable = $true; ExecutionTimeLimit = "PT50M"; RestartCount = 0; """ + power + r""" }
+    [pscustomobject]@{ TaskName = $TaskName; TaskPath = $TaskPath; State = "Ready"; Actions = @($action); Triggers = @($trigger); Settings = $settings }
+}
+""")
+
+
+_UNREGISTER_MUST_NOT_BE_CALLED = r"""
+function Unregister-ScheduledTask {
+    param($TaskName, $TaskPath, $Confirm, $ErrorAction)
+    throw "TEST FAILURE: Unregister-ScheduledTask was called for $TaskName - an UPDATE must " +
+          "build the replacement first and use Register-ScheduledTask -Force, never " +
+          "unregister the existing task before the replacement exists."
+}
+"""
+
+
+def test_settings_construction_failure_during_update_never_unregisters_the_old_task(tmp_path):
+    """Test C: a construction failure (settings object) during an UPDATE must leave the
+    pre-existing, provably-owned task untouched - proven here by Unregister-ScheduledTask
+    never being called at all (it must not be part of the UPDATE path any more)."""
+    body = (_owned_live_task_fn(power_healthy=False) + _UNREGISTER_MUST_NOT_BE_CALLED + r"""
+function Get-TimeZone { [pscustomobject]@{ Id = "India Standard Time" } }
+function New-ScheduledTaskAction { param($Execute, $Argument, $WorkingDirectory, $ErrorAction) [pscustomobject]@{} }
+function New-ScheduledTaskTrigger { param([switch]$Weekly, $DaysOfWeek, $At, $ErrorAction) [pscustomobject]@{} }
+function New-ScheduledTaskSettingsSet {
+    param($MultipleInstances, [switch]$StartWhenAvailable, $ExecutionTimeLimit, $RestartCount,
+         [switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries, [switch]$WakeToRun,
+         $ErrorAction)
+    throw "A parameter cannot be found that matches parameter name 'DisallowStartIfOnBatteries'."
+}
+$code = Invoke-ShadowTaskInstall -RepoRoot "D:\repo" -PythonExe "D:\repo\venv\Scripts\python.exe"
+Write-Host "EXIT=$code"
+"""
+           )
+    proc = _run_ps(tmp_path, body)
+    assert "EXIT=1" in proc.stdout
+    assert "UPDATED" not in proc.stdout
+    assert "FAILED to update" in proc.stderr or "FAILED to update" in proc.stdout
+    assert "TEST FAILURE" not in proc.stdout and "TEST FAILURE" not in proc.stderr
+
+
+def test_registration_failure_during_update_never_unregisters_the_old_task(tmp_path):
+    """Test D: a Register-ScheduledTask failure (construction already succeeded) during an
+    UPDATE must still never have called Unregister-ScheduledTask first."""
+    body = (_owned_live_task_fn(power_healthy=False) + _SAFE_SHIMS +
+           _UNREGISTER_MUST_NOT_BE_CALLED + r"""
+function Get-TimeZone { [pscustomobject]@{ Id = "India Standard Time" } }
+function Register-ScheduledTask {
+    param($TaskName, $TaskPath, $Action, $Trigger, $Settings, $Principal, [switch]$Force, $ErrorAction)
+    throw "access denied (simulated registration failure)"
+}
+$code = Invoke-ShadowTaskInstall -RepoRoot "D:\repo" -PythonExe "D:\repo\venv\Scripts\python.exe"
+Write-Host "EXIT=$code"
+"""
+           )
+    proc = _run_ps(tmp_path, body)
+    assert "EXIT=1" in proc.stdout
+    assert "UPDATED" not in proc.stdout
+    assert "TEST FAILURE" not in proc.stdout and "TEST FAILURE" not in proc.stderr
+
+
+def test_successful_update_registers_with_force_and_never_unregisters_first(tmp_path):
+    """Test E: a genuinely successful UPDATE must call Register-ScheduledTask with -Force
+    (never Unregister-ScheduledTask beforehand), and must report UPDATED for all four tasks
+    (all four plan UPDATE here, via CONFIG_DRIFT on the old power defaults)."""
+    body = (_owned_live_task_fn(power_healthy=False) + _UNREGISTER_MUST_NOT_BE_CALLED + r"""
+function Get-TimeZone { [pscustomobject]@{ Id = "India Standard Time" } }
+function New-ScheduledTaskAction { param($Execute, $Argument, $WorkingDirectory, $ErrorAction) [pscustomobject]@{} }
+function New-ScheduledTaskTrigger { param([switch]$Weekly, $DaysOfWeek, $At, $ErrorAction) [pscustomobject]@{} }
+function New-ScheduledTaskSettingsSet { param($MultipleInstances, [switch]$StartWhenAvailable, $ExecutionTimeLimit, $RestartCount, [switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries, [switch]$WakeToRun, $ErrorAction) [pscustomobject]@{} }
+function New-ScheduledTaskPrincipal { param($UserId, $LogonType, $RunLevel, $ErrorAction) [pscustomobject]@{} }
+$script:CapturedForce = New-Object System.Collections.Generic.List[bool]
+function Register-ScheduledTask {
+    param($TaskName, $TaskPath, $Action, $Trigger, $Settings, $Principal, [switch]$Force, $ErrorAction)
+    $script:CapturedForce.Add([bool]$Force)
+    $null
+}
+$code = Invoke-ShadowTaskInstall -RepoRoot "D:\repo" -PythonExe "D:\repo\venv\Scripts\python.exe"
+Write-Host "EXIT=$code"
+Write-Host "FORCE_COUNT=$($script:CapturedForce.Count)"
+Write-Host "FORCE_ALL_TRUE=$((($script:CapturedForce | Where-Object { -not $_ }).Count) -eq 0)"
+"""
+           )
+    proc = _run_ps(tmp_path, body)
+    assert proc.returncode == 0, proc.stderr
+    assert "EXIT=0" in proc.stdout
+    assert "FORCE_COUNT=4" in proc.stdout
+    assert "FORCE_ALL_TRUE=True" in proc.stdout
+    for name in ("DMB-Shadow-Intelligence-AM", "DMB-Shadow-PRE", "DMB-Shadow-Intelligence-PM",
+                "DMB-Shadow-POST"):
+        assert f"UPDATED   {name}" in proc.stdout
+
+
+def test_missing_task_is_created_while_owned_tasks_are_updated_not_recreated(tmp_path):
+    """Test F / real-scenario reproduction (packet item 3): exactly the owner's actual state -
+    DMB-Shadow-Intelligence-AM MISSING, the other three present + owned with the old power
+    defaults (CONFIG_DRIFT). The plan must be CREATE for AM and UPDATE for the other three;
+    after a successful install, AM is registered without -Force and the other three WITH
+    -Force, and Unregister-ScheduledTask is never called for any of them."""
+    body = (_UNREGISTER_MUST_NOT_BE_CALLED + r"""
+function Get-ScheduledTask {
+    param($TaskPath, $TaskName, $ErrorAction)
+    if ($TaskName -eq "DMB-Shadow-Intelligence-AM") { return $null }
+    $expected = Get-ExpectedShadowTasks -RepoRoot "D:\repo" -PythonExe "D:\repo\venv\Scripts\python.exe"
+    $match = $expected | Where-Object { $_.Name -eq $TaskName }
+    $action = [pscustomobject]@{ Execute = $match.Execute; Arguments = $match.Arguments; WorkingDirectory = $match.WorkingDirectory }
+    $trigger = [pscustomobject]@{ StartBoundary = "2026-10-09T$($match.Time):00"; DaysOfWeek = 62 }
+    $settings = [pscustomobject]@{ MultipleInstances = "IgnoreNew"; StartWhenAvailable = $true; ExecutionTimeLimit = "PT50M"; RestartCount = 0;
+        DisallowStartIfOnBatteries = $true; StopIfGoingOnBatteries = $true; WakeToRun = $false }
+    [pscustomobject]@{ TaskName = $TaskName; TaskPath = $TaskPath; State = "Ready"; Actions = @($action); Triggers = @($trigger); Settings = $settings }
+}
+function Get-TimeZone { [pscustomobject]@{ Id = "India Standard Time" } }
+function New-ScheduledTaskAction { param($Execute, $Argument, $WorkingDirectory, $ErrorAction) [pscustomobject]@{} }
+function New-ScheduledTaskTrigger { param([switch]$Weekly, $DaysOfWeek, $At, $ErrorAction) [pscustomobject]@{} }
+function New-ScheduledTaskSettingsSet { param($MultipleInstances, [switch]$StartWhenAvailable, $ExecutionTimeLimit, $RestartCount, [switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries, [switch]$WakeToRun, $ErrorAction) [pscustomobject]@{} }
+function New-ScheduledTaskPrincipal { param($UserId, $LogonType, $RunLevel, $ErrorAction) [pscustomobject]@{} }
+$script:CapturedForce = @{}
+function Register-ScheduledTask {
+    param($TaskName, $TaskPath, $Action, $Trigger, $Settings, $Principal, [switch]$Force, $ErrorAction)
+    $script:CapturedForce[$TaskName] = [bool]$Force
+    $null
+}
+$plan = Get-ShadowTaskPlan -RepoRoot "D:\repo" -PythonExe "D:\repo\venv\Scripts\python.exe"
+$plan | ForEach-Object { Write-Host "PLAN:$($_.Name)=$($_.Plan)" }
+$code = Invoke-ShadowTaskInstall -RepoRoot "D:\repo" -PythonExe "D:\repo\venv\Scripts\python.exe"
+Write-Host "EXIT=$code"
+Write-Host "FORCE_AM=$($script:CapturedForce['DMB-Shadow-Intelligence-AM'])"
+Write-Host "FORCE_PRE=$($script:CapturedForce['DMB-Shadow-PRE'])"
+"""
+           )
+    proc = _run_ps(tmp_path, body)
+    assert proc.returncode == 0, proc.stderr
+    assert "PLAN:DMB-Shadow-Intelligence-AM=CREATE" in proc.stdout
+    assert "PLAN:DMB-Shadow-PRE=UPDATE" in proc.stdout
+    assert "PLAN:DMB-Shadow-Intelligence-PM=UPDATE" in proc.stdout
+    assert "PLAN:DMB-Shadow-POST=UPDATE" in proc.stdout
+    assert "EXIT=0" in proc.stdout
+    assert "CREATED   DMB-Shadow-Intelligence-AM" in proc.stdout
+    assert "UPDATED   DMB-Shadow-PRE" in proc.stdout
+    assert "FORCE_AM=False" in proc.stdout
+    assert "FORCE_PRE=True" in proc.stdout

@@ -10,6 +10,14 @@
 # Time" (-SkipTimezoneCheck exists ONLY for testing and must never be used for a real
 # install - it prints a loud warning every time it's used).
 #
+# An UPDATE never unregisters the existing task before the replacement is built (PK-E
+# follow-up, 2026-10-16: a real owner -Install once hit an unsupported parameter name while
+# building the replacement settings AFTER the old task had already been unregistered, turning
+# a live DMB-Shadow-Intelligence-AM task MISSING). New-ShadowScheduledTask now builds the
+# full action/trigger/settings/principal first and only then calls
+# Register-ScheduledTask -Force, which replaces an existing same-path task atomically - a
+# construction or registration failure leaves the pre-existing task untouched.
+#
 # See docs\SHADOW_PRODUCTION_OPERATIONS.md.
 
 [CmdletBinding()]
@@ -143,25 +151,45 @@ function Test-ShadowTimezoneIsIst {
 }
 
 function New-ShadowScheduledTask {
-    <# Registers ONE expected task for real. Only ever called from Invoke-ShadowTaskInstall,
-       which has already run every refusal check. Every step uses -ErrorAction Stop so any
-       cmdlet failure (e.g. a bad settings object) is a terminating error the caller's
-       try/catch sees - it must never fall through silently into a false "CREATED". #>
-    param([Parameter(Mandatory)]$Expected)
+    <# Builds + registers ONE expected task for real. Only ever called from
+       Invoke-ShadowTaskInstall, which has already run every refusal check. Every
+       construction step uses -ErrorAction Stop so any cmdlet failure (e.g. an unsupported
+       parameter name) is a terminating error BEFORE Register-ScheduledTask is ever reached -
+       it must never fall through silently into a false "CREATED"/"UPDATED", and on a CREATE
+       it must never leave a half-built task behind (nothing is registered until every
+       construction step below has already succeeded).
+
+       Battery/wake switches (PK-E follow-up, 2026-10-16): `Get-Command
+       New-ScheduledTaskSettingsSet -Syntax` on this PowerShell/ScheduledTasks module exposes
+       `-AllowStartIfOnBatteries` / `-DontStopIfGoingOnBatteries` / `-WakeToRun` - plain
+       switches, NOT `-DisallowStartIfOnBatteries:$bool` / `-StopIfGoingOnBatteries:$bool`
+       (those parameter names don't exist on this cmdlet at all; they are the live task
+       SETTINGS OBJECT's property names once registered, which is a different surface - a
+       previous version of this script wrongly assumed the cmdlet accepted the property
+       names, which threw "A parameter cannot be found..." and, worse, did so AFTER an UPDATE
+       had already unregistered the existing task, turning it MISSING). The desired policy
+       (DisallowStartIfOnBatteries=False, StopIfGoingOnBatteries=False, WakeToRun=True) is
+       fixed, never varies per task, so the switches are passed unconditionally here; the live
+       settings object's own properties (compared in Compare-ShadowTask) DO use the
+       Disallow.../StopIfGoingOnBatteries/WakeToRun names - that part was already correct. #>
+    param([Parameter(Mandatory)]$Expected, [switch]$Force)
     $action = New-ScheduledTaskAction -Execute $Expected.Execute -Argument $Expected.Arguments `
         -WorkingDirectory $Expected.WorkingDirectory -ErrorAction Stop
     $trigger = New-ScheduledTaskTrigger -Weekly `
         -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday -At $Expected.Time -ErrorAction Stop
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable `
         -ExecutionTimeLimit $script:ShadowExecutionTimeLimitSpan -RestartCount 0 `
-        -DisallowStartIfOnBatteries:$Expected.DisallowStartIfOnBatteries `
-        -StopIfGoingOnBatteries:$Expected.StopIfGoingOnBatteries `
-        -WakeToRun:$Expected.WakeToRun -ErrorAction Stop
+        -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -WakeToRun -ErrorAction Stop
     # Current interactive user, no stored password, no SYSTEM.
     $userId = "$env:USERDOMAIN\$env:USERNAME"
     $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited -ErrorAction Stop
+    # Every replacement object above is fully built and validated before this line runs. On an
+    # UPDATE, -Force lets Register-ScheduledTask replace the existing same-path task directly -
+    # there is no separate Unregister call and therefore no window where the old task is gone
+    # but the new one isn't registered yet.
     Register-ScheduledTask -TaskName $Expected.Name -TaskPath $script:ShadowTaskFolder `
-        -Action $action -Trigger $trigger -Settings $settings -Principal $principal -ErrorAction Stop | Out-Null
+        -Action $action -Trigger $trigger -Settings $settings -Principal $principal `
+        -Force:$Force -ErrorAction Stop | Out-Null
 }
 
 function Invoke-ShadowTaskInstall {
@@ -205,8 +233,11 @@ function Invoke-ShadowTaskInstall {
             }
             "UPDATE" {
                 try {
-                    Unregister-ScheduledTask -TaskName $exp.Name -TaskPath $script:ShadowTaskFolder -Confirm:$false -ErrorAction Stop
-                    New-ShadowScheduledTask -Expected $exp
+                    # Builds the full replacement (action/trigger/settings/principal) first,
+                    # then registers it with -Force - never unregisters the existing, provably
+                    # DMB-owned task first. If construction or registration fails, the
+                    # pre-existing task is left exactly as it was (never MISSING).
+                    New-ShadowScheduledTask -Expected $exp -Force
                     Write-Host "UPDATED   $($exp.Name)"
                 }
                 catch {

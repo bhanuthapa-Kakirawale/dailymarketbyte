@@ -146,7 +146,14 @@ class TradeCandidateAssessment:
     company: str | None
     sector: str | None
     capture_mode: str                       # POINT_IN_TIME | RECONSTRUCTED
-    generated_at: str
+    # The PIT cutoff this assessment honors: the latest timestamp whose information was
+    # eligible to be read (every per-subsystem read uses `retrieved_at <= candidate_as_of`,
+    # with each subsystem's own inclusive/exclusive convention - see context.py). Distinct from
+    # `captured_at` (below): for a live same-day capture the two are close but never the same
+    # field, and for a replay/catch-up they can be far apart (docs/PRIVATE_TRADE_CANDIDATES.md
+    # "Point-in-time capture contract").
+    candidate_as_of: str
+    captured_at: str                        # when THIS assessment object was physically computed
 
     research_priority: str
     eligibility_reasons: tuple

@@ -38,22 +38,26 @@ is ever deleted for failing a trade-quality filter.
 
 ```
 private_candidates/
-    models.py      TradeCandidateAssessment packet, ComponentScore envelope, every enum
-    policy.py      ScoringPolicy: weights, thresholds, score_policy_version (PROVISIONAL)
-    context.py     one read function per subsystem, each using THAT subsystem's own PIT primitive
-    metrics.py     the few small, new, documented deterministic calculations this package needed
-    eligibility.py DataQualityTier + ResearchPriority state machine
-    scoring.py     the 10 component scorers (A-J) + total
-    shortlist.py   raw ranking + sector-capped diversified shortlist with demotion reasons
-    store.py       immutable, versioned snapshot history (mirrors institutional_flows/store.py)
-    service.py     orchestration: replay -> eligibility -> metrics -> scoring -> shortlist
+    models.py        TradeCandidateAssessment packet, ComponentScore envelope, every enum
+    policy.py         ScoringPolicy: weights, thresholds, score_policy_version (PROVISIONAL)
+    context.py        one read function per subsystem, each using THAT subsystem's own PIT primitive
+    metrics.py         the few small, new, documented deterministic calculations this package needed
+    eligibility.py      DataQualityTier + ResearchPriority state machine
+    scoring.py          the 10 component scorers (A-J) + total
+    shortlist.py        raw ranking + sector-capped diversified shortlist with demotion reasons
+    store.py            immutable, versioned snapshot history (mirrors institutional_flows/store.py)
+    service.py          orchestration: replay -> eligibility -> metrics -> scoring -> shortlist
+    capture.py          automatic, idempotent, point-in-time-honest capture (intelligence_refresh calls this)
+    presentation.py     typed, read-only DTOs - the ONLY shape private_desk may consume
 ```
 
-`private_desk/services/trade_candidates.py` is the only private_desk-side glue: a thin,
-read-only wrapper rendering this package's output as the `/trade-candidates` page, the
-`/trade-candidates/{symbol}` detail page, and one Data Quality panel. It never writes a
-snapshot - `private_candidates.store.write_snapshot` is called only by this package's own
-service entry points, never from `private_desk`.
+`private_desk/services/trade_candidates.py` is the only private_desk-side glue: a pure
+pass-through over `presentation`'s DTOs, rendering the `/trade-candidates` page and the
+`/trade-candidates/{symbol}` detail page. It never writes a snapshot -
+`private_candidates.store.write_snapshot` is called only by `capture.py` (itself called only
+from `intelligence_refresh`, never from a Private Desk page view). The Data Quality panel's
+capture status is a plain READ of `intelligence_refresh`'s own recorded result
+(`private_desk/services/intelligence_freshness.py`), not a live recompute.
 
 ## Why some field names look unusual
 
@@ -69,11 +73,17 @@ the structural reference), never a reward:risk ratio, because no profit target e
 in this system to compute one from.
 
 `private_desk` also has a long-standing, test-enforced rule that its OWN source never
-introduces a "score" identifier (`test_no_new_score_is_introduced`). That rule is not weakened
-here: `private_desk/services/trade_candidates.py` reads the already-computed score via
-`getattr`/`.get(...)` (never a literal `score_*` identifier written in that file) and
-re-presents it under the desk-local name "quality points" - the same "Candidate Quality"
-framing used throughout this document and the owner's own spec.
+introduces a "score" identifier (`test_no_new_score_is_introduced`). **This is resolved by a
+typed presentation boundary, not a dynamic-access workaround** (an earlier draft of this
+package read the score via `getattr`/`.get(...)` inside `private_desk` itself to dodge the
+guard - removed, not weakened, after review). `private_candidates/presentation.py` builds
+read-only DTOs (`CandidateRow`, `CandidateDetailView`, `ComponentPresentation`,
+`CandidateBoardView`) that rename the score-shaped fields ONCE, at the package boundary -
+`score_total`/`score_max` become `quality_points`/`quality_max`, and so on -
+`private_desk/services/trade_candidates.py` then just reads these DTOs' attributes directly.
+No identifier containing "score" is ever written inside `private_desk/`'s own source, so the
+guard passes naturally; `tests/test_private_candidates_presentation.py` re-runs the same
+AST check directly against `trade_candidates.py` as a standing regression test.
 
 ## Component model (PROVISIONAL weights, max 100)
 
@@ -135,7 +145,35 @@ reference stays `prior_20_low`/`prior_20_high` from the existing `TechnicalStruc
 indicator. A future V2 could lift `market.key_levels`/`swing_points`/`trendline` to per-stock if
 the owner wants a richer reference.
 
-## Point-in-time contract (per subsystem - never one uniform wrapper)
+## Point-in-time capture contract
+
+Every `TradeCandidateAssessment` carries TWO distinct timestamps (this is the hardened design -
+see "History" below for the defect it replaces):
+
+- **`candidate_as_of`** - the authoritative cutoff: the latest instant whose information was
+  eligible for this calculation. Every per-subsystem read is bounded by it.
+- **`captured_at`** - when this assessment object was physically computed. Close to
+  `candidate_as_of` for a live capture, but conceptually distinct, and can be far apart for a
+  replay or a catch-up.
+
+`private_candidates.service.resolve_capture(session, candidate_as_of, capture_mode,
+captured_at)` resolves both, plus `capture_mode`:
+
+- `candidate_as_of` omitted -> defaults to `captured_at` (a genuinely LIVE run: "now", at the
+  moment the engine actually runs, IS the honest knowledge boundary - no padding needed, since
+  "now" is naturally later than every artifact an earlier step in the same evening's job
+  already wrote).
+- `candidate_as_of` given explicitly -> honored EXACTLY, never silently widened. An explicit
+  replay `as_of` of 19:20 must never see a 21:00 revision just because both fall on "the same
+  calendar day" - `tests/test_private_candidates_pit_and_store.py::
+  test_an_explicit_candidate_as_of_is_never_silently_widened_to_end_of_day` is the acceptance
+  test for this.
+- `capture_mode` omitted -> inferred as `POINT_IN_TIME` only when `candidate_as_of`'s own IST
+  calendar date equals `session` (an honest same-day claim); `RECONSTRUCTED` otherwise. A
+  caller with actual provenance proof (the automatic capture integration, below) may override
+  this explicitly in either direction - never fabricated silently.
+
+### Per-subsystem primitive (never one uniform wrapper)
 
 | Subsystem | Primitive this package calls | Cutoff semantics |
 |---|---|---|
@@ -145,12 +183,66 @@ the owner wants a richer reference.
 | Market Events | `market_events.store.load_latest(..., first_retrieved_before=cutoff_iso)` | strictly exclusive `<` |
 | OHLCV | date-bounded reads only (`DeskRepository.ohlcv_rows(..., end=session)`) | no revision chain - date-bounding alone is sufficient for a session fully in the past |
 
-This package deliberately bypasses two existing, NON-point-in-time shortcuts: `private_desk
-.repository`'s `market_structure()`/`universe()` (which read the mutable "current" artifact
-file, not a point-in-time revision) and `private_desk/services/market_events.py`'s
-`stock_official_rows` (which never passes `first_retrieved_before`). It calls
-`market_structure.store.load_revision_as_of` and `market_events.store.load_latest` directly
-instead.
+Every one of these reads is bounded by `candidate_as_of`, not by Radar's own `generated_at` or
+by an end-of-day default (see "History" below). This package deliberately bypasses two
+existing, NON-point-in-time shortcuts: `private_desk.repository`'s `market_structure()`/
+`universe()` (which read the mutable "current" artifact file, not a point-in-time revision) and
+`private_desk/services/market_events.py`'s `stock_official_rows` (which never passes
+`first_retrieved_before`). It calls `market_structure.store.load_revision_as_of` and
+`market_events.store.load_latest` directly instead.
+
+### History: the end-of-day defect, and why it was wrong
+
+An earlier draft derived the cutoff as `max(Radar replay's own as_of, end-of-day 23:59:59 on
+session)`. This was motivated by a real bug (a Market Structure artifact retrieved ~1 minute
+after that evening's Radar `generated_at` was falsely excluded), but the fix was itself
+dishonest: an EXPLICIT replay cutoff of 19:20 would still see a 21:00 revision, because both
+fall before the artificial 23:59:59 ceiling - "same calendar day" is not the same claim as "as
+of this exact instant". The real fix needed no padding at all: for a live run, "now" at the
+point the engine actually executes is ALREADY later than every artifact an earlier step in the
+same job just wrote, because the candidate-capture step runs AFTER them (see "Automatic
+capture" below) - the bug was in *which* clock was being used (Radar's own internal `as_of`,
+sometimes much earlier than "now"), not in needing a wider window.
+
+## Automatic capture (`capture.py`, intelligence_refresh integration)
+
+`private_candidates.capture.capture_latest_session(out_dir, session, now)` is the ONE
+integration point `intelligence_refresh.refresh.run_refresh` calls (as its own, independent
+step, never gated on `ensure_latest`'s "REPORT job already ran today" check - a candidate
+capture that failed one evening needs its own retry, even when the REPORT job itself
+succeeded). It never raises past its own boundary; every failure mode returns a status dict
+(`SUCCESS` / `FAILED` / `MISSING_INPUTS` / `NOT_APPLICABLE`).
+
+`capture.resolve_capture_as_of(repo, session, now)` decides `candidate_as_of`/`capture_mode`
+for an AUTOMATIC capture:
+
+- **Same calendar day** (`now`'s IST date == `session`): a genuinely live capture -
+  `candidate_as_of = now`, `capture_mode = POINT_IN_TIME`.
+- **Later** (an AM catch-up of a PM miss, or any later retry): `POINT_IN_TIME` is permitted
+  ONLY when provenance proves it - Radar's own `candidate_history_runs` COMPLETE marker for
+  `session` was itself `processed_at` on `session`'s OWN calendar day, never later. When that
+  holds, `candidate_as_of` is `session`'s end-of-day (23:59:59 IST): this is the one place
+  end-of-day is a legitimate boundary, because every subsystem read bounded by it can see
+  nothing from a later calendar day BY CONSTRUCTION - the cutoff itself is the proof, not a
+  separate check, and it is materializing a packet that genuinely WOULD have been produced that
+  evening, never silently widening an explicit replay cutoff.
+- When Radar's own capture for `session` itself happened on a LATER day (or no COMPLETE marker
+  exists at all), `POINT_IN_TIME` cannot be honestly claimed: `capture_mode = RECONSTRUCTED`
+  (or capture is skipped entirely as `MISSING_INPUTS` if nothing can be computed yet).
+
+**Idempotency**: `capture_latest_session` compares each freshly computed assessment against
+its latest stored revision (ignoring `captured_at`, which legitimately differs run to run) and
+only writes a new revision when the content genuinely changed - a repeated normal refresh
+reuses an unchanged historical record rather than rewriting it. A new `score_policy_version`
+always writes to its own folder, so V1 snapshots stay reproducible under their own policy even
+after a V2 policy exists.
+
+**Never triggered by a page view.** Opening `/trade-candidates` or the Data Quality page never
+calls `capture.py` - only `intelligence_refresh`'s own PM/AM invocations (or a direct CLI/test
+call) do. A candidate-capture failure can never corrupt Radar/Regime/other intelligence: it is
+wrapped so a `FAILED` result degrades (never blocks) the overall `intelligence_refresh` run,
+exactly like institutional-flow/market-events capture's existing posture inside
+`products/report_job.py`.
 
 ## Eligibility / data quality
 
@@ -176,12 +268,13 @@ same-sector member. Every demotion names its exact reason (`SECTOR_CONCENTRATION
 `private_candidates/store.py` mirrors `institutional_flows/store.py` exactly: immutable,
 exclusive-create revisions under
 `<out_dir>/private_candidates/<score_policy_version>/<session_date>/<symbol>.json` (`.r2.json`
-for a same-day re-run). A later `score_policy_version` writes to its own folder, so it
-structurally never touches an earlier version's files - a V1 snapshot stays reproducible under
-its own policy even after the policy changes. `capture_mode` (`POINT_IN_TIME` for a same-day
-run, `RECONSTRUCTED` for a backfill/replay) is stamped at build time, never inferred later from
-file metadata. This store is written only by `private_candidates.service.persist` - never by
-`private_desk`, which reads only `store.list_sessions`/`load_latest`.
+for a genuinely changed re-run - see "Automatic capture" above for idempotency). A later
+`score_policy_version` writes to its own folder, so it structurally never touches an earlier
+version's files - a V1 snapshot stays reproducible under its own policy even after the policy
+changes. `capture_mode`/`candidate_as_of` are resolved once (`service.resolve_capture`) and
+stamped at build time, never inferred later from file metadata. This store is written only by
+`private_candidates.capture`/`service.persist` - never by `private_desk`, which reads only
+`store.list_sessions`/`load_latest`.
 
 ## Limitations (V1, all explicitly provisional)
 
@@ -198,8 +291,12 @@ file metadata. This store is written only by `private_candidates.service.persist
   filings respectively - never a claim of stock-specific institutional buying/selling.
 - No historical Edge Analytics in V1: nothing here measures forward returns, MFE/MAE, or
   regime-/sector-conditioned outcomes. Snapshot history is captured with enough evidence to
-  support that analysis later, explicitly marked `POINT_IN_TIME`/`RECONSTRUCTED` so a later
-  reconstruction can never masquerade as something actually selected on that day.
+  support that analysis later, explicitly marked `POINT_IN_TIME`/`RECONSTRUCTED` (with
+  `candidate_as_of` recorded alongside) so a later reconstruction can never masquerade as
+  something actually knowable on that day.
+- The AM catch-up's `POINT_IN_TIME` claim rests on Radar's `candidate_history_runs.processed_at`
+  being itself dated on the session's own day - if that marker is ever missing or wrong, the
+  catch-up correctly falls back to `RECONSTRUCTED` rather than guessing.
 - No weight optimization against historical returns, no ML, no LLM, anywhere in this package
   (test-enforced).
 - Never reaches PUBLIC video production; no public planner imports this package (test-enforced).

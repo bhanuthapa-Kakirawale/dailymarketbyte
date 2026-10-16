@@ -71,8 +71,22 @@ no-ops when a valid report already exists (`ALREADY_BUILT`). See section 6.
 | `canonical_report` | LATEST_SESSION_ONLY | `main.produce_report` via `run_report_job` |
 | `intelligence_snapshot` | LATEST_SESSION_ONLY | `main.build_intelligence` |
 | `market_regime` | NOT_APPLICABLE | `private_desk.regime.RegimeStore` (lazy) |
+| `trade_candidates` | LATEST_SESSION_ONLY | `private_candidates.capture.capture_latest_session` |
 
-## 4. Two correctness details worth knowing
+## 4. Two correctness details worth knowing, plus `trade_candidates`'s own lever
+
+- **`trade_candidates` is captured independently of `ensure_latest`'s own "already run"
+  gate.** Every other `LATEST_SESSION_ONLY` component only advances as a side effect of
+  `run_report_job`, so once `ensure_latest` sees a SUCCESS/DEGRADED record for today it skips
+  re-invoking `run_report_job` entirely - including on the next morning's catch-up call. A
+  Trade Candidate Intelligence capture that failed the same evening (e.g. a required upstream
+  artifact was still missing) would never get retried through that path. `run_refresh` instead
+  calls `private_candidates.capture.capture_latest_session` as its own, always-attempted step,
+  resolving its own latest-final-session and deciding fresh each call whether anything is
+  missing (idempotent: an unchanged candidate is `reused`, never rewritten). See
+  docs/PRIVATE_TRADE_CANDIDATES.md "Point-in-time capture contract" for how it decides
+  POINT_IN_TIME vs RECONSTRUCTED on a catch-up.
+
 
 - **Today's unfinished session is never audited as "historical".** `scan.sessions_to_audit`
   bounds the window by the latest *final* session, never by `now.date()` - a session before

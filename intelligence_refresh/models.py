@@ -37,6 +37,9 @@ class RunManifest:
     resumed_from_run_id: str | None = None
     reclaimed_stale_lock: dict | None = None
     latest_session_result: dict | None = None
+    # Trade Candidate Intelligence's own automatic-capture result (PRIVATE_ANALYTICS only,
+    # independent of the main REPORT-job catch-up above - see private_candidates.capture).
+    trade_candidates_result: dict | None = None
     session_results: list = field(default_factory=list)   # [{session, components, session_status}]
     summary: dict = field(default_factory=dict)
     warnings: list = field(default_factory=list)
@@ -63,6 +66,7 @@ class RunManifest:
                 "orchestrator_status": self.orchestrator_status,
                 "started_at": self.started_at, "completed_at": self.completed_at,
                 "latest_session_result": self.latest_session_result,
+                "trade_candidates_result": self.trade_candidates_result,
                 "summary": self.summary, "blocking_reasons": list(self.blocking_reasons),
                 "warnings": list(self.warnings), "updated_at": _iso_now()}
 

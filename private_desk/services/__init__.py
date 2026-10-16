@@ -176,7 +176,6 @@ class DeskService:
         out["regime"] = qa.regime_quality(self, session)
         out["institutional"] = inst.quality_rows(self.repo, session)
         out["market_events"] = mev.quality_rows(self.repo, session)
-        out["trade_candidates"] = tc.quality_rows(self.repo, self.settings.regime_dir, session)
         return out
 
     def universe_symbols(self, session: dt.date) -> dict:

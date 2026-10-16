@@ -129,6 +129,19 @@
   <p class="note">{% for k, v in ir.summary.component_counts.items() %}{{ k }}: {{ v }}{% if not loop.last %} · {% endif %}{% endfor %}</p>
   {% endif %}
   {% endif %}
+  <h2 style="margin-top:8px">Trade Candidate Intelligence capture <span class="dim lc">automatic, idempotent - never triggered by viewing this page</span></h2>
+  {% set tc = ir.trade_candidates or {} %}
+  {% if tc.status %}
+  <table><thead><tr><th>Status</th><th>Session</th><th>Capture mode</th><th class="n">Candidates</th><th class="n">Eligible</th><th>Policy</th></tr></thead><tbody>
+  <tr><td><span class="b {{ 'ok' if tc.status == 'SUCCESS' else ('warn' if tc.status in ('MISSING_INPUTS', 'NOT_APPLICABLE') else 'bad') }}">{{ tc.status }}</span></td>
+    <td class="mono">{{ tc.session | na }}</td>
+    <td>{{ tc.capture_mode | na | label }}</td>
+    <td class="n">{{ tc.candidate_count | na }}</td>
+    <td class="n">{{ tc.eligible_count | na }}</td>
+    <td class="mono">{{ tc.score_policy_version | na }}</td></tr>
+  </tbody></table>
+  <p class="note">as of <span class="mono">{{ tc.candidate_as_of | na }}</span>{% if tc.basis %} - {{ tc.basis }}{% endif %}{% if tc.reason %} - {{ tc.reason }}{% endif %}</p>
+  {% else %}<p class="na">No Trade Candidate Intelligence capture recorded yet.</p>{% endif %}
 </section>
 
 <section class="panel">

@@ -40,6 +40,10 @@ def intelligence_refresh_status(repo: DeskRepository) -> dict:
                                  "raw_status": cr_status},
             "summary": d.get("summary") or {},
             "blocking": d.get("blocking_reasons") or [], "warnings": d.get("warnings") or [],
+            # Trade Candidate Intelligence's own automatic-capture result (owner hardening
+            # pass, section 10) - read straight off the SAME manifest `intelligence_refresh`
+            # already writes; never a live recompute triggered by viewing this page.
+            "trade_candidates": d.get("trade_candidates_result") or {},
             "file": os.path.relpath(path, repo.out_dir)}
 
 

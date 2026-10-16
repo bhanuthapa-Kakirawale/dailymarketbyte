@@ -56,6 +56,9 @@ def run_refresh(*, out_dir: str | None = None, now: dt.datetime | None = None, d
                                       report_job_fn=report_job_fn, calendar=calendar)
         man.latest_session_result = latest_result
 
+        man.trade_candidates_result = _capture_trade_candidates(
+            out_dir, now, dry_run=(dry_run or no_network), calendar=calendar)
+
         historical_sessions, _latest = scan.sessions_to_audit(
             out_dir, now, days=days, from_date=from_date, to_date=to_date,
             session_date=session_date, calendar=calendar)
@@ -66,7 +69,8 @@ def run_refresh(*, out_dir: str | None = None, now: dt.datetime | None = None, d
 
         man.session_results = session_results
         man.summary = _summarize(historical_sessions, session_results)
-        man.orchestrator_status = _derive_status(latest_result, session_results)
+        man.orchestrator_status = _derive_status(latest_result, session_results,
+                                                 man.trade_candidates_result)
         man.completed_at = dt.datetime.now(dt.timezone.utc).isoformat()
     except Exception as exc:
         man.failure = {"reason": f"{type(exc).__name__}: {exc}"}
@@ -150,7 +154,33 @@ def _summarize(historical_sessions: list, session_results: list) -> dict:
            "sessions_partially_recoverable": partial, "component_counts": component_counts}
 
 
-def _derive_status(latest_result: dict, session_results: list) -> str:
+def _capture_trade_candidates(out_dir: str, now: dt.datetime, *, dry_run: bool,
+                              calendar) -> dict:
+    """Trade Candidate Intelligence's own automatic-capture step - independent of the REPORT-
+    job catch-up above (`private_candidates.capture.capture_latest_session`, PRIVATE_ANALYTICS
+    only). Resolves its own latest-final-session, exactly like `ensure_latest` does, since its
+    one lever (catching up a missed capture) must still fire even when `ensure_latest` itself
+    finds the REPORT job ALREADY_RUN and skips re-invoking it - a candidate-capture miss must
+    get its own independent retry, never gated on the report job's own run-record. Never
+    raises: a candidate-capture failure must never corrupt Radar/Regime/other intelligence."""
+    from core.trading_calendar import SessionCalendar
+    from operations.sessions import latest_final_session
+    cal = calendar or SessionCalendar()
+    session = latest_final_session(now, cal)
+    if session is None:
+        return {"status": "SKIPPED", "session": None, "reason": "SESSION_UNKNOWN"}
+    if dry_run:
+        return {"status": "WOULD_RUN", "session": session.isoformat()}
+    try:
+        from private_candidates.capture import capture_latest_session
+        return capture_latest_session(out_dir, session, now)
+    except Exception as exc:
+        return {"status": "FAILED", "session": session.isoformat(),
+               "reason": f"{type(exc).__name__}: {exc}"}
+
+
+def _derive_status(latest_result: dict, session_results: list,
+                   trade_candidates_result: dict | None = None) -> str:
     if latest_result.get("reason") == "SESSION_UNKNOWN":
         return models.BLOCKED
     rj_status = latest_result.get("report_job_run_status")
@@ -171,6 +201,13 @@ def _derive_status(latest_result: dict, session_results: list) -> str:
         for status in row["components"].values():
             if status == registry.FAILED:
                 return models.DEGRADED
+    # Trade Candidate Intelligence is PRIVATE_ANALYTICS-only context, strictly additive: a
+    # FAILED capture degrades this run (visible, never silently dropped) but never blocks it -
+    # mirroring institutional-flow/market-events capture's own posture inside report_job.py.
+    # MISSING_INPUTS/NOT_APPLICABLE/SKIPPED/WOULD_RUN/SUCCESS are all expected, non-degrading
+    # outcomes (e.g. Radar hasn't run for this session yet, or there were no candidates).
+    if (trade_candidates_result or {}).get("status") == "FAILED":
+        return models.DEGRADED
     # HISTORICAL_UNAVAILABLE/UNSUPPORTED_HISTORICALLY on a non-price component is expected
     # every run (registry.LATEST_ONLY_KEYS/STATIC_KEYS for any non-latest session) and never a
     # degradation by itself.

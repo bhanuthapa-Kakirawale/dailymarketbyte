@@ -42,6 +42,11 @@ def run_status(*, out_dir: str | None = None, json_output: bool = False) -> tupl
     if cr:
         lines.append(_line("Canonical report",
                            f"{cr.get('status')} (expected {cr.get('expected_session')})"))
+    tcr = latest.get("trade_candidates_result") or {}
+    if tcr:
+        lines.append(_line("Trade candidates",
+                           f"{tcr.get('status')} session={tcr.get('session')} "
+                           f"mode={tcr.get('capture_mode')}"))
     summary = latest.get("summary") or {}
     for key in ("sessions_audited", "sessions_fully_recoverable",
                "sessions_partially_recoverable"):

@@ -17,7 +17,8 @@ def _assessment(**overrides) -> TradeCandidateAssessment:
     base = dict(
         schema_version="private-trade-candidate-1.0", score_policy_version="trade-candidate-score-1.0",
         session_date="2026-09-18", symbol="SYMA", company="Synthetic A Ltd.", sector="Healthcare",
-        capture_mode="POINT_IN_TIME", generated_at="2026-09-18T22:00:00+05:30",
+        capture_mode="POINT_IN_TIME", candidate_as_of="2026-09-18T22:00:00+05:30",
+        captured_at="2026-09-18T22:00:00+05:30",
         research_priority=ResearchPriority.ELIGIBLE.value, eligibility_reasons=("score 70.0/100",),
         data_quality_tier="COMPLETE", score_total=70.0, score_max=100.0,
         score_validation_status="PROVISIONAL", components=(),

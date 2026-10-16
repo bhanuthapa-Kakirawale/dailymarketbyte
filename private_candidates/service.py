@@ -10,6 +10,33 @@ recorded - so this package never re-implements RVOL/prior-high-low/relative-perf
 `repository` are read-only, exactly like this package's own relationship to the OTHER
 subsystems it reads context from; the dependency is one-directional in the sense that matters -
 nothing public ever reaches either package (test-enforced).
+
+## Point-in-time capture contract
+
+Every candidate assessment carries two distinct timestamps (owner hardening pass):
+
+`candidate_as_of`
+    The authoritative PIT cutoff: the latest instant whose information was eligible for this
+    calculation. Every per-subsystem read (`context.py`) is bounded by it, each using that
+    subsystem's OWN inclusive/exclusive convention - never a uniform wrapper.
+`captured_at`
+    When this assessment object was physically computed. Close to `candidate_as_of` for a live
+    capture, but conceptually distinct - and can be far apart for a replay or a catch-up.
+
+Resolution (`resolve_capture`):
+  - `candidate_as_of` omitted -> defaults to `captured_at` (a genuinely LIVE run: "now" is both
+    when this was computed AND the honest knowledge boundary - this is what fixed the original
+    bug motivating this design, since "now" at the point the candidate engine actually runs is
+    naturally later than every artifact an earlier step in the same evening's job already wrote,
+    with no artificial end-of-day padding required).
+  - `candidate_as_of` given explicitly -> honored EXACTLY, never silently widened (an explicit
+    replay `as_of` of 19:20 must never see a 21:00 revision just because both are "the same
+    calendar day" - that was the actual defect in the prior end-of-day-based cutoff).
+  - `capture_mode` omitted -> inferred as POINT_IN_TIME only when `candidate_as_of`'s own
+    calendar date (IST) equals `session` (an honest same-day claim); RECONSTRUCTED otherwise.
+    A caller with actual provenance proof (`capture.resolve_capture_as_of`, used by the
+    automatic intelligence_refresh integration) may override this explicitly in either
+    direction - never fabricated silently here.
 """
 from __future__ import annotations
 
@@ -28,26 +55,18 @@ def _default_regime_dir(out_dir: str) -> str:
     return DeskSettings.from_out_dir(out_dir).regime_dir
 
 
-def _cutoff(replay: dict, session: dt.date) -> dt.datetime:
-    """The point-in-time cutoff for every OTHER subsystem read: the LATER of the Radar replay's
-    own `as_of` and end-of-day (23:59:59 IST) on `session`. End-of-day alone would already be
-    correct (every same-evening REPORT-job artifact - Radar, Market Structure, institutional
-    flows, market events - is captured well before midnight, and a genuinely later revision has
-    a `retrieved_at` on a LATER calendar day, so it is still excluded); taking the later of the
-    two guards against the different sub-steps of one evening's run finishing in a different
-    order than Radar's own completion time would suggest (confirmed against real production
-    data: a Market Structure artifact retrieved ~1 minute after that evening's Radar artifact's
-    own `generated_at`, which would otherwise have falsely excluded it as point-in-time)."""
+def resolve_capture(session: dt.date, candidate_as_of: dt.datetime | None,
+                    capture_mode: str | None,
+                    captured_at: dt.datetime | None) -> tuple:
+    """`(candidate_as_of, capture_mode, captured_at)` - see module docstring. Pure; takes no
+    clock itself so every caller's choice of "now" (or an injected one, in tests) is explicit."""
     from config import IST
-    end_of_day = dt.datetime.combine(session, dt.time(23, 59, 59), tzinfo=IST)
-    raw = replay.get("as_of") if replay else None
-    if raw:
-        try:
-            as_of = dt.datetime.fromisoformat(raw)
-            return max(as_of, end_of_day)
-        except ValueError:
-            pass
-    return end_of_day
+    captured_at = captured_at or dt.datetime.now(dt.timezone.utc)
+    candidate_as_of = candidate_as_of or captured_at
+    if capture_mode is None:
+        capture_mode = (POINT_IN_TIME if candidate_as_of.astimezone(IST).date() == session
+                        else RECONSTRUCTED)
+    return candidate_as_of, capture_mode, captured_at
 
 
 def _nearest_event(events: list, session: dt.date, calendar) -> tuple:
@@ -79,13 +98,13 @@ def _evidence_summary(components: tuple) -> tuple:
 
 
 def assess_candidate(repo, symbol: str, stored, *, replay: dict, reconcile_status: str,
-                     session: dt.date, cutoff: dt.datetime, sector_map: dict,
+                     session: dt.date, candidate_as_of: dt.datetime, sector_map: dict,
                      members_by_sector: dict, nsdl_by_sector: dict, regime_snaps: list,
                      benchmark_series: list, calendar, universe_company: dict,
                      policy: policy_mod.ScoringPolicy, capture_mode: str,
-                     generated_at: dt.datetime) -> TradeCandidateAssessment:
+                     captured_at: dt.datetime) -> TradeCandidateAssessment:
     out_dir = repo.out_dir
-    cutoff_iso = cutoff.isoformat()
+    cutoff_iso = candidate_as_of.isoformat()
 
     replay_symbol = (replay.get("symbols") or {}).get(symbol) if replay.get("status") == "OK" else None
     replay_candidate = (replay.get("candidates") or {}).get(symbol) if replay.get("status") == "OK" else None
@@ -183,7 +202,7 @@ def assess_candidate(repo, symbol: str, stored, *, replay: dict, reconcile_statu
         schema_version=SCHEMA_VERSION, score_policy_version=policy.score_policy_version,
         session_date=session.isoformat(), symbol=symbol,
         company=universe_company.get(symbol), sector=sector, capture_mode=capture_mode,
-        generated_at=generated_at.isoformat(),
+        candidate_as_of=candidate_as_of.isoformat(), captured_at=captured_at.isoformat(),
         research_priority=elig["research_priority"],
         eligibility_reasons=elig["eligibility_reasons"],
         data_quality_tier=elig["data_quality_tier"], score_total=score_total,
@@ -205,10 +224,13 @@ def assess_candidate(repo, symbol: str, stored, *, replay: dict, reconcile_statu
 
 def build_assessments(repo, session: dt.date, *, regime_dir: str | None = None,
                       policy: policy_mod.ScoringPolicy = policy_mod.DEFAULT_SCORING_POLICY,
-                      capture_mode: str = POINT_IN_TIME,
-                      generated_at: dt.datetime | None = None) -> list:
+                      candidate_as_of: dt.datetime | None = None,
+                      capture_mode: str | None = None,
+                      captured_at: dt.datetime | None = None) -> list:
     """One `TradeCandidateAssessment` per stored Radar candidate for `session` - the full,
-    retained list (owner spec section 3: every Radar candidate is retained for auditability)."""
+    retained list (owner spec section 3: every Radar candidate is retained for auditability).
+
+    See the module docstring for `candidate_as_of`/`capture_mode`/`captured_at` resolution."""
     from private_desk.replay import get_replay, reconcile
 
     stored = repo.candidates(session)
@@ -216,14 +238,13 @@ def build_assessments(repo, session: dt.date, *, regime_dir: str | None = None,
         return []
     out_dir = repo.out_dir
     regime_dir = regime_dir or _default_regime_dir(out_dir)
-    generated_at = generated_at or dt.datetime.now(dt.timezone.utc)
+    candidate_as_of, capture_mode, captured_at = resolve_capture(
+        session, candidate_as_of, capture_mode, captured_at)
+    cutoff_iso = candidate_as_of.isoformat()
 
     replay = get_replay(repo, None, session)
     reconcile_map = reconcile(replay, stored) if replay.get("status") == "OK" else {
         c.instrument: "NOT_REPLAYED" for c in stored}
-
-    cutoff = _cutoff(replay, session)
-    cutoff_iso = cutoff.isoformat()
 
     ms_artifact = context.market_structure_as_of(out_dir, session, cutoff_iso)
     sector_map, members_by_sector = context.sector_map_and_members(ms_artifact)
@@ -233,7 +254,7 @@ def build_assessments(repo, session: dt.date, *, regime_dir: str | None = None,
     regime_snaps = context.regime_snapshots(repo, regime_dir, session,
                                             n=policy.regime_streak_lookback + 1)
 
-    nsdl_flows = context.nsdl_sector_flows(out_dir, cutoff, on_or_before=session)
+    nsdl_flows = context.nsdl_sector_flows(out_dir, candidate_as_of, on_or_before=session)
     nsdl_by_sector = {f.display_sector: f for f in nsdl_flows if f.display_sector}
 
     benchmark_series = repo.benchmark_series(session)
@@ -244,12 +265,12 @@ def build_assessments(repo, session: dt.date, *, regime_dir: str | None = None,
     for c in stored:
         out.append(assess_candidate(
             repo, c.instrument, c, replay=replay, reconcile_status=reconcile_map.get(
-                c.instrument, "NOT_REPLAYED"), session=session, cutoff=cutoff,
+                c.instrument, "NOT_REPLAYED"), session=session, candidate_as_of=candidate_as_of,
             sector_map=sector_map, members_by_sector=members_by_sector,
             nsdl_by_sector=nsdl_by_sector, regime_snaps=regime_snaps,
             benchmark_series=benchmark_series, calendar=calendar,
             universe_company=universe_company, policy=policy, capture_mode=capture_mode,
-            generated_at=generated_at))
+            captured_at=captured_at))
     return out
 
 
@@ -277,7 +298,8 @@ def _correlation_lookup(repo, ranking: list, policy: policy_mod.ScoringPolicy,
 
 def run(out_dir: str, session: dt.date, *, repo=None, regime_dir: str | None = None,
        policy: policy_mod.ScoringPolicy = policy_mod.DEFAULT_SCORING_POLICY,
-       capture_mode: str = POINT_IN_TIME, generated_at: dt.datetime | None = None) -> dict:
+       candidate_as_of: dt.datetime | None = None, capture_mode: str | None = None,
+       captured_at: dt.datetime | None = None) -> dict:
     """The full pass: build every assessment, then the raw ranking and diversified shortlist.
     `repo` lets a caller that already holds a `DeskRepository` (e.g. `DeskService`) reuse it
     instead of constructing a second one - `DeskRepository` is a plain read-only wrapper, so
@@ -286,22 +308,29 @@ def run(out_dir: str, session: dt.date, *, repo=None, regime_dir: str | None = N
         from private_desk.repository import DeskRepository
         repo = DeskRepository(out_dir)
     assessments = build_assessments(repo, session, regime_dir=regime_dir, policy=policy,
-                                    capture_mode=capture_mode, generated_at=generated_at)
+                                    candidate_as_of=candidate_as_of, capture_mode=capture_mode,
+                                    captured_at=captured_at)
     ranking = raw_ranking(assessments)
     correlation_lookup = _correlation_lookup(repo, ranking, policy, session)
     sl = diversified_shortlist(ranking, policy=policy, correlation_lookup=correlation_lookup)
+    resolved_capture_mode = assessments[0].capture_mode if assessments else capture_mode
     return {"session_date": session.isoformat(), "score_policy_version": policy.score_policy_version,
-           "capture_mode": capture_mode, "candidate_count": len(assessments),
+           "capture_mode": resolved_capture_mode, "candidate_count": len(assessments),
            "eligible_count": sum(1 for a in assessments if a.research_priority == "ELIGIBLE"),
            "assessments": assessments, "raw_ranking": ranking, "shortlist": sl["shortlist"],
            "demoted": sl["demoted"]}
 
 
 def persist(out_dir: str, assessments: list) -> list:
-    """Writes one immutable snapshot revision per assessment. Returns the written paths."""
+    """Writes one immutable snapshot revision per assessment. Returns the written paths.
+
+    Unconditional (always appends a new revision) - callers that want idempotent, content-
+    aware capture (never rewriting an unchanged historical record) use `capture.
+    capture_latest_session` instead, which decides SKIP/WRITE per candidate before calling
+    this."""
     from . import store
     return [store.write_snapshot(out_dir, a) for a in assessments]
 
 
-__all__ = ["build_assessments", "assess_candidate", "run", "persist", "POINT_IN_TIME",
-          "RECONSTRUCTED"]
+__all__ = ["build_assessments", "assess_candidate", "run", "persist", "resolve_capture",
+          "POINT_IN_TIME", "RECONSTRUCTED"]

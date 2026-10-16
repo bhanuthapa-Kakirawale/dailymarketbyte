@@ -9,7 +9,8 @@ def _a(symbol, sector, score, priority=ResearchPriority.ELIGIBLE.value) -> Trade
     return TradeCandidateAssessment(
         schema_version="private-trade-candidate-1.0", score_policy_version="v1",
         session_date="2026-09-18", symbol=symbol, company=None, sector=sector,
-        capture_mode="POINT_IN_TIME", generated_at="2026-09-18T22:00:00+05:30",
+        capture_mode="POINT_IN_TIME", candidate_as_of="2026-09-18T22:00:00+05:30",
+        captured_at="2026-09-18T22:00:00+05:30",
         research_priority=priority, eligibility_reasons=(), data_quality_tier="COMPLETE",
         score_total=score, score_max=100.0, score_validation_status="PROVISIONAL",
         components=(), radar_reason_codes=(), radar_active_families=(),

@@ -87,6 +87,14 @@ COMPONENTS: dict[str, ComponentSpec] = {
         key="market_regime", backfill_mode=NOT_APPLICABLE, requires_network=False,
         engine_ref="private_desk.regime.RegimeStore (lazy, derived on every page view)",
         repair_fn=None),
+    "trade_candidates": ComponentSpec(
+        key="trade_candidates", backfill_mode=LATEST_SESSION_ONLY, requires_network=False,
+        engine_ref="private_candidates.capture.capture_latest_session - PRIVATE_ANALYTICS "
+                   "only, never part of PRE/POST; the one lever is catching up the latest "
+                   "final session (point-in-time when captured same-day, or when Radar's own "
+                   "run for it provably completed on its own calendar day; RECONSTRUCTED "
+                   "otherwise - see docs/PRIVATE_TRADE_CANDIDATES.md)",
+        repair_fn=None),
 }
 
 # The only components a historical (non-latest) session can ever genuinely repair.

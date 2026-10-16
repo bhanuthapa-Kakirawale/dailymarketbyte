@@ -102,3 +102,57 @@ def test_public_pipeline_never_imports_private_candidates():
     from test_private_desk import test_dmb_critical_path_never_imports_the_desk
     test_dmb_critical_path_never_imports_the_desk()
     test_public_critical_path_never_imports_private_candidates_or_the_desk()
+
+
+# ------------------------------------------------------------------ owner hardening pass, section 13
+def test_public_pre_post_cannot_consume_candidate_ranking(desk_out):
+    """Behavioral, not just import-absence: build real `private_candidates` output (an
+    assessment, a board view) in this SAME process, then build a real PUBLIC POST storyboard
+    and assert nothing about it changed or leaked - mirrors
+    `test_private_regime.py::test_public_gate_still_blocks_named_stock_technicals_with_the_desk_loaded`'s
+    pattern of proving the public gate is unaffected even with the private package loaded and
+    actively used."""
+    from private_candidates import presentation, service
+    from private_desk.repository import DeskRepository
+    from test_public_publication import _post
+
+    repo = DeskRepository(desk_out)
+    run = service.run(desk_out, SESSION, repo=repo)
+    board = presentation.CandidateBoardView.from_run(run)   # private_candidates genuinely used
+    assert board.candidate_count >= 0                        # (sanity: not a no-op import)
+
+    sb = _post()
+    assert sb.publication_profile == "PUBLIC_UNREGISTERED"
+    kinds = [s.kind for s in sb.scenes]
+    assert "RADAR_STORY" not in kinds and "MOVERS" not in kinds
+    public_text = " ".join(sb.public_text().values()).lower()
+    for marker in ("quality_points", "research_priority", "trade candidate",
+                  "point_in_time", "reconstructed", board.quality_policy_version or ""):
+        if marker:
+            assert marker.lower() not in public_text
+
+
+# ------------------------------------------------------------------ owner hardening pass, section 14
+def test_candidate_engine_cannot_place_or_construct_a_broker_order():
+    """Independent of public isolation (section 13): the candidate engine has zero execution
+    authority, checked both by source (no order/quantity/broker-shaped field or import
+    anywhere) and by the packet's own forbidden-token contract."""
+    from private_candidates.models import TradeCandidateAssessment
+    from private_desk.packet import FORBIDDEN_FIELD_TOKENS
+    for name in TradeCandidateAssessment.__dataclass_fields__:
+        tokens = set(name.lower().split("_"))
+        assert not tokens & set(FORBIDDEN_FIELD_TOKENS), name
+
+    # Deliberately NOT a bare BUY/SELL word-ban: this package's own docstrings legitimately
+    # NAME those words to disclaim them (e.g. "never a BUY/SELL rating"). The unambiguous
+    # signals are these literal API/field shapes, which have no legitimate reason to appear
+    # in a context/research-only package at all.
+    banned_literals = ("place_order", "place_gtt_order", "modify_order", "cancel_order",
+                      "KiteConnect", "transaction_type", "quantity=", "--upload")
+    for f in os.listdir(PRIVATE_CANDIDATES_PKG):
+        if not f.endswith(".py"):
+            continue
+        path = os.path.join(PRIVATE_CANDIDATES_PKG, f)
+        src = open(path, encoding="utf-8").read()
+        for literal in banned_literals:
+            assert literal not in src, f"{f}: {literal}"

@@ -11,9 +11,10 @@
   <dl class="facts">
     <dt>Company / sector</dt><dd>{{ detail.company | na }} / {{ detail.sector | na }}</dd>
     <dt>Research state</dt><dd><span class="b {{ 'ok' if detail.research_priority == 'ELIGIBLE' else ('warn' if detail.research_priority == 'REVIEW' else 'unv') }}">{{ detail.research_priority | label }}</span></dd>
-    <dt>Quality score</dt><dd>{{ detail.score_total | num(0) }} / {{ detail.score_max | num(0) }} <span class="dim">(score policy {{ detail.score_policy_version }}, {{ detail.score_validation_status }})</span></dd>
+    <dt>Quality points</dt><dd>{{ detail.quality_points | num(0) }} / {{ detail.quality_max | num(0) }} <span class="dim">(policy {{ detail.quality_policy_version }}, {{ detail.quality_validation_status }})</span></dd>
     <dt>Data quality</dt><dd>{{ detail.data_quality_tier | label }}</dd>
     <dt>Capture mode</dt><dd>{{ detail.capture_mode | label }}</dd>
+    <dt>Candidate as of / captured at</dt><dd class="mono">{{ detail.candidate_as_of }} / {{ detail.captured_at }}</dd>
     <dt>Eligibility reasons</dt><dd>{% for r in detail.eligibility_reasons %}{{ r }}{% if not loop.last %}; {% endif %}{% endfor %}</dd>
     {% if detail.flags %}<dt>Flags</dt><dd>{% for f in detail.flags %}<span class="b warn">{{ f | label }}</span> {% endfor %}</dd>{% endif %}
   </dl>

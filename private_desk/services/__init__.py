@@ -131,13 +131,18 @@ class DeskService:
         """The dedicated Market Events page."""
         return mev.all_sections(self.repo, session)
 
-    def trade_candidates(self, session: dt.date) -> dict:
+    def trade_candidates(self, session: dt.date, *, view: str | None = None,
+                         live: bool = False) -> dict:
         """The dedicated Trade Candidate Intelligence page - raw ranking + diversified
-        shortlist over today's Radar candidates. See docs/PRIVATE_TRADE_CANDIDATES.md."""
-        return tc.candidates_view(self.repo, self.settings.regime_dir, session)
+        shortlist over today's Radar candidates, from the stored snapshot unless `live`.
+        See docs/PRIVATE_TRADE_CANDIDATES.md."""
+        return tc.candidates_view(self.repo, self.settings.regime_dir, session, view=view,
+                                  live=live)
 
-    def trade_candidate_detail(self, symbol: str, session: dt.date) -> dict | None:
-        return tc.candidate_detail(self.repo, self.settings.regime_dir, session, symbol)
+    def trade_candidate_detail(self, symbol: str, session: dt.date, *,
+                               live: bool = False) -> dict | None:
+        return tc.candidate_detail(self.repo, self.settings.regime_dir, session, symbol,
+                                   live=live)
 
     def stock(self, symbol: str, session: dt.date) -> dict:
         symbol = symbol.upper()

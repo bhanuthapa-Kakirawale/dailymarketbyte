@@ -225,23 +225,23 @@ def create_app(settings: DeskSettings) -> FastAPI:
         return page(request, "events.html", s, notice, d=svc.market_events(s), family=family)
 
     @app.get("/trade-candidates", response_class=HTMLResponse)
-    def trade_candidates(request: Request, session: str | None = None):
+    def trade_candidates(request: Request, session: str | None = None, view: str = "",
+                         live: int = 0):
         s, notice = svc.resolve_session(session)
         if s is None:
             return unavailable(request, notice, "trade-candidates")
-        return page(request, "trade_candidates.html", s, notice, d=svc.trade_candidates(s))
+        return page(request, "trade_candidates.html", s, notice,
+                    d=svc.trade_candidates(s, view=view, live=bool(live)), live=bool(live))
 
     @app.get("/trade-candidates/{symbol}", response_class=HTMLResponse)
-    def trade_candidate_detail(request: Request, symbol: str, session: str | None = None):
+    def trade_candidate_detail(request: Request, symbol: str, session: str | None = None,
+                               live: int = 0):
         s, notice = svc.resolve_session(session)
         if s is None:
             return unavailable(request, notice, "trade-candidates")
-        detail = svc.trade_candidate_detail(symbol, s)
-        if detail is None:
-            return page(request, "trade_candidate_detail.html", s, notice, symbol=symbol.upper(),
-                       detail=None)
+        detail = svc.trade_candidate_detail(symbol, s, live=bool(live))
         return page(request, "trade_candidate_detail.html", s, notice, symbol=symbol.upper(),
-                   detail=detail)
+                   detail=detail, live=bool(live))
 
     @app.get("/regime", response_class=HTMLResponse)
     def regime(request: Request, session: str | None = None):

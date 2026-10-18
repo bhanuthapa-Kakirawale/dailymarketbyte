@@ -219,6 +219,8 @@ def _desk_sources():
 ALL_PAGES = ["/", "/radar", "/radar.csv", "/stock", "/stock/SYMA", "/stock/SYMB", "/stock/SYMD",
              "/stock?q=SYMC", "/api/chart/SYMA", "/api/chart/SYMC", "/sectors", "/institutional",
              "/trade-candidates", "/trade-candidates/SYMA", "/trade-candidates/SYMD",
+             "/trade-candidates?view=ALL", "/trade-candidates?live=1",
+             "/trade-candidates/SYMA?live=1",
              "/history", "/history?family=VOLUME", "/quality", "/healthz"]
 
 

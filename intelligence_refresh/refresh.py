@@ -24,6 +24,7 @@ def run_refresh(*, out_dir: str | None = None, now: dt.datetime | None = None, d
                 calendar=None, report_job_fn=None) -> models.RunManifest:
     import config
     out_dir = out_dir or config.OUT_DIR
+    now_injected = now is not None
     now = now or _now_ist()
     argv = list(sys.argv)
 
@@ -56,8 +57,12 @@ def run_refresh(*, out_dir: str | None = None, now: dt.datetime | None = None, d
                                       report_job_fn=report_job_fn, calendar=calendar)
         man.latest_session_result = latest_result
 
+        # Re-read the clock: the REPORT job above may have just written this session's
+        # artifacts, and the candidate cutoff must not precede them.
+        capture_now = now if now_injected else _now_ist()
         man.trade_candidates_result = _capture_trade_candidates(
-            out_dir, now, dry_run=(dry_run or no_network), calendar=calendar)
+            out_dir, now, dry_run=(dry_run or no_network), calendar=calendar,
+            capture_now=capture_now)
 
         historical_sessions, _latest = scan.sessions_to_audit(
             out_dir, now, days=days, from_date=from_date, to_date=to_date,
@@ -155,14 +160,17 @@ def _summarize(historical_sessions: list, session_results: list) -> dict:
 
 
 def _capture_trade_candidates(out_dir: str, now: dt.datetime, *, dry_run: bool,
-                              calendar) -> dict:
+                              calendar, capture_now: dt.datetime | None = None) -> dict:
     """Trade Candidate Intelligence's own automatic-capture step - independent of the REPORT-
     job catch-up above (`private_candidates.capture.capture_latest_session`, PRIVATE_ANALYTICS
     only). Resolves its own latest-final-session, exactly like `ensure_latest` does, since its
     one lever (catching up a missed capture) must still fire even when `ensure_latest` itself
     finds the REPORT job ALREADY_RUN and skips re-invoking it - a candidate-capture miss must
     get its own independent retry, never gated on the report job's own run-record. Never
-    raises: a candidate-capture failure must never corrupt Radar/Regime/other intelligence."""
+    raises: a candidate-capture failure must never corrupt Radar/Regime/other intelligence.
+
+    The session is resolved from `now` (the same session `ensure_latest` handled); the capture's
+    point-in-time clock is `capture_now`, taken after the REPORT job."""
     from core.trading_calendar import SessionCalendar
     from operations.sessions import latest_final_session
     cal = calendar or SessionCalendar()
@@ -173,7 +181,7 @@ def _capture_trade_candidates(out_dir: str, now: dt.datetime, *, dry_run: bool,
         return {"status": "WOULD_RUN", "session": session.isoformat()}
     try:
         from private_candidates.capture import capture_latest_session
-        return capture_latest_session(out_dir, session, now)
+        return capture_latest_session(out_dir, session, capture_now or now)
     except Exception as exc:
         return {"status": "FAILED", "session": session.isoformat(),
                "reason": f"{type(exc).__name__}: {exc}"}

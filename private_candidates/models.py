@@ -15,7 +15,11 @@ import datetime as dt
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 
-SCHEMA_VERSION = "private-trade-candidate-1.0"
+SCHEMA_VERSION = "private-trade-candidate-1.1"
+
+# Informational flag: the session's own price move contradicts the Radar's multi-session
+# direction (V1 components are computed from the day's move, so this makes that visible).
+DAY_MOVE_AGAINST_RADAR_DIRECTION = "DAY_MOVE_AGAINST_RADAR_DIRECTION"
 
 
 class ResearchPriority(str, Enum):
@@ -195,6 +199,10 @@ class TradeCandidateAssessment:
     risk_evidence: tuple
     missing_context: tuple
     flags: tuple = field(default_factory=tuple)
+    # The Radar's own stored `direction_compatibility` (STRUCTURE + RELATIVE evidence only:
+    # ALIGNED_POSITIVE / ALIGNED_NEGATIVE / MIXED / NON_DIRECTIONAL). Display/view only - V1
+    # scoring still reads the day's price move. None on snapshots written before schema 1.1.
+    radar_direction: str | None = None
     notes: tuple = field(default_factory=lambda: (
         "Research priority, not a trade recommendation.",
         "Score is PROVISIONAL and has not been historically validated.",
@@ -223,7 +231,8 @@ def total_max_score() -> float:
     return 100.0
 
 
-__all__ = ["SCHEMA_VERSION", "ResearchPriority", "DataQualityTier", "MTFAlignment",
+__all__ = ["SCHEMA_VERSION", "DAY_MOVE_AGAINST_RADAR_DIRECTION", "ResearchPriority",
+          "DataQualityTier", "MTFAlignment",
           "VolatilityBand", "LiquidityBand", "EventProximity", "ExtensionState", "PullbackState",
           "RiskWidthLabel", "RegimeAlignment", "SETUP_QUALITY", "MARKET_ALIGNMENT",
           "SECTOR_ALIGNMENT", "RELATIVE_STRENGTH", "MTF_CONFIRMATION",

@@ -68,6 +68,13 @@
 <span class="rl rl-{{ r | lower }}" title="market environment label - context, not a signal">{{ r | replace('_', ' ') }}</span>
 {%- endmacro %}
 
+{% macro tcdir(rd) -%}
+{% if rd == 'ALIGNED_POSITIVE' %}<span class="b ok" title="Radar evidence (structure + relative) points up">UPSIDE</span>
+{%- elif rd == 'ALIGNED_NEGATIVE' %}<span class="b bad" title="Radar evidence (structure + relative) points down">DOWNSIDE</span>
+{%- elif rd == 'MIXED' %}<span class="b unv" title="Radar's structure and relative evidence disagree">MIXED</span>
+{%- else %}<span class="b no" title="no directional Radar evidence recorded">{{ rd | label }}</span>{% endif %}
+{%- endmacro %}
+
 {% macro uq(g, always=false) -%}
 {% set q = g.universe_quality %}{% set note = (g.universe or {}).universe_note or '' %}
 {% if q == 'POINT_IN_TIME' %}{% if always %}<span class="uq uq-pit" title="{{ note }}">POINT-IN-TIME</span>{% endif %}

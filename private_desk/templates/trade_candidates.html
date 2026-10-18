@@ -1,20 +1,34 @@
 {% extends "base.html" %}
+{% import "_macros.html" as m %}
 {% block title %}Trade Candidates {{ session }}{% endblock %}
 {% block content %}
+{% set upside_only = d.view == 'UPSIDE' %}
+{% set dc = d.direction_counts or {} %}
+{% set lq = '&live=1' if live else '' %}
 <h1>Trade Candidate Intelligence <span class="sub">session {{ session }} · PROVISIONAL, deterministic research priority over today's Radar candidates - never a trade recommendation</span></h1>
 
 <div class="banner info">Score policy <b>{{ d.quality_policy_version }}</b> · capture mode <b>{{ d.capture_mode | label }}</b> · {{ d.candidate_count }} Radar candidate(s), {{ d.eligible_count }} ELIGIBLE. A Radar candidate is NOT automatically a trade candidate - every candidate is scored on setup quality, market/sector alignment, range position, liquidity/volatility, event proximity and data quality, and the score is PROVISIONAL (not historically validated).</div>
+{% if d.source == 'STORED_SNAPSHOT' %}
+<div class="banner info">Showing the <b>stored evening snapshot</b> - what the automatic capture recorded at its own cutoff (captured {{ d.captured_first }}{% if d.captured_last != d.captured_first %} to {{ d.captured_last }}{% endif %}). <a href="/trade-candidates?session={{ session }}&amp;view={{ d.view }}&amp;live=1">Re-evaluate now (live)</a></div>
+{% else %}
+<div class="banner warn">Showing a <b>live re-evaluation</b> (cutoff = now) - {% if live %}requested{% else %}no current stored snapshot exists for this session{% endif %}. For a past session this can include information published after that evening.{% if live %} <a href="/trade-candidates?session={{ session }}&amp;view={{ d.view }}">Show the stored snapshot</a>{% endif %}</div>
+{% endif %}
+
+<p class="note">Radar direction: {{ m.tcdir('ALIGNED_POSITIVE') }} {{ dc.UPSIDE or 0 }} · {{ m.tcdir('ALIGNED_NEGATIVE') }} {{ dc.DOWNSIDE or 0 }} · {{ m.tcdir('MIXED') }} {{ dc.MIXED or 0 }}.
+{% if upside_only %}The ranking and shortlist below cover <b>upside setups only</b> (long-only view); downside and mixed setups are listed further down as information only - <a href="/trade-candidates?session={{ session }}&amp;view=ALL{{ lq }}">rank all directions</a>.
+{% else %}The ranking and shortlist cover every direction - <a href="/trade-candidates?session={{ session }}&amp;view=UPSIDE{{ lq }}">upside only</a>.{% endif %}</p>
 
 <section class="panel">
-  <h2>Diversified review shortlist <span class="dim lc">raw ranking, capped per sector - see "Raw ranking" below for the full, unfiltered order</span></h2>
+  <h2>Diversified review shortlist <span class="dim lc">{% if upside_only %}upside setups, {% endif %}raw ranking capped per sector - see "Raw ranking" below for the full, unfiltered order</span></h2>
   {% if d.shortlist %}
-  <table class="sortable"><thead><tr><th class="sort n">Rank</th><th class="sort">Symbol</th><th class="sort">Sector</th>
+  <table class="sortable"><thead><tr><th class="sort n">Rank</th><th class="sort">Symbol</th><th class="sort">Direction</th><th class="sort">Sector</th>
     <th class="sort n">Quality</th><th class="sort">Research state</th><th class="sort">Extension</th>
     <th class="sort">Weekly</th><th class="sort">Volatility</th><th class="sort">Liquidity</th>
     <th class="sort">Event</th></tr></thead><tbody>
   {% for r in d.shortlist %}<tr>
     <td class="n">{{ r.rank }}</td>
-    <td><a href="/trade-candidates/{{ r.symbol }}?session={{ session }}">{{ r.symbol }}</a></td>
+    <td><a href="/trade-candidates/{{ r.symbol }}?session={{ session }}{{ lq }}">{{ r.symbol }}</a>{% if 'DAY_MOVE_AGAINST_RADAR_DIRECTION' in r.flags %} <span class="b warn" title="the day's move went against the Radar direction; V1 components read the day's move">DAY AGAINST</span>{% endif %}</td>
+    <td>{{ m.tcdir(r.radar_direction) }}</td>
     <td>{{ r.sector | na }}</td>
     <td class="n" data-v="{{ r.quality_points }}">{{ r.quality_points | num(0) }} / {{ r.quality_max | num(0) }}</td>
     <td><span class="b {{ 'ok' if r.research_priority == 'ELIGIBLE' else ('warn' if r.research_priority == 'REVIEW' else 'unv') }}">{{ r.research_priority | label }}</span></td>
@@ -32,16 +46,19 @@
     <td class="dim">{{ x.detail }}</td></tr>{% endfor %}
   </tbody></table>
   {% endif %}
-  {% else %}<p class="na">No ELIGIBLE or REVIEW candidate for this session.</p>{% endif %}
+  {% if d.sector_unknown %}<p class="note">Diversification not applied to {{ d.sector_unknown | length }} candidate(s) with no sector data: {{ d.sector_unknown | join(', ') }}.</p>{% endif %}
+  {% else %}<p class="na">No ELIGIBLE or REVIEW {% if upside_only %}upside {% endif %}candidate for this session.</p>{% endif %}
+  <p class="note">Event column: NO KNOWN EVENT means no event <b>on file</b> within 3 trading sessions either side. Earnings coverage is limited to the board-meeting filings Market Events has captured - verify results dates yourself, especially in results season.</p>
 </section>
 
 <section class="panel">
-  <h2>Raw ranking <span class="dim lc">every ELIGIBLE/REVIEW candidate, full audit trail - nothing hidden</span></h2>
-  <table class="sortable"><thead><tr><th class="sort n">Rank</th><th class="sort">Symbol</th><th class="sort">Sector</th>
+  <h2>Raw ranking <span class="dim lc">{% if upside_only %}upside setups - {% endif %}every ELIGIBLE/REVIEW candidate, ELIGIBLE first, full audit trail - nothing hidden</span></h2>
+  <table class="sortable"><thead><tr><th class="sort n">Rank</th><th class="sort">Symbol</th><th class="sort">Direction</th><th class="sort">Sector</th>
     <th class="sort n">Quality</th><th class="sort">Research state</th><th class="sort">Data quality</th></tr></thead><tbody>
   {% for r in d.raw_ranking %}<tr>
     <td class="n">{{ r.rank }}</td>
-    <td><a href="/trade-candidates/{{ r.symbol }}?session={{ session }}">{{ r.symbol }}</a></td>
+    <td><a href="/trade-candidates/{{ r.symbol }}?session={{ session }}{{ lq }}">{{ r.symbol }}</a></td>
+    <td>{{ m.tcdir(r.radar_direction) }}</td>
     <td>{{ r.sector | na }}</td>
     <td class="n" data-v="{{ r.quality_points }}">{{ r.quality_points | num(0) }} / {{ r.quality_max | num(0) }}</td>
     <td>{{ r.research_priority | label }}</td>
@@ -50,12 +67,30 @@
   </tbody></table>
 </section>
 
+{% if upside_only and d.outside_view %}
+<section class="panel">
+  <details class="allchg"><summary>Downside and mixed setups - information only ({{ d.outside_view | length }}) · not part of the long-only ranking or shortlist</summary>
+  <table class="sortable"><thead><tr><th class="sort">Symbol</th><th class="sort">Direction</th><th class="sort">Sector</th>
+    <th class="sort n">Quality</th><th class="sort">Research state</th></tr></thead><tbody>
+  {% for r in d.outside_view %}<tr>
+    <td><a href="/trade-candidates/{{ r.symbol }}?session={{ session }}{{ lq }}">{{ r.symbol }}</a></td>
+    <td>{{ m.tcdir(r.radar_direction) }}</td>
+    <td>{{ r.sector | na }}</td>
+    <td class="n" data-v="{{ r.quality_points }}">{{ r.quality_points | num(0) }} / {{ r.quality_max | num(0) }}</td>
+    <td>{{ r.research_priority | label }}</td>
+  </tr>{% endfor %}
+  </tbody></table>
+  </details>
+</section>
+{% endif %}
+
 <section class="panel">
   <h2>Every Radar candidate <span class="dim lc">retained for auditability, including NOT_ACTIONABLE / DATA_INCOMPLETE</span></h2>
-  <table class="sortable"><thead><tr><th class="sort">Symbol</th><th class="sort">Sector</th>
+  <table class="sortable"><thead><tr><th class="sort">Symbol</th><th class="sort">Direction</th><th class="sort">Sector</th>
     <th class="sort n">Quality</th><th class="sort">Research state</th><th class="sort">Data quality</th></tr></thead><tbody>
   {% for r in d.all_candidates %}<tr>
-    <td><a href="/trade-candidates/{{ r.symbol }}?session={{ session }}">{{ r.symbol }}</a></td>
+    <td><a href="/trade-candidates/{{ r.symbol }}?session={{ session }}{{ lq }}">{{ r.symbol }}</a></td>
+    <td>{{ m.tcdir(r.radar_direction) }}</td>
     <td>{{ r.sector | na }}</td>
     <td class="n" data-v="{{ r.quality_points }}">{{ r.quality_points | num(0) }} / {{ r.quality_max | num(0) }}</td>
     <td>{{ r.research_priority | label }}</td>

@@ -66,6 +66,8 @@ class CandidateRow:
     liquidity_band: str
     event_proximity: str
     regime_alignment: str | None
+    radar_direction: str | None = None
+    flags: tuple = ()
 
     @classmethod
     def from_assessment(cls, a: TradeCandidateAssessment, rank: int) -> "CandidateRow":
@@ -75,7 +77,8 @@ class CandidateRow:
                   extension_state=a.extension_state, pullback_state=a.pullback_state,
                   risk_width_label=a.risk_width_label, weekly_alignment=a.weekly_alignment,
                   volatility_band=a.volatility_band, liquidity_band=a.liquidity_band,
-                  event_proximity=a.event_proximity, regime_alignment=a.regime_alignment)
+                  event_proximity=a.event_proximity, regime_alignment=a.regime_alignment,
+                  radar_direction=a.radar_direction, flags=tuple(a.flags))
 
 
 @dataclass(frozen=True)
@@ -122,9 +125,12 @@ class CandidateDetailView:
     risk_evidence: tuple
     missing_context: tuple
     notes: tuple
+    radar_direction: str | None = None
+    source: str | None = None              # STORED_SNAPSHOT | LIVE_RECOMPUTE
 
     @classmethod
-    def from_assessment(cls, a: TradeCandidateAssessment) -> "CandidateDetailView":
+    def from_assessment(cls, a: TradeCandidateAssessment,
+                        source: str | None = None) -> "CandidateDetailView":
         return cls(
             symbol=a.symbol, company=a.company, sector=a.sector,
             research_priority=a.research_priority, quality_points=a.score_total,
@@ -148,7 +154,8 @@ class CandidateDetailView:
             sector_relative_20d_pp=a.sector_relative_20d_pp,
             sector_rotation_context=a.sector_rotation_context,
             positive_evidence=a.positive_evidence, risk_evidence=a.risk_evidence,
-            missing_context=a.missing_context, notes=a.notes)
+            missing_context=a.missing_context, notes=a.notes,
+            radar_direction=a.radar_direction, source=source)
 
 
 @dataclass(frozen=True)
@@ -163,6 +170,13 @@ class CandidateBoardView:
     shortlist: tuple = field(default_factory=tuple)        # CandidateRow
     demoted: tuple = field(default_factory=tuple)          # plain dicts - already safe
     all_candidates: tuple = field(default_factory=tuple)   # CandidateRow
+    view: str | None = None                                # ALL | UPSIDE
+    outside_view: tuple = field(default_factory=tuple)     # CandidateRow - information only
+    direction_counts: dict = field(default_factory=dict)   # UPSIDE / DOWNSIDE / MIXED
+    sector_unknown: tuple = field(default_factory=tuple)   # symbols the sector cap never saw
+    source: str | None = None                              # STORED_SNAPSHOT | LIVE_RECOMPUTE
+    captured_first: str | None = None
+    captured_last: str | None = None
 
     @classmethod
     def from_run(cls, run: dict) -> "CandidateBoardView":
@@ -175,7 +189,12 @@ class CandidateBoardView:
                   eligible_count=run.get("eligible_count") or 0,
                   raw_ranking=ranked(run.get("raw_ranking")), shortlist=ranked(run.get("shortlist")),
                   demoted=tuple(run.get("demoted") or ()),
-                  all_candidates=ranked(run.get("assessments")))
+                  all_candidates=ranked(run.get("assessments")),
+                  view=run.get("view"), outside_view=ranked(run.get("outside_view")),
+                  direction_counts=dict(run.get("direction_counts") or {}),
+                  sector_unknown=tuple(run.get("sector_unknown") or ()),
+                  source=run.get("source"), captured_first=run.get("captured_first"),
+                  captured_last=run.get("captured_last"))
 
 
 __all__ = ["DEFAULT_POLICY_VERSION", "ComponentPresentation", "CandidateRow",

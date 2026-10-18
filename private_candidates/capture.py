@@ -82,14 +82,19 @@ def resolve_capture_as_of(repo, session: dt.date, now: dt.datetime) -> dict:
                    "LATER calendar day - point-in-time cannot be honestly claimed"}
 
 
+_PROVENANCE_TIMESTAMPS = ("captured_at", "candidate_as_of")
+
+
 def _content_equal(a, b) -> bool:
-    """Compares every field EXCEPT `captured_at`, which legitimately differs between two
-    computations of otherwise-identical content (the whole point of idempotent capture: a
-    repeated normal refresh must not generate a changing historical record just because the
-    wall clock moved)."""
+    """Compares every field EXCEPT the two provenance timestamps, which legitimately differ
+    between two computations of otherwise-identical content (the whole point of idempotent
+    capture: a repeated normal refresh must not generate a changing historical record just
+    because the wall clock moved). Keeping the stored revision when nothing else changed also
+    keeps the EARLIEST cutoff at which that content was knowable - the stronger PIT claim."""
     da, db = dataclasses.asdict(a), dataclasses.asdict(b)
-    da.pop("captured_at", None)
-    db.pop("captured_at", None)
+    for key in _PROVENANCE_TIMESTAMPS:
+        da.pop(key, None)
+        db.pop(key, None)
     return da == db
 
 

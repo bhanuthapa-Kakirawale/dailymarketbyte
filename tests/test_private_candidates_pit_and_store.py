@@ -109,6 +109,17 @@ def test_candidate_sees_the_supporting_artifact_retrieved_before_cutoff_never_th
     assert assessments["SYMA"].sector != "Diversified"      # never T4's
 
 
+def test_a_utc_cutoff_sees_exactly_what_the_same_instant_in_ist_sees(desk_out):
+    """The stores compare cutoff STRINGS lexically against IST-offset `retrieved_at` values. A
+    UTC cutoff for 22:10 IST ("16:40+00:00") used to sort before a 21:50 IST revision and hide
+    it - the Desk's live view defaulted to a UTC clock, so that evening's sectors vanished."""
+    _write_market_structure_revision(desk_out, SESSION, "2026-09-18T21:50:00+05:30",
+                                     syma_sector="UTC-Probe")
+    utc_cutoff = CANDIDATE_AS_OF.astimezone(dt.timezone.utc)
+    assert _assessment_by_symbol(desk_out, candidate_as_of=utc_cutoff)["SYMA"].sector == "UTC-Probe"
+    assert _assessment_by_symbol(desk_out)["SYMA"].sector == "UTC-Probe"
+
+
 def test_without_an_override_capture_mode_is_point_in_time_only_for_a_genuinely_same_day_run(
         desk_out):
     """Default resolution (no explicit `candidate_as_of`/`capture_mode`): honest only when the

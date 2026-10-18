@@ -40,6 +40,18 @@ def test_assessment_round_trip():
     assert TradeCandidateAssessment.from_dict(a.to_dict()) == a
 
 
+def test_radar_direction_round_trips():
+    a = _assessment(radar_direction="ALIGNED_POSITIVE",
+                    flags=("DAY_MOVE_AGAINST_RADAR_DIRECTION",))
+    assert TradeCandidateAssessment.from_dict(a.to_dict()) == a
+
+
+def test_a_pre_1_1_snapshot_without_radar_direction_still_loads():
+    d = _assessment().to_dict()
+    d.pop("radar_direction")
+    assert TradeCandidateAssessment.from_dict(d).radar_direction is None
+
+
 def test_assessment_fields_never_collide_with_forbidden_packet_tokens():
     from private_desk.packet import FORBIDDEN_FIELD_TOKENS
     a = _assessment()

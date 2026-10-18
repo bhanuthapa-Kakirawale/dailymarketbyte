@@ -43,11 +43,21 @@ from __future__ import annotations
 import datetime as dt
 
 from . import context, eligibility, metrics, policy as policy_mod, scoring
-from .models import SCHEMA_VERSION, EventProximity, TradeCandidateAssessment
+from .models import (DAY_MOVE_AGAINST_RADAR_DIRECTION, SCHEMA_VERSION, EventProximity,
+                     TradeCandidateAssessment)
 from .shortlist import diversified_shortlist, raw_ranking
 
 POINT_IN_TIME = "POINT_IN_TIME"
 RECONSTRUCTED = "RECONSTRUCTED"
+
+# Board views. ALL is engine-neutral (and what capture uses); UPSIDE ranks and shortlists only
+# candidates whose Radar evidence is ALIGNED_POSITIVE, listing the rest as information only.
+ALL_VIEW = "ALL"
+UPSIDE_VIEW = "UPSIDE"
+VIEWS = (ALL_VIEW, UPSIDE_VIEW)
+
+LIVE_RECOMPUTE = "LIVE_RECOMPUTE"
+STORED_SNAPSHOT = "STORED_SNAPSHOT"
 
 
 def _default_regime_dir(out_dir: str) -> str:
@@ -61,12 +71,20 @@ def resolve_capture(session: dt.date, candidate_as_of: dt.datetime | None,
     """`(candidate_as_of, capture_mode, captured_at)` - see module docstring. Pure; takes no
     clock itself so every caller's choice of "now" (or an injected one, in tests) is explicit."""
     from config import IST
-    captured_at = captured_at or dt.datetime.now(dt.timezone.utc)
+    captured_at = captured_at or dt.datetime.now(IST)
     candidate_as_of = candidate_as_of or captured_at
     if capture_mode is None:
         capture_mode = (POINT_IN_TIME if candidate_as_of.astimezone(IST).date() == session
                         else RECONSTRUCTED)
     return candidate_as_of, capture_mode, captured_at
+
+
+def _ist_cutoff(candidate_as_of: dt.datetime) -> dt.datetime:
+    """Market Structure, Market Events and institutional-flow stores compare cutoff STRINGS
+    lexically against IST-offset `retrieved_at` values, so the cutoff must be IST too - a UTC
+    string for the same instant sorts 5h30m early and hides that evening's revisions."""
+    from config import IST
+    return candidate_as_of.astimezone(IST)
 
 
 def _nearest_event(events: list, session: dt.date, calendar) -> tuple:
@@ -104,7 +122,7 @@ def assess_candidate(repo, symbol: str, stored, *, replay: dict, reconcile_statu
                      policy: policy_mod.ScoringPolicy, capture_mode: str,
                      captured_at: dt.datetime) -> TradeCandidateAssessment:
     out_dir = repo.out_dir
-    cutoff_iso = candidate_as_of.isoformat()
+    cutoff_iso = _ist_cutoff(candidate_as_of).isoformat()
 
     replay_symbol = (replay.get("symbols") or {}).get(symbol) if replay.get("status") == "OK" else None
     replay_candidate = (replay.get("candidates") or {}).get(symbol) if replay.get("status") == "OK" else None
@@ -198,6 +216,12 @@ def assess_candidate(repo, symbol: str, stored, *, replay: dict, reconcile_statu
     positive_evidence, risk_evidence = _evidence_summary(components)
     missing_context = tuple(sorted({m for c in components for m in c.missing_data}))
 
+    radar_direction = stored.direction_compatibility
+    flags = elig["flags"]
+    if ((radar_direction == "ALIGNED_POSITIVE" and direction_sign < 0)
+            or (radar_direction == "ALIGNED_NEGATIVE" and direction_sign > 0)):
+        flags = flags + (DAY_MOVE_AGAINST_RADAR_DIRECTION,)
+
     return TradeCandidateAssessment(
         schema_version=SCHEMA_VERSION, score_policy_version=policy.score_policy_version,
         session_date=session.isoformat(), symbol=symbol,
@@ -219,7 +243,7 @@ def assess_candidate(repo, symbol: str, stored, *, replay: dict, reconcile_statu
              and c.evidence), None),
         sector_relative_20d_pp=sector_relative_20d_pp, sector_rotation_context=sector_rotation_context,
         positive_evidence=positive_evidence, risk_evidence=risk_evidence,
-        missing_context=missing_context, flags=elig["flags"])
+        missing_context=missing_context, flags=flags, radar_direction=radar_direction)
 
 
 def build_assessments(repo, session: dt.date, *, regime_dir: str | None = None,
@@ -240,7 +264,8 @@ def build_assessments(repo, session: dt.date, *, regime_dir: str | None = None,
     regime_dir = regime_dir or _default_regime_dir(out_dir)
     candidate_as_of, capture_mode, captured_at = resolve_capture(
         session, candidate_as_of, capture_mode, captured_at)
-    cutoff_iso = candidate_as_of.isoformat()
+    cutoff = _ist_cutoff(candidate_as_of)
+    cutoff_iso = cutoff.isoformat()
 
     replay = get_replay(repo, None, session)
     reconcile_map = reconcile(replay, stored) if replay.get("status") == "OK" else {
@@ -254,7 +279,7 @@ def build_assessments(repo, session: dt.date, *, regime_dir: str | None = None,
     regime_snaps = context.regime_snapshots(repo, regime_dir, session,
                                             n=policy.regime_streak_lookback + 1)
 
-    nsdl_flows = context.nsdl_sector_flows(out_dir, candidate_as_of, on_or_before=session)
+    nsdl_flows = context.nsdl_sector_flows(out_dir, cutoff, on_or_before=session)
     nsdl_by_sector = {f.display_sector: f for f in nsdl_flows if f.display_sector}
 
     benchmark_series = repo.benchmark_series(session)
@@ -284,8 +309,9 @@ def _correlation_lookup(repo, ranking: list, policy: policy_mod.ScoringPolicy,
     for sector, symbols in by_sector.items():
         if len(symbols) < 2:
             continue
+        window = policy.correlation_window_sessions + 1      # N returns need N+1 closes
         rows_by_symbol = {s: context.daily_rows(repo, s, session,
-                                                lookback_days=int(policy.correlation_window_sessions * 1.6) + 10)
+                                                lookback_days=int(policy.correlation_window_sessions * 1.6) + 10)[-window:]
                          for s in symbols}
         for i, sym_a in enumerate(symbols):
             for sym_b in symbols[i + 1:]:
@@ -296,29 +322,97 @@ def _correlation_lookup(repo, ranking: list, policy: policy_mod.ScoringPolicy,
     return lookup
 
 
+def direction_bucket(radar_direction: str | None) -> str:
+    """UPSIDE / DOWNSIDE / MIXED from the Radar's own direction (MIXED also covers
+    NON_DIRECTIONAL and a missing value)."""
+    if radar_direction == "ALIGNED_POSITIVE":
+        return "UPSIDE"
+    if radar_direction == "ALIGNED_NEGATIVE":
+        return "DOWNSIDE"
+    return "MIXED"
+
+
+def _repo_for(out_dir: str, repo):
+    if repo is not None:
+        return repo
+    from private_desk.repository import DeskRepository
+    return DeskRepository(out_dir)
+
+
+def _board(repo, session: dt.date, assessments: list, policy: policy_mod.ScoringPolicy, *,
+           view: str, source: str, capture_mode: str | None = None) -> dict:
+    """Raw ranking + diversified shortlist over `assessments` (never mutated, never re-scored).
+    The UPSIDE view ranks and shortlists only UPSIDE candidates, so a downside name can never
+    take an upside name's sector slot; the other ranked candidates come back as `outside_view`."""
+    full_ranking = raw_ranking(assessments)
+    if view == UPSIDE_VIEW:
+        ranking = [a for a in full_ranking if direction_bucket(a.radar_direction) == "UPSIDE"]
+        outside_view = [a for a in full_ranking if direction_bucket(a.radar_direction) != "UPSIDE"]
+    else:
+        ranking, outside_view = full_ranking, []
+    correlation_lookup = _correlation_lookup(repo, ranking, policy, session)
+    sl = diversified_shortlist(ranking, policy=policy, correlation_lookup=correlation_lookup)
+
+    direction_counts = {"UPSIDE": 0, "DOWNSIDE": 0, "MIXED": 0}
+    for a in assessments:
+        direction_counts[direction_bucket(a.radar_direction)] += 1
+    modes = sorted({a.capture_mode for a in assessments})
+    stamps = sorted(dt.datetime.fromisoformat(a.captured_at) for a in assessments if a.captured_at)
+    return {"session_date": session.isoformat(), "score_policy_version": policy.score_policy_version,
+           "capture_mode": " + ".join(modes) if modes else capture_mode,
+           "candidate_count": len(assessments),
+           "eligible_count": sum(1 for a in assessments if a.research_priority == "ELIGIBLE"),
+           "assessments": assessments, "raw_ranking": ranking, "shortlist": sl["shortlist"],
+           "demoted": sl["demoted"], "sector_unknown": sl["sector_unknown"], "view": view,
+           "outside_view": outside_view, "direction_counts": direction_counts, "source": source,
+           "captured_first": stamps[0].isoformat() if stamps else None,
+           "captured_last": stamps[-1].isoformat() if stamps else None}
+
+
 def run(out_dir: str, session: dt.date, *, repo=None, regime_dir: str | None = None,
        policy: policy_mod.ScoringPolicy = policy_mod.DEFAULT_SCORING_POLICY,
        candidate_as_of: dt.datetime | None = None, capture_mode: str | None = None,
-       captured_at: dt.datetime | None = None) -> dict:
+       captured_at: dt.datetime | None = None, view: str = ALL_VIEW) -> dict:
     """The full pass: build every assessment, then the raw ranking and diversified shortlist.
     `repo` lets a caller that already holds a `DeskRepository` (e.g. `DeskService`) reuse it
     instead of constructing a second one - `DeskRepository` is a plain read-only wrapper, so
     either way is cheap, but reusing avoids a redundant instance."""
-    if repo is None:
-        from private_desk.repository import DeskRepository
-        repo = DeskRepository(out_dir)
+    repo = _repo_for(out_dir, repo)
     assessments = build_assessments(repo, session, regime_dir=regime_dir, policy=policy,
                                     candidate_as_of=candidate_as_of, capture_mode=capture_mode,
                                     captured_at=captured_at)
-    ranking = raw_ranking(assessments)
-    correlation_lookup = _correlation_lookup(repo, ranking, policy, session)
-    sl = diversified_shortlist(ranking, policy=policy, correlation_lookup=correlation_lookup)
-    resolved_capture_mode = assessments[0].capture_mode if assessments else capture_mode
-    return {"session_date": session.isoformat(), "score_policy_version": policy.score_policy_version,
-           "capture_mode": resolved_capture_mode, "candidate_count": len(assessments),
-           "eligible_count": sum(1 for a in assessments if a.research_priority == "ELIGIBLE"),
-           "assessments": assessments, "raw_ranking": ranking, "shortlist": sl["shortlist"],
-           "demoted": sl["demoted"]}
+    return _board(repo, session, assessments, policy, view=view, source=LIVE_RECOMPUTE,
+                  capture_mode=capture_mode)
+
+
+def _stored(out_dir: str, session: dt.date, symbol: str,
+            policy: policy_mod.ScoringPolicy) -> TradeCandidateAssessment | None:
+    from . import store
+    a = store.load_latest(out_dir, policy.score_policy_version, session, symbol)
+    return a if a is not None and a.schema_version == SCHEMA_VERSION else None
+
+
+def run_from_store(out_dir: str, session: dt.date, *, repo=None,
+                   policy: policy_mod.ScoringPolicy = policy_mod.DEFAULT_SCORING_POLICY,
+                   view: str = ALL_VIEW) -> dict | None:
+    """The same board as `run()`, over the STORED snapshot (what the automatic capture recorded
+    at its own cutoff) instead of a recompute. None when nothing is stored for this policy
+    version and session, or when any stored revision is from an older schema - the caller then
+    falls back to `run()`. Read-only: never writes a snapshot."""
+    from . import store
+    symbols = store.list_symbols(out_dir, policy.score_policy_version, session)
+    assessments = [_stored(out_dir, session, s, policy) for s in symbols]
+    if not assessments or any(a is None for a in assessments):
+        return None
+    return _board(_repo_for(out_dir, repo), session, sorted(assessments, key=lambda a: a.symbol),
+                  policy, view=view, source=STORED_SNAPSHOT)
+
+
+def stored_assessment(out_dir: str, session: dt.date, symbol: str, *,
+                      policy: policy_mod.ScoringPolicy = policy_mod.DEFAULT_SCORING_POLICY
+                      ) -> TradeCandidateAssessment | None:
+    """One symbol's latest stored revision under the current schema, or None."""
+    return _stored(out_dir, session, symbol.upper(), policy)
 
 
 def persist(out_dir: str, assessments: list) -> list:
@@ -332,5 +426,6 @@ def persist(out_dir: str, assessments: list) -> list:
     return [store.write_snapshot(out_dir, a) for a in assessments]
 
 
-__all__ = ["build_assessments", "assess_candidate", "run", "persist", "resolve_capture",
-          "POINT_IN_TIME", "RECONSTRUCTED"]
+__all__ = ["build_assessments", "assess_candidate", "run", "run_from_store", "stored_assessment",
+          "persist", "resolve_capture", "direction_bucket", "POINT_IN_TIME", "RECONSTRUCTED",
+          "ALL_VIEW", "UPSIDE_VIEW", "VIEWS", "LIVE_RECOMPUTE", "STORED_SNAPSHOT"]

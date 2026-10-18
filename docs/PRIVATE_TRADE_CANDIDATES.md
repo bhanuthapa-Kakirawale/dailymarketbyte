@@ -59,6 +59,16 @@ from `intelligence_refresh`, never from a Private Desk page view). The Data Qual
 capture status is a plain READ of `intelligence_refresh`'s own recorded result
 (`private_desk/services/intelligence_freshness.py`), not a live recompute.
 
+**What the Desk shows.** By default the pages show the STORED snapshot - exactly what the
+automatic capture recorded at its own cutoff - via `service.run_from_store` /
+`service.stored_assessment` (read-only; they rebuild the raw ranking and shortlist over the stored
+assessments, never re-score them). A banner names the source and capture time. Only when no
+stored snapshot exists under the current schema (or the owner asks with `?live=1`) does the page
+fall back to `service.run` - a live recompute with cutoff = now, labelled as such, which for a
+past session can see information published after that evening. The board defaults to the
+**UPSIDE** view (the owner trades long only, `DEFAULT_VIEW` in the Desk glue); `?view=ALL` shows
+the engine-neutral board. See "Direction" below.
+
 ## Why some field names look unusual
 
 `private_desk.packet.FORBIDDEN_FIELD_TOKENS` bans standalone words like `entry`, `stop`,
@@ -184,7 +194,13 @@ captured_at)` resolves both, plus `capture_mode`:
 | OHLCV | date-bounded reads only (`DeskRepository.ohlcv_rows(..., end=session)`) | no revision chain - date-bounding alone is sufficient for a session fully in the past |
 
 Every one of these reads is bounded by `candidate_as_of`, not by Radar's own `generated_at` or
-by an end-of-day default (see "History" below). This package deliberately bypasses two
+by an end-of-day default (see "History" below). The cutoff is always handed to the stores as an
+**IST** timestamp (`service._ist_cutoff`): Market Structure, Market Events and the
+institutional-flow stores compare cutoff STRINGS lexically against IST-offset `retrieved_at`
+values, so a UTC string for the same instant sorts 5h30m early and hides that evening's
+revisions. (Defect found 2026-10-18: the Desk's live recompute defaulted to a UTC clock, so on
+the evening itself it could not see that evening's Market Structure - sector context silently
+disappeared. The default live clock is now IST as well.) This package deliberately bypasses two
 existing, NON-point-in-time shortcuts: `private_desk.repository`'s `market_structure()`/
 `universe()` (which read the mutable "current" artifact file, not a point-in-time revision) and
 `private_desk/services/market_events.py`'s `stock_official_rows` (which never passes
@@ -213,6 +229,14 @@ capture that failed one evening needs its own retry, even when the REPORT job it
 succeeded). It never raises past its own boundary; every failure mode returns a status dict
 (`SUCCESS` / `FAILED` / `MISSING_INPUTS` / `NOT_APPLICABLE`).
 
+**The capture's clock is read AFTER the REPORT job.** `run_refresh` resolves the session from
+the run's start time (the same session `ensure_latest` handled) but passes the capture a clock
+read once `ensure_latest` has returned - otherwise the cutoff would precede the Market
+Structure / Market Events / NSDL revisions that same REPORT job just wrote. (Defect found on
+2026-10-16: the start-of-run cutoff 19:29:55 excluded the 19:32 Market Structure revision, so
+all 24 stored candidates had no sector or company and SECTOR_ALIGNMENT scored 0/10 for every
+one.) A `now` injected by a caller (tests, replays) is used verbatim and never re-read.
+
 `capture.resolve_capture_as_of(repo, session, now)` decides `candidate_as_of`/`capture_mode`
 for an AUTOMATIC capture:
 
@@ -231,11 +255,12 @@ for an AUTOMATIC capture:
   (or capture is skipped entirely as `MISSING_INPUTS` if nothing can be computed yet).
 
 **Idempotency**: `capture_latest_session` compares each freshly computed assessment against
-its latest stored revision (ignoring `captured_at`, which legitimately differs run to run) and
-only writes a new revision when the content genuinely changed - a repeated normal refresh
-reuses an unchanged historical record rather than rewriting it. A new `score_policy_version`
-always writes to its own folder, so V1 snapshots stay reproducible under their own policy even
-after a V2 policy exists.
+its latest stored revision, ignoring the two provenance timestamps (`captured_at` and
+`candidate_as_of`, both of which legitimately differ run to run), and only writes a new
+revision when the content genuinely changed - a repeated normal refresh (or an AM catch-up
+that finds nothing new) reuses the unchanged record, which also keeps the EARLIEST cutoff at
+which that content was knowable. A new `score_policy_version` always writes to its own folder,
+so V1 snapshots stay reproducible under their own policy even after a V2 policy exists.
 
 **Never triggered by a page view.** Opening `/trade-candidates` or the Data Quality page never
 calls `capture.py` - only `intelligence_refresh`'s own PM/AM invocations (or a direct CLI/test
@@ -255,13 +280,40 @@ regardless of score, always recorded as the `COMPOUNDING_RISK_VETO` flag - never
 
 ## Raw ranking vs. diversified shortlist
 
-`raw_ranking` is every `ELIGIBLE`/`REVIEW` candidate sorted by score, descending - the full
-audit trail, nothing hidden. `diversified_shortlist` is a SEPARATE view: it walks the raw
-ranking and demotes (never deletes, never re-scores) a candidate once its sector already holds
-`sector_cap` (2, PROVISIONAL default) shortlist entries, or - when a correlation lookup is
-supplied - once it is highly correlated (>= 0.85, PROVISIONAL) with an already-shortlisted
+`raw_ranking` is every `ELIGIBLE`/`REVIEW` candidate - ELIGIBLE first, then REVIEW, each by
+score descending - the full audit trail, nothing hidden. Priority leads so a REVIEW capped for
+PARTIAL data never outranks complete data on score alone. `diversified_shortlist` is a SEPARATE
+view: it walks the raw ranking and demotes (never deletes, never re-scores) a candidate once its
+sector already holds `sector_cap` (2, PROVISIONAL default) shortlist entries, or - when a
+correlation lookup is supplied - once it is highly correlated (>= 0.85, PROVISIONAL, daily
+returns over the trailing `correlation_window_sessions` = 60) with an already-shortlisted
 same-sector member. Every demotion names its exact reason (`SECTOR_CONCENTRATION` or
-`HIGH_CORRELATION`) and detail; the raw ranking itself is never mutated.
+`HIGH_CORRELATION`) and detail; the raw ranking itself is never mutated. A candidate with NO
+sector is shortlisted without either check and listed under `sector_unknown` ("diversification
+not applied") - missing sector data is not concentration, and pooling every unknown under one
+capped bucket would shrink the shortlist to `sector_cap` names.
+
+## Direction (schema 1.1)
+
+Every assessment carries `radar_direction` - the Radar's own stored `direction_compatibility`
+(STRUCTURE + RELATIVE evidence only, VOLUME excluded: `ALIGNED_POSITIVE` / `ALIGNED_NEGATIVE`
+/ `MIXED` / `NON_DIRECTIONAL`). It is display/view only: V1 component scoring still reads the
+session's own price move. When the two disagree (an ALIGNED_POSITIVE candidate on a down day,
+or the reverse - about 0.8% of candidates over the first 22 recorded sessions) the
+informational flag `DAY_MOVE_AGAINST_RADAR_DIRECTION` is added, so the owner knows the
+alignment / weekly / structural-reference readings were computed from the day's move. It never
+changes the score or research priority.
+
+`service.run(..., view=...)` / `run_from_store(..., view=...)`: `ALL` (default, what capture
+uses) ranks every direction; `UPSIDE` ranks and shortlists only ALIGNED_POSITIVE candidates -
+so a downside name can never take an upside name's sector slot - and returns the other ranked
+candidates as `outside_view` (information only). `direction_counts` gives UPSIDE / DOWNSIDE /
+MIXED totals over all candidates. Why this matters: in the stored 2026-10-16 snapshot all 8
+ELIGIBLE candidates were downside breakdowns (or MIXED), which a long-only owner cannot act on in
+cash, while every upside breakout was REVIEW - invisible on the old board. Recomputed with the
+corrected capture cutoff, 9 of 11 ELIGIBLE are still downside or mixed; the upside view ranks the
+11 upside breakouts on their own (TECHM and GROWW ELIGIBLE; four IT names demoted for sector
+concentration).
 
 ## Durable snapshot history
 
@@ -273,8 +325,10 @@ for a genuinely changed re-run - see "Automatic capture" above for idempotency).
 version's files - a V1 snapshot stays reproducible under its own policy even after the policy
 changes. `capture_mode`/`candidate_as_of` are resolved once (`service.resolve_capture`) and
 stamped at build time, never inferred later from file metadata. This store is written only by
-`private_candidates.capture`/`service.persist` - never by `private_desk`, which reads only
-`store.list_sessions`/`load_latest`.
+`private_candidates.capture`/`service.persist` - never by `private_desk`, which reads it only
+through `service.run_from_store`/`stored_assessment` (`store.list_symbols`/`load_latest`).
+Revisions written before schema 1.1 (no `radar_direction`) are never shown as the stored
+board - the Desk falls back to a labelled live recompute until the next capture supersedes them.
 
 ## Limitations (V1, all explicitly provisional)
 
@@ -299,6 +353,22 @@ stamped at build time, never inferred later from file metadata. This store is wr
   catch-up correctly falls back to `RECONSTRUCTED` rather than guessing.
 - No weight optimization against historical returns, no ML, no LLM, anywhere in this package
   (test-enforced).
+- Known V1 scoring limitations found in the 2026-10 review, recorded here for a future policy
+  version (deliberately NOT changed under `trade-candidate-score-1.0`):
+  - the scoring direction is the sign of the session's own price move, not the Radar's
+    multi-session direction; MIXED-evidence candidates (~10% of candidates) are scored as if
+    directional and can reach ELIGIBLE;
+  - component C (`SECTOR_ALIGNMENT`) reads `sector_relative_20d_pp` = the stock's 20-session
+    return minus its own equal-weight sector's (the stock included) - how much it beat its
+    sector, i.e. a second relative-strength reading, NOT whether the sector itself is strong;
+  - for an upside setup the structural reference is always `prior_20_low`, so a range
+    breakout sits a full range away: most breakouts read `EXTENDED_FROM_STRUCTURE` / `WIDE`
+    (22 of 24 candidates on 2026-10-16) - the broken level itself is not used;
+  - setup quality barely discriminates (every Radar candidate has >= 2 families: 18 of 24
+    scored exactly 13/20 on 2026-10-16; an SMA20 cross counts like a 50-session breakout);
+  - `NO_KNOWN_EVENT` means no event ON FILE and earns full EVENT_RISK points; EARNINGS
+    coverage is limited to captured board-meeting filings (none of the 24 candidates on
+    2026-10-16 had one), and a past event within the window is treated like an upcoming one.
 - Never reaches PUBLIC video production; no public planner imports this package (test-enforced).
 - Future Kite integration (docs/PRIVATE_DESK_KITE_INTEGRATION.md) is explicitly out of scope:
   `TradeCandidateAssessment` carries zero execution authority (no order/quantity/broker field;

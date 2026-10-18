@@ -105,3 +105,17 @@ def test_a_genuinely_changed_candidate_writes_a_new_revision_not_a_silent_rewrit
 
     still_v1 = store.load_latest(desk_out, first["score_policy_version"], SESSION, symbol)
     assert still_v1 == before   # v1's snapshot is untouched by the v2 capture
+
+
+def test_a_later_recompute_with_identical_content_is_reused_keeping_the_earliest_cutoff(desk_out):
+    """A different wall clock alone (e.g. a second refresh the same evening) must not rewrite an
+    unchanged record: `candidate_as_of` is provenance, like `captured_at`."""
+    first_now = dt.datetime(2026, 9, 18, 22, 10, tzinfo=IST)
+    later_now = dt.datetime(2026, 9, 18, 23, 0, tzinfo=IST)
+    first = capture.capture_latest_session(desk_out, SESSION, first_now)
+    second = capture.capture_latest_session(desk_out, SESSION, later_now)
+    assert first["written"] and not second["written"]
+    assert set(second["reused"]) == set(first["written"])
+    for symbol in first["written"]:
+        kept = store.load_latest(desk_out, first["score_policy_version"], SESSION, symbol)
+        assert kept.candidate_as_of == first_now.isoformat()

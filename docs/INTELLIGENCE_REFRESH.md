@@ -85,7 +85,11 @@ no-ops when a valid report already exists (`ALREADY_BUILT`). See section 6.
   resolving its own latest-final-session and deciding fresh each call whether anything is
   missing (idempotent: an unchanged candidate is `reused`, never rewritten). See
   docs/PRIVATE_TRADE_CANDIDATES.md "Point-in-time capture contract" for how it decides
-  POINT_IN_TIME vs RECONSTRUCTED on a catch-up.
+  POINT_IN_TIME vs RECONSTRUCTED on a catch-up. The session is resolved from the run's start
+  time, but the capture's point-in-time clock is read AFTER `ensure_latest` returns - a
+  start-of-run cutoff would precede the Market Structure / Market Events revisions the REPORT
+  job inside `ensure_latest` just wrote (2026-10-16: every stored candidate lost its sector).
+  An injected `now` (tests, replays) is used verbatim.
 
 
 - **Today's unfinished session is never audited as "historical".** `scan.sessions_to_audit`

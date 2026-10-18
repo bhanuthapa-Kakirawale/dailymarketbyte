@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_macros.html" as m %}
 {% block title %}{{ symbol }} trade candidate {{ session }}{% endblock %}
 {% block content %}
 <h1>{{ symbol }} <span class="sub">trade candidate assessment · session {{ session }} · PROVISIONAL research priority, not a trade recommendation</span></h1>
@@ -6,17 +7,24 @@
 {% if detail is none %}
 <p class="na">No Trade Candidate Intelligence assessment for {{ symbol }} on {{ session }} - it was not a Radar candidate this session.</p>
 {% else %}
+{% if detail.source == 'STORED_SNAPSHOT' %}
+<div class="banner info">Stored snapshot recorded by the automatic capture (cutoff {{ detail.candidate_as_of }}). <a href="/trade-candidates/{{ symbol }}?session={{ session }}&amp;live=1">Re-evaluate now (live)</a></div>
+{% else %}
+<div class="banner warn">Live re-evaluation (cutoff = now) - for a past session this can include information published after that evening.{% if live %} <a href="/trade-candidates/{{ symbol }}?session={{ session }}">Show the stored snapshot</a>{% endif %}</div>
+{% endif %}
 <section class="panel">
   <h2>Summary</h2>
   <dl class="facts">
     <dt>Company / sector</dt><dd>{{ detail.company | na }} / {{ detail.sector | na }}</dd>
+    <dt>Radar direction</dt><dd>{{ m.tcdir(detail.radar_direction) }} <span class="dim">the Radar's own multi-session evidence (structure + relative performance); a long-only review starts from UPSIDE</span></dd>
     <dt>Research state</dt><dd><span class="b {{ 'ok' if detail.research_priority == 'ELIGIBLE' else ('warn' if detail.research_priority == 'REVIEW' else 'unv') }}">{{ detail.research_priority | label }}</span></dd>
     <dt>Quality points</dt><dd>{{ detail.quality_points | num(0) }} / {{ detail.quality_max | num(0) }} <span class="dim">(policy {{ detail.quality_policy_version }}, {{ detail.quality_validation_status }})</span></dd>
     <dt>Data quality</dt><dd>{{ detail.data_quality_tier | label }}</dd>
     <dt>Capture mode</dt><dd>{{ detail.capture_mode | label }}</dd>
     <dt>Candidate as of / captured at</dt><dd class="mono">{{ detail.candidate_as_of }} / {{ detail.captured_at }}</dd>
     <dt>Eligibility reasons</dt><dd>{% for r in detail.eligibility_reasons %}{{ r }}{% if not loop.last %}; {% endif %}{% endfor %}</dd>
-    {% if detail.flags %}<dt>Flags</dt><dd>{% for f in detail.flags %}<span class="b warn">{{ f | label }}</span> {% endfor %}</dd>{% endif %}
+    {% if detail.flags %}<dt>Flags</dt><dd>{% for f in detail.flags %}<span class="b warn">{{ f | label }}</span> {% endfor %}
+      {% if 'DAY_MOVE_AGAINST_RADAR_DIRECTION' in detail.flags %}<br><span class="dim">The session's own price move went against the Radar direction. V1 components (alignment, weekly, structural reference) are computed from the day's move, so read them with that in mind.</span>{% endif %}</dd>{% endif %}
   </dl>
 </section>
 
@@ -60,7 +68,8 @@
   <dl class="facts">
     <dt>Liquidity band</dt><dd>{{ detail.liquidity_band | label }}</dd>
     <dt>Volatility band</dt><dd>{{ detail.volatility_band | label }}</dd>
-    <dt>Event proximity</dt><dd>{{ detail.event_proximity | label }} {% if detail.event_family %}({{ detail.event_family | label }}, {{ detail.sessions_to_event }} trading session(s) away){% endif %}</dd>
+    <dt>Event proximity</dt><dd>{{ detail.event_proximity | label }} {% if detail.event_family %}({{ detail.event_family | label }}, {{ detail.sessions_to_event }} trading session(s) away; negative = already happened){% endif %}
+      <br><span class="dim">"No known event" means none on file - earnings coverage is limited to captured board-meeting filings; verify results dates yourself.</span></dd>
   </dl>
 </section>
 

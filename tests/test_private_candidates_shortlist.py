@@ -63,3 +63,25 @@ def test_high_correlation_demotes_with_insufficient_sample_never_demoting():
     lookup_unknown = {frozenset(("A", "B")): None}
     out2 = diversified_shortlist(ranking, policy=policy, correlation_lookup=lookup_unknown)
     assert [a.symbol for a in out2["shortlist"]] == ["A", "B"]
+
+
+def test_raw_ranking_puts_eligible_before_a_higher_scoring_review():
+    """A REVIEW capped for PARTIAL data must not outrank complete data on score alone."""
+    items = [_a("PARTIAL_HIGH", "IT", 80, "REVIEW"), _a("ELIG", "Financials", 65),
+            _a("REV_LOW", "Energy", 40, "REVIEW")]
+    assert [a.symbol for a in raw_ranking(items)] == ["ELIG", "PARTIAL_HIGH", "REV_LOW"]
+
+
+def test_unknown_sector_is_never_pooled_under_the_sector_cap():
+    """2026-10-16: every candidate lost its sector, and pooling them as one 'UNKNOWN' sector
+    shrank the shortlist to `sector_cap` names. Missing data is not concentration."""
+    items = [_a("U1", None, 90), _a("U2", None, 85), _a("U3", None, 80),
+            _a("BANK_A", "Financials", 75), _a("BANK_B", "Financials", 70)]
+    ranking = raw_ranking(items)
+    lookup = {frozenset(("U1", "U2")): 0.99, frozenset(("BANK_A", "BANK_B")): None}
+    out = diversified_shortlist(ranking, policy=ScoringPolicy(sector_cap=1),
+                                correlation_lookup=lookup)
+    assert [a.symbol for a in out["shortlist"]] == ["U1", "U2", "U3", "BANK_A"]
+    assert out["sector_unknown"] == ["U1", "U2", "U3"]
+    assert out["demoted"] == [{"symbol": "BANK_B", "demotion_reason": "SECTOR_CONCENTRATION",
+                              "detail": {"sector": "Financials", "sector_cap": 1}}]

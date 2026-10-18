@@ -247,3 +247,43 @@ def test_resume_records_resumed_from_run_id(tmp_path, monkeypatch):
 
     man = refresh.run_refresh(out_dir=out_dir, now=NOW, resume=True)
     assert man.resumed_from_run_id == "leftover-1"
+
+
+def _record_candidate_capture(monkeypatch) -> dict:
+    import private_candidates.capture as pc_capture
+    seen = {}
+
+    def fake_capture(out_dir, session, now):
+        seen["session"], seen["now"] = session, now
+        return {"status": "SUCCESS", "session": session.isoformat()}
+    monkeypatch.setattr(pc_capture, "capture_latest_session", fake_capture)
+    return seen
+
+
+def test_candidate_capture_reads_the_clock_after_the_report_job(tmp_path, monkeypatch):
+    """The REPORT job inside `ensure_latest` writes this session's Market Structure / events;
+    a cutoff taken at the run's start would exclude them (2026-10-16: every candidate lost its
+    sector). The capture must use a clock read AFTER that step."""
+    _patch_common(monkeypatch, [])
+    later = NOW + dt.timedelta(minutes=3)
+    reads = []
+
+    def clock():
+        reads.append(1)
+        return NOW if len(reads) == 1 else later
+    monkeypatch.setattr(refresh, "_now_ist", clock)
+    seen = _record_candidate_capture(monkeypatch)
+
+    refresh.run_refresh(out_dir=str(tmp_path))
+    assert seen["now"] == later
+    assert seen["session"] == dt.date(2026, 10, 9)     # still the session the run started on
+
+
+def test_an_injected_now_reaches_the_candidate_capture_verbatim(tmp_path, monkeypatch):
+    _patch_common(monkeypatch, [])
+    monkeypatch.setattr(refresh, "_now_ist",
+                        lambda: pytest.fail("an injected `now` must never read the wall clock"))
+    seen = _record_candidate_capture(monkeypatch)
+
+    refresh.run_refresh(out_dir=str(tmp_path), now=NOW)
+    assert seen["now"] == NOW

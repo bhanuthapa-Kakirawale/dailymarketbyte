@@ -11,17 +11,22 @@ from .models import ResearchPriority
 from .policy import DEFAULT_SCORING_POLICY, ScoringPolicy
 
 RANKED_PRIORITIES = (ResearchPriority.ELIGIBLE.value, ResearchPriority.REVIEW.value)
+_PRIORITY_RANK = {ResearchPriority.ELIGIBLE.value: 0, ResearchPriority.REVIEW.value: 1}
 
 SECTOR_CONCENTRATION = "SECTOR_CONCENTRATION"
 HIGH_CORRELATION = "HIGH_CORRELATION"
 
 
 def raw_ranking(assessments: list) -> list:
-    """Every ELIGIBLE/REVIEW assessment, sorted by `score_total` descending (ties broken by
-    symbol for a stable, reproducible order) - `NOT_ACTIONABLE`/`DATA_INCOMPLETE` candidates
-    stay visible in the full candidate list, just never ranked."""
+    """Every ELIGIBLE/REVIEW assessment: ELIGIBLE first, then REVIEW, each by `score_total`
+    descending (ties broken by symbol for a stable, reproducible order). Priority leads so a
+    REVIEW candidate capped for PARTIAL data never outranks complete data on score alone
+    (eligibility's own rule: "a high technical score with poor data must not rank normally").
+    `NOT_ACTIONABLE`/`DATA_INCOMPLETE` candidates stay visible in the full candidate list, just
+    never ranked."""
     ranked = [a for a in assessments if a.research_priority in RANKED_PRIORITIES]
-    return sorted(ranked, key=lambda a: (-a.score_total, a.symbol))
+    return sorted(ranked, key=lambda a: (_PRIORITY_RANK[a.research_priority], -a.score_total,
+                                         a.symbol))
 
 
 def diversified_shortlist(ranking: list, *, policy: ScoringPolicy = DEFAULT_SCORING_POLICY,
@@ -31,15 +36,23 @@ def diversified_shortlist(ranking: list, *, policy: ScoringPolicy = DEFAULT_SCOR
     supplied) once it is highly correlated with an already-shortlisted same-sector member.
     `correlation_lookup`: `{frozenset({symbol_a, symbol_b}): float | None}`; a `None` value
     (insufficient overlapping sessions) never demotes - it falls back to the sector-cap
-    decision alone, exactly as the owner's spec requires."""
+    decision alone, exactly as the owner's spec requires.
+
+    A candidate with NO sector is shortlisted without either check and listed under
+    `sector_unknown`: missing sector data is not evidence of concentration, and pooling every
+    unknown under one capped bucket would shrink the shortlist to `sector_cap` names."""
     per_sector_count: dict = {}
-    shortlist, demoted = [], []
+    shortlist, demoted, sector_unknown = [], [], []
     for assessment in ranking:
-        sector = assessment.sector or "UNKNOWN"
+        sector = assessment.sector
+        if not sector:
+            shortlist.append(assessment)
+            sector_unknown.append(assessment.symbol)
+            continue
         if correlation_lookup:
             hit = None
             for other in shortlist:
-                if (other.sector or "UNKNOWN") != sector:
+                if other.sector != sector:
                     continue
                 corr = correlation_lookup.get(frozenset((assessment.symbol, other.symbol)))
                 if corr is not None and corr >= policy.correlation_high_threshold:
@@ -55,7 +68,7 @@ def diversified_shortlist(ranking: list, *, policy: ScoringPolicy = DEFAULT_SCOR
             continue
         shortlist.append(assessment)
         per_sector_count[sector] = per_sector_count.get(sector, 0) + 1
-    return {"shortlist": shortlist, "demoted": demoted}
+    return {"shortlist": shortlist, "demoted": demoted, "sector_unknown": sector_unknown}
 
 
 __all__ = ["raw_ranking", "diversified_shortlist", "RANKED_PRIORITIES", "SECTOR_CONCENTRATION",

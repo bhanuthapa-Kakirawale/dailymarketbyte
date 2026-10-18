@@ -44,6 +44,11 @@ nav.toc li { counter-increment: s; }
 nav.toc li a { display: block; padding: 5px 8px; border-radius: 4px; color: var(--muted); font-size: 13px; }
 nav.toc li a::before { content: counter(s) "  "; color: var(--dim); font-family: var(--mono); font-size: 11px; }
 nav.toc li a:hover, nav.toc li a.on { background: var(--panel2); color: var(--text); text-decoration: none; }
+nav.toc ul.subnav { list-style: none; margin: 2px 0 10px 18px; padding: 0; }
+nav.toc ul.subnav li { counter-increment: none; }
+nav.toc ul.subnav li a { display: block; padding: 3px 8px; font-size: 12px; color: var(--dim); }
+nav.toc ul.subnav li a::before { content: ""; }
+nav.toc ul.subnav li a:hover, nav.toc ul.subnav li a.on { background: var(--panel2); color: var(--text); }
 nav.toc .tools { margin-top: 18px; display: flex; gap: 6px; flex-wrap: wrap; }
 button { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 4px;
   padding: 4px 10px; font: 12px var(--sans); cursor: pointer; }
@@ -159,6 +164,17 @@ footer { color: var(--dim); font-size: 12px; border-top: 1px solid var(--line); 
     <li><a href="#docs">Which .md to follow</a></li>
     <li><a href="#verify">What to verify</a></li>
     <li><a href="#selection">Stock-selection playbook</a></li>
+    <li><a href="#tradecandidates">Trade Candidate Intelligence</a>
+      <ul class="subnav">
+        <li><a href="#tc-direction">Direction &amp; long-only view</a></li>
+        <li><a href="#tc-when">When to pick stocks</a></li>
+        <li><a href="#tc-daily">Daily swing workflow</a></li>
+        <li><a href="#tc-weekly">Weekly / positional workflow</a></li>
+        <li><a href="#tc-checklist">Decision checklist</a></li>
+        <li><a href="#tc-avoid">When not to pick</a></li>
+        <li><a href="#tc-future">Historical Edge (future)</a></li>
+      </ul>
+    </li>
     <li><a href="#journal">Your research journal</a></li>
     <li><a href="#guardrails">Guardrails &amp; red flags</a></li>
     <li><a href="#reference">Quick reference</a></li>
@@ -496,8 +512,473 @@ scripts\clean_test_artifacts.bat</pre>
 </section>
 
 <!-- 8 -->
+<section id="tradecandidates">
+  <h2><span class="n">08</span>Trade Candidate Intelligence</h2>
+  <p class="sub">Radar tells you <em>what moved</em>. Trade Candidate Intelligence (<code>private_candidates/</code>) answers a narrower
+    question for every Radar candidate of the session: does it deserve trading-research priority today, once setup quality,
+    market/sector context, entry location, liquidity/volatility, event proximity and data quality are all weighed together.
+    PRIVATE_ANALYTICS only - never reachable from the public PRE/POST Short, and not an execution engine.</p>
+
+  <div class="pills">
+    <a class="pill" href="#tc-when">When to pick stocks</a>
+    <a class="pill" href="#tc-daily">Daily swing workflow</a>
+    <a class="pill" href="#tc-weekly">Weekly / positional workflow</a>
+    <a class="pill" href="#tc-checklist">Decision checklist</a>
+    <a class="pill" href="#tc-avoid">When not to pick</a>
+    <a class="pill" href="#tc-future">Historical Edge (future)</a>
+  </div>
+
+  <div class="callout i"><b>Radar candidate &ne; trade candidate</b>
+    A Radar candidate is an <em>attention item</em> - at least two independent evidence families fired on it that session.
+    That says nothing about whether it is presently a good trading-research priority. A Radar candidate is <b>never
+    automatically</b> a trade candidate: every Radar candidate keeps its own evidence (<code>radar_reason_codes</code> /
+    <code>radar_active_families</code>) for traceability, but its <code>research_priority</code> is decided independently.
+    None is ever deleted for failing a trade-quality filter - see "Every Radar candidate" on
+    <a href="http://127.0.0.1:8765/trade-candidates">/trade-candidates</a>.</div>
+
+  <h3 id="tc-pipeline">The pipeline</h3>
+  <div class="flow" style="grid-template-columns:repeat(3,minmax(0,1fr))">
+    <div class="node"><span class="t">Input</span><b>Today's Radar candidates</b><span class="d">Exactly the session's stored
+      <code>radar_candidate_history</code> - never a fresh market-wide scan, never a stock Radar did not flag.</span></div>
+    <div class="node"><span class="t">Re-run, read-only</span><b>Replay &amp; reconcile</b><span class="d">Radar's own detector
+      chain re-run on stored OHLCV, reconciled against what the evening run actually recorded
+      (<code>MATCHED</code> / <code>NOT_REPLAYED</code> / <code>REASON_CODES_DIFFER</code>).</span></div>
+    <div class="node"><span class="t">Gate</span><b>Eligibility &amp; data quality</b><span class="d"><code>data_quality_tier</code>:
+      COMPLETE / PARTIAL / INSUFFICIENT. An untrusted replay or &lt;15 OHLCV sessions &rarr; DATA_INCOMPLETE immediately.</span></div>
+  </div>
+  <div class="flow" style="grid-template-columns:repeat(3,minmax(0,1fr));margin-top:10px">
+    <div class="node"><span class="t">10 components, A-J</span><b>Quality points</b><span class="d">Setup quality, market/sector
+      alignment, relative strength, MTF, range position &amp; extension, liquidity, volatility fit, event risk, data-quality
+      integrity. Table below.</span></div>
+    <div class="node"><span class="t">Score &rarr; band</span><b>Research priority</b><span class="d">ELIGIBLE / REVIEW /
+      NOT_ACTIONABLE / DATA_INCOMPLETE - plus a compounding-risk veto that can override the score.</span></div>
+    <div class="node"><span class="t">Full audit trail</span><b>Raw ranking</b><span class="d">Every ELIGIBLE/REVIEW candidate,
+      ELIGIBLE first, then by score - ties broken by symbol. Nothing hidden. The Desk defaults to upside setups only.</span></div>
+  </div>
+  <div class="flow" style="grid-template-columns:repeat(4,minmax(0,1fr));margin-top:10px">
+    <div class="node"><span class="t">Concentration control</span><b>Diversified shortlist</b><span class="d">Raw ranking,
+      capped at 2 per sector (and, where enough correlation history exists, demoted above 0.85 same-sector correlation).
+      A candidate with no sector data is never pooled under the cap.</span></div>
+    <div class="node you"><span class="t">You</span><b>Owner review</b><span class="d">Read the detail page, apply your own
+      filters (results calendar, liquidity for your size, your own risk).</span></div>
+    <div class="node"><span class="t">NOT BUILT</span><b>Future: execution translation</b><span class="d">No order, quantity
+      or broker field exists anywhere in this package (test-enforced).</span></div>
+    <div class="node"><span class="t">Out of scope</span><b>Kite Terminal</b><span class="d">docs/PRIVATE_DESK_KITE_INTEGRATION.md -
+      a future, separate integration. Not connected today.</span></div>
+  </div>
+
+  <h3>Quality points - 10 components (PROVISIONAL, policy <code>trade-candidate-score-1.0</code>)</h3>
+  <p class="note">Every score carries <code>score_validation_status = PROVISIONAL</code>. Weights are a documented first-pass
+    judgment call, never tuned against historical returns. A component that cannot be computed for a candidate returns
+    <code>status=NOT_SCORABLE</code>, scored 0 - the denominator (100) is never renormalized, so a low total stays
+    self-explanatory rather than hidden.</p>
+  <div class="tw"><table>
+    <thead><tr><th></th><th>Component</th><th>Max</th><th>What it reads</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">A</td><td>SETUP_QUALITY</td><td>20</td><td>How many independent Radar evidence families fired, plus
+        the volume anomaly level (ELEVATED/UNUSUAL/EXTREME).</td></tr>
+      <tr><td class="mono">B</td><td>MARKET_ALIGNMENT</td><td>12</td><td>Market Regime label vs. the candidate's direction
+        (in V1, the sign of the session's own move), plus how many consecutive sessions the regime has held
+        (<code>regime_streak_sessions</code>).</td></tr>
+      <tr><td class="mono">C</td><td>SECTOR_ALIGNMENT</td><td>10</td><td>How much the stock beat (or lagged) its own sector over
+        20 sessions: the stock's return minus a new, local equal-weight series of its NIFTY 200 sector (stock included; not an
+        NSE index). Despite the name it does <b>not</b> say whether the sector itself is strong.</td></tr>
+      <tr><td class="mono">D</td><td>RELATIVE_STRENGTH</td><td>10</td><td>20-session performance vs. NIFTY 50, plus a
+        persistence bonus when the 5D and 20D readings agree.</td></tr>
+      <tr><td class="mono">E</td><td>MTF_CONFIRMATION</td><td>10</td><td>The session's direction vs. a weekly close/SMA10 read
+        over completed ISO weeks (needs &ge;10 completed weeks).</td></tr>
+      <tr><td class="mono">F</td><td>RANGE_POSITION_AND_EXTENSION</td><td>12</td><td>Distance from the 20-session mean in
+        ATR14 units - NORMAL / STRETCHED / DEEPLY_STRETCHED.</td></tr>
+      <tr><td class="mono">G</td><td>LIQUIDITY</td><td>8</td><td>Average 20-session turnover in INR crore (volume &times;
+        close) - THIN / ADEQUATE / DEEP.</td></tr>
+      <tr><td class="mono">H</td><td>VOLATILITY_FIT</td><td>8</td><td>ATR14 as a percent of close - TIGHT / NORMAL /
+        ELEVATED / EXTREME.</td></tr>
+      <tr><td class="mono">I</td><td>EVENT_RISK</td><td>6</td><td>Any known stock-level corporate event within 3 trading
+        sessions (earnings, OFS, buyback, open offer) - flagged, never excluded.</td></tr>
+      <tr><td class="mono">J</td><td>DATA_QUALITY_INTEGRITY</td><td>4</td><td>Did the replay MATCH the recorded candidate,
+        and were there detector warnings.</td></tr>
+      <tr><td></td><td><b>Total</b></td><td><b>100</b></td><td></td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">A high total means <b>a stronger combination of today's evidence</b> - not a higher guaranteed probability
+    of profit. The score has not been historically validated (see <a href="#tc-future">Historical Edge</a> below).</p>
+
+  <h3>Research priority - the only 4 states V1 has</h3>
+  <div class="tw"><table>
+    <thead><tr><th>State</th><th>When</th><th>Practical meaning</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge ok">ELIGIBLE</span></td><td>Score &ge; 60/100 <b>and</b> data quality COMPLETE.</td>
+        <td>Strong current evidence on complete data. Worth your review - never a signal to act by itself.</td></tr>
+      <tr><td><span class="badge wa">REVIEW</span></td><td>Score &ge; 35/100, <b>or</b> data quality PARTIAL regardless of
+        score (capped here on purpose).</td><td>Moderate evidence, or a reading (relative performance / ATR) is missing.
+        Read the detail page before trusting the total.</td></tr>
+      <tr><td><span class="badge bad">NOT_ACTIONABLE</span></td><td>Score &lt; 35/100, or the
+        <code>COMPOUNDING_RISK_VETO</code> flag fired (DEEPLY_STRETCHED extension together with EXTREME volatility).</td>
+        <td>Do not use for trading research today, whatever any single component looks like.</td></tr>
+      <tr><td><span class="badge bad">DATA_INCOMPLETE</span></td><td>Replay status NOT_REPLAYED/REASON_CODES_DIFFER, fewer
+        than 15 OHLCV sessions, or a VOLUME-family candidate with no anomaly reading back.</td><td>Detector values are not
+        trusted. Do not use for selection until the next refresh resolves it.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3 id="tc-direction">Direction and the long-only view</h3>
+  <p class="note">Research priority says nothing about direction - a downside breakdown can be ELIGIBLE. Every candidate now
+    shows the Radar's own multi-session direction (<code>radar_direction</code>, structure + relative evidence; volume never
+    sets direction), and the board defaults to <b>upside setups only</b>.</p>
+  <div class="tw"><table>
+    <thead><tr><th>Badge</th><th>Radar evidence</th><th>Long-only reading</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge ok">UPSIDE</span></td><td>ALIGNED_POSITIVE: structure and relative performance both point up.</td>
+        <td>Ranked and shortlisted in the default view.</td></tr>
+      <tr><td><span class="badge bad">DOWNSIDE</span></td><td>ALIGNED_NEGATIVE: both point down.</td><td>Information only
+        (collapsed section). Not something a cash, long-only trader can act on.</td></tr>
+      <tr><td><span class="badge wa">MIXED</span></td><td>Structure and relative performance disagree.</td><td>Information only.
+        Conflicting evidence is not a long setup.</td></tr>
+      <tr><td><span class="badge wa">DAY AGAINST</span></td><td>The session's own move went against the Radar direction
+        (<code>DAY_MOVE_AGAINST_RADAR_DIRECTION</code>, rare).</td><td>V1 components were computed from the day's move - read
+        alignment, weekly and structural reference with that in mind.</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">Why it matters: in the stored 2026-10-16 snapshot all 8 ELIGIBLE candidates were downside breakdowns or
+    mixed, and every upside breakout was REVIEW (with the corrected capture cutoff, 9 of 11 ELIGIBLE are still downside or
+    mixed). <code>?view=ALL</code> ranks every direction; ranking upside-only also stops a downside name from taking an upside
+    name's sector slot in the shortlist.</p>
+
+  <div class="callout g" id="tc-goodstock"><b>A high score can still be a bad time to buy</b>
+    Research priority scores <em>evidence quality</em>; it does NOT score <em>current entry location</em>. V1 has no
+    separate "wait for a pullback" status - instead, read <code>extension_state</code> and <code>pullback_state</code> on
+    the same candidate:
+    <div class="grid g2" style="margin-top:8px">
+      <div class="card"><div class="k">Example</div><h4>ELIGIBLE, score 78/100</h4>Strong setup, strong relative strength,
+        strong sector. But <code>extension_state = DEEPLY_STRETCHED</code> (&gt;3 ATR14 from the 20-session mean) and
+        <code>pullback_state = EXTENDED_FROM_STRUCTURE</code>.</div>
+      <div class="card"><div class="k">Reading it correctly</div><h4>Good stock, poor entry today</h4>Keep it on your
+        watchlist. Chasing a DEEPLY_STRETCHED name because its research priority is ELIGIBLE defeats the point of
+        separating these two questions.</div>
+    </div>
+  </div>
+
+  <h3 id="tc-when">When should I pick a stock?</h3>
+  <div class="callout i"><b>Capture is automatic, not a command you run</b>
+    <code>intelligence_refresh</code> calls <code>private_candidates.capture.capture_latest_session</code> on its own PM
+    pass (19:15 IST) right after that evening's Radar/Market Structure/Market Events data exists for the session, and
+    again as an AM catch-up (06:40 IST) if the PM pass was missed. Opening <code>/trade-candidates</code> never triggers a
+    capture. The page shows that <b>stored evening snapshot</b> by default (the banner says so, with its capture time);
+    <b>Re-evaluate now (live)</b> is a separately labelled recompute with cutoff = now.</div>
+  <ul class="tl">
+    <li><span class="when">19:15</span><div class="what"><b>PM intelligence refresh</b>Radar/Market Structure/Market Events
+      finalize for the session that just closed, then the Trade Candidate snapshot is captured as
+      <code>POINT_IN_TIME</code> (same calendar day), with a cutoff taken after that evening's data was written.</div></li>
+    <li><span class="when">19:30+</span><div class="what"><b>Primary review window</b>Open <code>/trade-candidates</code>.
+      Check the banner reads "stored evening snapshot", then start from the upside diversified shortlist and the raw
+      ranking (<a href="#selection">section 7</a>'s evidence checks apply the same way). Prepare the NEXT session's
+      watchlist - not tonight's, since the market is already closed.</div></li>
+    <li><span class="when">06:40</span><div class="what"><b>AM catch-up (if PM was missed)</b><code>POINT_IN_TIME</code>
+      only if Radar's own COMPLETE marker for that session was itself dated the session's own day; otherwise the snapshot
+      is honestly labelled <code>RECONSTRUCTED</code>. Check <code>capture_mode</code> on the detail page before trusting
+      it as same-day.</div></li>
+    <li><span class="when">07:00</span><div class="what"><b>Morning check</b>Use <b>Re-evaluate now (live)</b> only to see
+      whether new event or data information arrived overnight - never to silently replace last evening's stored review
+      with information that wasn't knowable then.</div></li>
+    <li><span class="when">Market hours</span><div class="what"><b>Not the review window</b>The engine is an EOD/private
+      research layer. Do not treat 19:15/19:30's analytics as an intraday execution signal.</div></li>
+  </ul>
+  <p class="note">Rule of thumb: review the <b>latest finalized session's</b> candidates after the evening refresh, and
+    build the <b>next session's</b> watchlist from them. An AM catch-up confirms a prior pick is still valid; it does not
+    replace a proper EOD review with a guess.</p>
+
+  <h3 id="tc-daily">Daily workflow - swing</h3>
+  <ol class="steps">
+    <li><b>Start with the diversified shortlist, then the raw ranking</b>Both default to upside setups only. Diversification
+      should not hide raw quality - a demoted name may still be the best setup, just concentrated in an already-full
+      sector.</li>
+    <li><b>Check eligibility</b>Skip anything DATA_INCOMPLETE or NOT_ACTIONABLE, and anything with a DAY AGAINST badge
+      unless you have read why. Note <code>capture_mode</code>, <code>candidate_as_of</code> and
+      <code>quality_policy_version</code> on the detail page - prefer a genuine <code>POINT_IN_TIME</code> capture from the
+      stored snapshot.</li>
+    <li><b>Read the setup, not just the total</b>Open every component: setup quality, relative strength, sector alignment,
+      MTF, regime alignment. A total can hide which components actually carried it.</li>
+    <li><b>Check entry quality</b><code>extension_state</code> (NORMAL/STRETCHED/DEEPLY_STRETCHED), <code>pullback_state</code>,
+      <code>range_position_pct</code>. An ELIGIBLE candidate that is DEEPLY_STRETCHED or EXTENDED_FROM_STRUCTURE stays on
+      the watchlist, not the trigger list - see the callout above.</li>
+    <li><b>Check event proximity</b><code>event_proximity</code>: NO_KNOWN_EVENT / EVENT_WITHIN_WINDOW (&le;3 trading
+      sessions) / EVENT_DATA_UNAVAILABLE. A known event changes nothing about direction - it is a reason to review, not a
+      signal either way.</li>
+    <li><b>Read the structural reference as research context</b><code>structural_reference_price</code>
+      (PRIOR_20_LOW/PRIOR_20_HIGH), <code>risk_width_label</code> (NARROW/MODERATE/WIDE). A distance label, never an order
+      - no stop-loss is placed anywhere in this system.</li>
+    <li><b>Build a small next-session watchlist</b>Quality over count - V1 does not prescribe a fixed number.</li>
+    <li><b>Next morning: re-verify, don't assume</b>Confirm the candidate is still valid, no event/data flag materially
+      changed, and the market/sector context still looks acceptable.</li>
+    <li><b>During market hours: the score is not an entry trigger</b>The desk answers <i>what deserves attention</i>;
+      exactly when to act belongs to a future execution layer that does not exist in this package.</li>
+  </ol>
+
+  <h3 id="tc-weekly">Weekly workflow - positional</h3>
+  <p class="sub">Same evidence, same package - the emphasis shifts toward weekly/daily alignment and sector/regime context.
+    V1 does not run a second scoring engine for "positional"; this is reading guidance, not a different model.</p>
+  <div class="tw"><table>
+    <thead><tr><th></th><th>Swing emphasis</th><th>Positional emphasis</th></tr></thead>
+    <tbody>
+      <tr><th>Primary focus</th><td>Current setup + entry quality</td><td>Weekly/daily alignment first</td></tr>
+      <tr><th>MTF (<code>weekly_alignment</code>)</th><td>Supporting context</td><td>High importance - ALIGNED preferred,
+        DIVERGENT is a caution</td></tr>
+      <tr><th>Sector context</th><td>Important</td><td>Very important</td></tr>
+      <tr><th>Market Regime</th><td>Important</td><td>Very important</td></tr>
+      <tr><th>Extension</th><td>Avoid chasing a DEEPLY_STRETCHED name</td><td>Avoid a poor long-term
+        <code>range_position_pct</code> location</td></tr>
+      <tr><th>Events</th><td>Near-term (next 3 sessions) critical</td><td>Near- and medium-term awareness</td></tr>
+      <tr><th>Review cadence</th><td>Daily, after each PM refresh</td><td>Daily + a dedicated weekly pass</td></tr>
+    </tbody>
+  </table></div>
+  <ol class="steps">
+    <li><b>Review Market Regime</b>Label, streak length (<code>regime_streak_sessions</code>), and whether it was confirmed
+      (no <code>*</code> on the Regime page).</li>
+    <li><b>Review sector leadership/weakness</b>From Market Structure sector breadth and the Sectors page. A candidate's
+      own <code>sector_relative_20d_pp</code> only says how far it beat its sector, not whether the sector is strong.</li>
+    <li><b>Review the week's candidate snapshots</b>Open each finalized evening's board with the session selector - it
+      shows that evening's stored snapshot. V1 has no automated persistence score, so this is a manual read of available
+      snapshots, not a "repeat count" the system computes for you.</li>
+    <li><b>Identify repeated names yourself</b>If a symbol shows up ELIGIBLE/REVIEW across several evenings, note it
+      manually - this is observation, not a validated predictive signal.</li>
+    <li><b>Review weekly/daily alignment</b><code>weekly_alignment</code> ALIGNED vs DIVERGENT vs
+      WEEKLY_INSUFFICIENT_DATA (fewer than 10 completed weeks).</li>
+    <li><b>Compare raw ranking against the diversified shortlist</b>A demoted name did not get worse - see
+      <a href="#tc-rank">raw vs. diversified</a> below.</li>
+    <li><b>Drop anything with poor data or live event risk</b>DATA_INCOMPLETE, or EVENT_WITHIN_WINDOW on something you
+      can't explain.</li>
+    <li><b>Separate three lists</b>Ready to review now (NORMAL/AT_STRUCTURE) &middot; extended / wait for a better
+      location (STRETCHED or DEEPLY_STRETCHED) &middot; watch-only (REVIEW, or ELIGIBLE with a caution flag).</li>
+    <li><b>Prepare next week's focused watchlist</b>Fewer, explainable names over a long raw list.</li>
+    <li><b>Check your own sector/position concentration manually</b>The diversified shortlist caps sector concentration at
+      the candidate level (max 2 per sector); it knows nothing about your actual portfolio.</li>
+  </ol>
+
+  <h3 id="tc-rank">Raw ranking vs. diversified shortlist</h3>
+  <div class="grid g2">
+    <div class="card"><div class="k">Raw ranking</div><h4>Every ELIGIBLE/REVIEW candidate, ELIGIBLE first, then by score</h4>
+      The full audit trail. Nothing removed, nothing re-scored. A REVIEW capped for partial data never outranks an
+      ELIGIBLE candidate on score alone.</div>
+    <div class="card"><div class="k">Diversified shortlist</div><h4>Raw ranking, sector-capped</h4>Walks the raw ranking
+      and <b>demotes</b> (never deletes) a candidate once its sector already holds 2 shortlist entries, or - when enough
+      trailing-return history exists (&ge;20 overlapping sessions in the last 60) - once it is &ge;0.85 correlated with an
+      already-shortlisted same-sector name. A candidate with no sector data is kept and listed as "diversification not
+      applied".</div>
+  </div>
+  <p class="note">A demoted name's score did not change. <code>demotion_reason</code> is always <code>SECTOR_CONCENTRATION</code>
+    or <code>HIGH_CORRELATION</code>, with the exact detail (which sector, or which name it correlates with) shown
+    alongside - never a silent re-rank.</p>
+
+  <h3>Market Regime, sector context and multi-timeframe - read together, not separately</h3>
+  <div class="grid g3">
+    <div class="card"><div class="k">Market Regime</div><h4>Context, not a command</h4>BULLISH/BEARISH/NEUTRAL/
+      TRANSITIONAL/INSUFFICIENT_DATA (same classifier as <a href="#selection">section 7</a>). <code>regime_alignment</code>:
+      CANDIDATE_ALIGNS_WITH_REGIME / CANDIDATE_AGAINST_REGIME / REGIME_NEUTRAL. A strong setup against the regime loses
+      alignment points - it does not erase the stock's own evidence.</div>
+    <div class="card"><div class="k">Sector context</div><h4>Two different questions</h4><code>sector_relative_20d_pp</code>
+      (component C) is the stock's 20-session return minus a local equal-weight series of its own sector, stock included -
+      it says whether the stock <em>beat its sector</em>, not whether the sector is strong. Judge sector strength
+      separately on the Sectors page / Market Structure breadth. Strong stock in a strong sector is the cleaner long
+      setup; a stock beating a weak sector is mixed evidence - never a claim about institutional behaviour.</div>
+    <div class="card"><div class="k">Multi-timeframe</div><h4>Does the week agree with the day?</h4>
+      <code>weekly_alignment</code>: ALIGNED / DIVERGENT / WEEKLY_INSUFFICIENT_DATA (needs &ge;10 completed ISO weeks; the
+      current, still-forming week is always excluded). V1 has no MIXED or COUNTERTREND label - only these three.</div>
+  </div>
+
+  <h3>Entry / extension quality</h3>
+  <p class="note">Why a #1-ranked candidate can still say "not now": these fields describe <em>where price already is</em>,
+    independent of the score.</p>
+  <div class="tw"><table>
+    <thead><tr><th>Field</th><th>States</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>extension_state</code></td><td>NORMAL / STRETCHED / DEEPLY_STRETCHED / EXTENSION_UNKNOWN</td>
+        <td>Distance from the 20-session mean, in ATR14 units (&lt;1.5 / &lt;3 / &ge;3).</td></tr>
+      <tr><td><code>range_position_pct</code></td><td>0-100</td><td>Where the close sits between the prior-20-session low
+        (0) and high (100).</td></tr>
+      <tr><td><code>pullback_state</code></td><td>AT_STRUCTURE / NEAR_STRUCTURE / EXTENDED_FROM_STRUCTURE /
+        PULLBACK_UNKNOWN</td><td>Distance from the structural reference, in ATR14 units (&lt;1 / &lt;2.5 / &ge;2.5).</td></tr>
+      <tr><td><code>atr14</code> / <code>atr14_pct</code></td><td>number / percent of close</td><td>Standard 14-session
+        True Range average - needs 15 OHLCV sessions.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Event proximity</h3>
+  <p class="note">Only the event families actually LIVE in <code>market_events/</code>: EARNINGS, OFS, BUYBACK,
+    OPEN_OFFER, DELISTING, GOVT_SECURITIES_AUCTION (market-wide, never attached to a stock). IPO is shown separately via
+    IPO Watch, never duplicated here.</p>
+  <div class="tw"><table>
+    <thead><tr><th>State</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><span class="badge">NO_KNOWN_EVENT</span></td><td>No stock-level event <b>on file</b> within 3 trading sessions
+        either side. It still earns full component-I points, so it is not proof that nothing is scheduled.</td></tr>
+      <tr><td><span class="badge wa">EVENT_WITHIN_WINDOW</span></td><td>A named event family is within 3 trading sessions -
+        before <em>or after</em> the session (<code>sessions_to_event</code> negative = already happened). Flagged for your
+        review (component I scores it at 1/3 credit), never excluded outright.</td></tr>
+      <tr><td><span class="badge">EVENT_DATA_UNAVAILABLE</span></td><td>No event read available for this symbol this
+        session.</td></tr>
+    </tbody>
+  </table></div>
+  <div class="callout"><b>Verify results dates yourself</b>
+    Earnings coverage is limited to the board-meeting filings Market Events has captured (it went live on 2026-10-07): on
+    2026-10-16 none of the 24 candidates - including INFY, TCS, WIPRO, TECHM and HCLTECH in results season - had an
+    earnings record on file, so every one showed NO_KNOWN_EVENT. A results day is the largest single-stock gap risk for a
+    swing trade. A known event also says nothing about expected direction - never infer bullish/bearish from it.</div>
+
+  <h3>Structural reference - research context, not an order</h3>
+  <div class="callout"><b>This is not an automatic stop-loss</b>
+    <code>structural_reference_price</code>/<code>structural_reference_kind</code> (PRIOR_20_LOW for a long-biased
+    reading, PRIOR_20_HIGH for a short-biased one) and <code>risk_width_label</code> (NARROW/MODERATE/WIDE, by ATR14
+    distance) describe a <em>distance to a prior price level</em>, for research only. No order, quantity or broker field
+    exists anywhere in this package. <code>risk_width_label</code> is never a reward:risk ratio - no profit target exists
+    anywhere in this system to pair it with.</div>
+  <p class="note">V1 caveat for breakouts: an upside setup's reference is always the prior-20-session <em>low</em>, so a stock
+    that just broke above its 20-session high sits a full range away and usually reads EXTENDED_FROM_STRUCTURE / WIDE
+    (22 of 24 candidates on 2026-10-16). For a breakout, look at the broken level itself (the prior 20/50-session high on
+    the stock page) - the engine does not use it yet.</p>
+
+  <h3 id="tc-pit">Point-in-time / data quality fields</h3>
+  <div class="tw"><table>
+    <thead><tr><th>Field</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>candidate_as_of</code></td><td>The authoritative cutoff - the latest instant whose information was
+        eligible for this calculation.</td></tr>
+      <tr><td><code>captured_at</code></td><td>When this assessment object was physically computed. Close to
+        <code>candidate_as_of</code> for a live run; can differ for a catch-up.</td></tr>
+      <tr><td><code>capture_mode</code></td><td><code>POINT_IN_TIME</code> - produced honestly same-day, or (for a
+        catch-up) provably from a same-day Radar run. <code>RECONSTRUCTED</code> - built later; never treat as a genuine
+        real-time pick.</td></tr>
+      <tr><td><code>quality_policy_version</code></td><td>Which scoring policy produced this snapshot
+        (<code>trade-candidate-score-1.0</code> today). A later policy version never touches an earlier one's stored
+        files.</td></tr>
+      <tr><td>Page banner</td><td>"Stored evening snapshot" = what the automatic capture recorded at its cutoff (the
+        default). "Live re-evaluation" = recomputed now; for a past session it can include information published after
+        that evening.</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">Prefer <code>POINT_IN_TIME</code> history when you eventually look back at outcomes - a
+    <code>RECONSTRUCTED</code> row describes what the evidence would have shown, not what was actually knowable that day.</p>
+
+  <h3 id="tc-checklist">Daily operator checklist</h3>
+  <div class="card" data-checklist="tc-daily">
+    <div class="ck-head"><h4>Daily trade-candidate check</h4><span class="progress"></span></div>
+    <ul class="check">
+      <li><input type="checkbox" id="tcd1"><label for="tcd1">Latest session finalized; <code>/trade-candidates</code> banner
+        reads "stored evening snapshot".</label></li>
+      <li><input type="checkbox" id="tcd2"><label for="tcd2"><code>capture_mode</code> is POINT_IN_TIME for the
+        candidates you're reviewing (or you've consciously accepted RECONSTRUCTED).</label></li>
+      <li><input type="checkbox" id="tcd3"><label for="tcd3">Candidate is UPSIDE (no DAY AGAINST badge) and not
+        DATA_INCOMPLETE or NOT_ACTIONABLE.</label></li>
+      <li><input type="checkbox" id="tcd4"><label for="tcd4">Setup-quality evidence (families, volume level, structure
+        events) understood from the detail page.</label></li>
+      <li><input type="checkbox" id="tcd5"><label for="tcd5">Sector context reviewed
+        (<code>sector_relative_20d_pp</code>).</label></li>
+      <li><input type="checkbox" id="tcd6"><label for="tcd6">Market Regime and <code>regime_alignment</code>
+        reviewed.</label></li>
+      <li><input type="checkbox" id="tcd7"><label for="tcd7">Weekly/daily alignment (<code>weekly_alignment</code>)
+        reviewed.</label></li>
+      <li><input type="checkbox" id="tcd8"><label for="tcd8">Entry location checked - not DEEPLY_STRETCHED /
+        EXTENDED_FROM_STRUCTURE without good reason.</label></li>
+      <li><input type="checkbox" id="tcd9"><label for="tcd9">Event proximity checked.</label></li>
+      <li><input type="checkbox" id="tcd10"><label for="tcd10">Structural risk width (<code>risk_width_label</code>)
+        acceptable for your own risk tolerance.</label></li>
+      <li><input type="checkbox" id="tcd11"><label for="tcd11">Sector concentration checked against your own existing
+        positions, not just the diversified shortlist.</label></li>
+      <li><input type="checkbox" id="tcd12"><label for="tcd12">Candidate added to your own manual watchlist, with
+        notes.</label></li>
+    </ul>
+    <p class="note" style="margin-top:6px">Only after this should a candidate move from <b>research</b> to your own
+      execution review. No BUY button or order instruction exists here.</p>
+  </div>
+
+  <h3>Weekly operator checklist</h3>
+  <div class="card" data-checklist="tc-weekly">
+    <div class="ck-head"><h4>Weekly Private Desk review</h4><span class="progress"></span></div>
+    <ul class="check">
+      <li><input type="checkbox" id="tcw1"><label for="tcw1">Review current Market Regime and its streak.</label></li>
+      <li><input type="checkbox" id="tcw2"><label for="tcw2">Review sector leadership/weakness (Market Structure +
+        sector-relative readings).</label></li>
+      <li><input type="checkbox" id="tcw3"><label for="tcw3">Review candidate snapshots from the week.</label></li>
+      <li><input type="checkbox" id="tcw4"><label for="tcw4">Note repeated quality candidates manually (no automated
+        persistence score in V1).</label></li>
+      <li><input type="checkbox" id="tcw5"><label for="tcw5">Review weekly/daily alignment across your
+        shortlist.</label></li>
+      <li><input type="checkbox" id="tcw6"><label for="tcw6">Review STRETCHED/DEEPLY_STRETCHED names kept on
+        watch.</label></li>
+      <li><input type="checkbox" id="tcw7"><label for="tcw7">Review known upcoming events (EARNINGS/OFS/BUYBACK/
+        OPEN_OFFER/DELISTING/GOVT_SECURITIES_AUCTION).</label></li>
+      <li><input type="checkbox" id="tcw8"><label for="tcw8">Compare raw ranking against the diversified shortlist;
+        understand every demotion reason.</label></li>
+      <li><input type="checkbox" id="tcw9"><label for="tcw9">Check sector concentration against your own book.</label></li>
+      <li><input type="checkbox" id="tcw10"><label for="tcw10">Prepare a focused next-week watchlist.</label></li>
+      <li><input type="checkbox" id="tcw11"><label for="tcw11">Archive notes for later Historical Edge review
+        (<a href="#tc-future">section below</a>).</label></li>
+    </ul>
+  </div>
+
+  <h3>Decision path</h3>
+  <ol class="steps">
+    <li><b>Is it a Radar candidate?</b>If not, it is outside this package's universe entirely.</li>
+    <li><b>Is the Radar direction UPSIDE?</b>DOWNSIDE or MIXED &rarr; information only for a long-only review (the default
+      view already lists them separately).</li>
+    <li><b>Data quality COMPLETE or PARTIAL, replay MATCHED?</b>No &rarr; DATA_INCOMPLETE. Skip, or wait for the next
+      refresh.</li>
+    <li><b>Score &ge; 60 on COMPLETE data?</b>No, but &ge;35 or PARTIAL &rarr; REVIEW: read the detail page carefully.
+      Below that &rarr; NOT_ACTIONABLE.</li>
+    <li><b>Compounding-risk veto (DEEPLY_STRETCHED + EXTREME volatility)?</b>Yes &rarr; NOT_ACTIONABLE regardless of
+      score.</li>
+    <li><b>Entry location acceptable (not DEEPLY_STRETCHED / EXTENDED_FROM_STRUCTURE)?</b>No &rarr; keep on watch, don't
+      chase.</li>
+    <li><b>Event within 3 sessions, or structural risk WIDE?</b>Yes &rarr; review with extra care; a known event is a
+      reason to look closer, not a direction.</li>
+    <li><b>Sector/MTF/regime acceptable?</b>Mixed signals &rarr; weight the stock's own evidence more cautiously.</li>
+    <li><b>Add to your own manual watchlist</b>&rarr; your own execution review &rarr; (future, not built) execution
+      translation.</li>
+  </ol>
+  <p class="note">The tree never ends in "buy." It ends in a name on your watchlist for your own review.</p>
+
+  <h3 id="tc-avoid">When NOT to pick a candidate</h3>
+  <div class="card"><div class="k">Red / amber flags</div>
+    <ul>
+      <li>Research priority is <code>DATA_INCOMPLETE</code> or <code>NOT_ACTIONABLE</code> (including a
+        <code>COMPOUNDING_RISK_VETO</code> flag).</li>
+      <li>The Radar direction is DOWNSIDE or MIXED (an ELIGIBLE downside breakdown is still not a long setup), or the
+        candidate carries the DAY AGAINST flag and you haven't read why.</li>
+      <li><code>capture_mode</code> is <code>RECONSTRUCTED</code>, or the page shows a live re-evaluation, and you need a
+        genuine point-in-time read.</li>
+      <li><code>extension_state = DEEPLY_STRETCHED</code> or <code>pullback_state = EXTENDED_FROM_STRUCTURE</code>
+        without a plan for that.</li>
+      <li><code>event_proximity = EVENT_WITHIN_WINDOW</code> and you haven't reviewed what the event actually is.</li>
+      <li><code>risk_width_label = WIDE</code> and that distance doesn't fit your own risk tolerance.</li>
+      <li><code>weekly_alignment = DIVERGENT</code> while you're building a positional (not swing) idea.</li>
+      <li><code>regime_alignment = CANDIDATE_AGAINST_REGIME</code> without extra confirmation.</li>
+      <li>Adding it to your shortlist would create excessive same-sector exposure, beyond what the diversified
+        shortlist's own 2-per-sector cap already limits.</li>
+      <li>You can't explain the evidence in your own words from the detail page.</li>
+    </ul>
+  </div>
+  <p class="note">A high rank is never, by itself, a reason to act when any of the above is also true.</p>
+
+  <h3 id="tc-future">Future: Historical Edge Analytics &amp; Kite integration - not built in V1</h3>
+  <div class="grid g2">
+    <div class="card"><div class="k">NOT IMPLEMENTED YET</div><h4>Historical Edge Analytics</h4>Forward-return outcomes
+      (+1/+3/+5/+10 sessions), MFE/MAE, drawdown, regime-conditioned and sector-conditioned analysis,
+      component-combination analysis. V1 captures enough evidence (<code>capture_mode</code>, <code>candidate_as_of</code>)
+      to support this later without a reconstruction masquerading as something knowable on the day.</div>
+    <div class="card"><div class="k">NOT IMPLEMENTED YET</div><h4>Kite integration</h4>Private Trade Candidate &rarr; your
+      own human review &rarr; a future execution-translation layer &rarr; Kite Terminal. <code>TradeCandidateAssessment</code>
+      carries zero execution authority today - no order, quantity or broker field anywhere in this package
+      (test-enforced, docs/PRIVATE_DESK_KITE_INTEGRATION.md).</div>
+  </div>
+
+  <div class="callout"><b>Human review is required</b>
+    Trade Candidate Intelligence is decision support. It reduces the research universe. It does not remove your
+    judgment, does not guarantee a profitable trade, does not currently have historically validated score weights, and
+    does not execute anything.</div>
+</section>
+
+<!-- 9 -->
 <section id="journal">
-  <h2><span class="n">08</span>Your research journal</h2>
+  <h2><span class="n">09</span>Your research journal</h2>
   <p class="sub">The single highest-leverage habit. Keep it in your own spreadsheet; the desk never writes it.</p>
   <div class="tw"><table>
     <thead><tr><th>Column</th><th>Fill with</th><th>From</th></tr></thead>
@@ -516,9 +997,9 @@ scripts\clean_test_artifacts.bat</pre>
   <p class="note">Tip: start each evening's rows from <code>radar.csv</code> (Radar page), which already has symbol, sector, families, detector IDs, day %, RVOL, 5D/20D vs NIFTY, official events and the market regime.</p>
 </section>
 
-<!-- 9 -->
+<!-- 10 -->
 <section id="guardrails">
-  <h2><span class="n">09</span>Guardrails &amp; red flags</h2>
+  <h2><span class="n">10</span>Guardrails &amp; red flags</h2>
   <div class="grid g2">
     <div class="card"><div class="k">Do not use tonight's view if…</div>
       <ul>
@@ -541,9 +1022,9 @@ scripts\clean_test_artifacts.bat</pre>
     Private intelligence never reaches the public YouTube Short. Keep it that way; don't share desk screenshots publicly.</div>
 </section>
 
-<!-- 10 -->
+<!-- 11 -->
 <section id="reference">
-  <h2><span class="n">10</span>Quick reference</h2>
+  <h2><span class="n">11</span>Quick reference</h2>
   <div class="tw"><table>
     <thead><tr><th>Task</th><th>Command / place</th></tr></thead>
     <tbody>

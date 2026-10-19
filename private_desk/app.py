@@ -231,7 +231,8 @@ def create_app(settings: DeskSettings) -> FastAPI:
         if s is None:
             return unavailable(request, notice, "trade-candidates")
         return page(request, "trade_candidates.html", s, notice,
-                    d=svc.trade_candidates(s, view=view, live=bool(live)), live=bool(live))
+                    d=svc.trade_candidates(s, view=view, live=bool(live)), live=bool(live),
+                    coverage=svc.radar_coverage(s))
 
     @app.get("/trade-candidates/{symbol}", response_class=HTMLResponse)
     def trade_candidate_detail(request: Request, symbol: str, session: str | None = None,

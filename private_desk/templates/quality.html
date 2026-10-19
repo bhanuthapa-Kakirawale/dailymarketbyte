@@ -25,8 +25,8 @@
   {% set a = q.radar_artifact %}
   {% if a %}
   <dl class="facts">
-    <dt>Pipeline status</dt><dd><span class="b {{ 'ok' if a.pipeline_status == 'SUCCESS' else 'warn' }}">{{ a.pipeline_status }}</span> generated {{ a.generated_at }}</dd>
-    <dt>Universe usable</dt><dd>{{ a.universe_usable }} / {{ a.universe_requested }}</dd>
+    <dt>Pipeline status</dt><dd><span class="b {{ 'ok' if a.pipeline_status == 'SUCCESS' and not a.data_gap else 'warn' }}">{{ a.pipeline_status }}</span> generated {{ a.generated_at }}</dd>
+    <dt>Universe usable</dt><dd>{{ a.universe_usable }} / {{ a.universe_requested }}{% if a.data_gap %} <span class="b warn">DATA GAP</span> - Radar completed but acquired fewer usable symbols than requested; a zero/low candidate count this session is not a confirmed quiet session{% endif %}</dd>
     <dt>Candidates / stories</dt><dd>{{ a.composite_candidate_count }} / {{ a.editorial_selection_count }}</dd>
     <dt>Cache coverage</dt><dd>{% for k, v in a.coverage.items() %}{{ k }} {{ v }}{% if not loop.last %} · {% endif %}{% endfor %}</dd>
     <dt>Issues</dt><dd>{% for k, v in a.issue_counts.items() %}{{ k }} {{ v }} {% endfor %}</dd>

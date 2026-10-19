@@ -7,6 +7,7 @@ from ..db import DB_FILES, SourceUnavailable
 from ..repository import BENCHMARK_SYMBOL, DeskRepository
 from . import intelligence_freshness as ifr
 from . import production_runs as pr
+from . import radar_health
 from .. import replay as rp
 
 
@@ -28,7 +29,8 @@ def data_quality(repo: DeskRepository, session: dt.date | None, replay: dict | N
         "composite_candidate_count": art.get("composite_candidate_count"),
         "editorial_selection_count": art.get("editorial_selection_count"),
         "coverage": art.get("coverage_diagnostics") or {},
-        "issues": art.get("issues") or [], "issue_counts": art.get("issue_counts") or {}}
+        "issues": art.get("issues") or [], "issue_counts": art.get("issue_counts") or {},
+        "data_gap": radar_health.coverage_gap(art)}
 
     universe, uni_session = repo.universe(session) if session else ({}, None)
     out["universe_session"] = uni_session

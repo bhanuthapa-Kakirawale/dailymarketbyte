@@ -40,6 +40,18 @@ def candidates_view(repo, regime_dir: str, session: dt.date, *, view: str | None
     return presentation.CandidateBoardView.from_run(run)
 
 
+def radar_coverage(repo, session: dt.date) -> dict:
+    """Whether Radar actually had its full universe to look at this session - read straight
+    from the existing `daily_radar_<session>.json` artifact (the same one the Data Quality page
+    already reads), never recomputed. See `radar_health.coverage_gap`."""
+    from . import radar_health
+    art, _ = repo.radar_artifact(session)
+    return {"available": art is not None, "pipeline_status": (art or {}).get("pipeline_status"),
+           "universe_requested": (art or {}).get("universe_requested"),
+           "universe_usable": (art or {}).get("universe_usable"),
+           "data_gap": radar_health.coverage_gap(art)}
+
+
 def candidate_detail(repo, regime_dir: str, session: dt.date, symbol: str, *, live: bool = False):
     from private_candidates import presentation, service
     match = None if live else service.stored_assessment(repo.out_dir, session, symbol)
@@ -53,4 +65,5 @@ def candidate_detail(repo, regime_dir: str, session: dt.date, symbol: str, *, li
     return presentation.CandidateDetailView.from_assessment(match, source=source)
 
 
-__all__ = ["DEFAULT_VIEW", "normalize_view", "candidates_view", "candidate_detail"]
+__all__ = ["DEFAULT_VIEW", "normalize_view", "candidates_view", "radar_coverage",
+          "candidate_detail"]

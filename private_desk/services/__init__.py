@@ -144,6 +144,12 @@ class DeskService:
         return tc.candidate_detail(self.repo, self.settings.regime_dir, session, symbol,
                                    live=live)
 
+    def radar_coverage(self, session: dt.date) -> dict:
+        """Whether Radar had its full universe to look at this session - distinguishes a
+        genuine zero-candidate day from a data-acquisition gap. See
+        `services/radar_health.py`."""
+        return tc.radar_coverage(self.repo, session)
+
     def stock(self, symbol: str, session: dt.date) -> dict:
         symbol = symbol.upper()
         r = self.radar(session)

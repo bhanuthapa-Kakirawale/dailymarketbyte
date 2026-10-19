@@ -13,6 +13,9 @@
 {% else %}
 <div class="banner warn">Showing a <b>live re-evaluation</b> (cutoff = now) - {% if live %}requested{% else %}no current stored snapshot exists for this session{% endif %}. For a past session this can include information published after that evening.{% if live %} <a href="/trade-candidates?session={{ session }}&amp;view={{ d.view }}">Show the stored snapshot</a>{% endif %}</div>
 {% endif %}
+{% if d.candidate_count == 0 and coverage.data_gap %}
+<div class="banner bad">RADAR DATA GAP - Radar completed but acquired only <b>{{ coverage.universe_usable }} / {{ coverage.universe_requested }}</b> usable symbols this session. This is <b>not</b> a confirmed quiet session - it is a data-acquisition shortfall. See <a href="/quality">Data Quality</a> for detail.</div>
+{% endif %}
 
 <p class="note">Radar direction: {{ m.tcdir('ALIGNED_POSITIVE') }} {{ dc.UPSIDE or 0 }} · {{ m.tcdir('ALIGNED_NEGATIVE') }} {{ dc.DOWNSIDE or 0 }} · {{ m.tcdir('MIXED') }} {{ dc.MIXED or 0 }}.
 {% if upside_only %}The ranking and shortlist below cover <b>upside setups only</b> (long-only view); downside and mixed setups are listed further down as information only - <a href="/trade-candidates?session={{ session }}&amp;view=ALL{{ lq }}">rank all directions</a>.

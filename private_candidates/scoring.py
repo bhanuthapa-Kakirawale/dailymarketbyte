@@ -15,8 +15,17 @@ from .models import (DATA_QUALITY_INTEGRITY, EVENT_RISK, LIQUIDITY, MARKET_ALIGN
                      ComponentScore)
 from .policy import DEFAULT_SCORING_POLICY, ScoringPolicy
 
-_SIGNAL_BASE = {0: 0.0, 1: 6.0, 2: 13.0, 3: 18.0}
-_VOLUME_BONUS = {"ELEVATED": 0.0, "UNUSUAL": 1.0, "EXTREME": 2.0}
+_SIGNAL_BASE = {0: 0.0, 1: 4.0, 2: 9.0, 3: 13.0}
+_VOLUME_BONUS = {"ELEVATED": 0.0, "UNUSUAL": 2.0, "EXTREME": 3.0}
+# A 50-session range break is a bigger structural event than a 20-session one, and either is
+# bigger than an average cross (the playbook's own ordering). Only events in the candidate's
+# direction count; the best one is taken.
+_STRUCTURE_POINTS = {
+    "BREAK_ABOVE_50D_RANGE": (1, 4.0), "BREAK_BELOW_50D_RANGE": (-1, 4.0),
+    "BREAK_ABOVE_20D_RANGE": (1, 3.0), "BREAK_BELOW_20D_RANGE": (-1, 3.0),
+    "CROSS_ABOVE_SMA50": (1, 2.0), "CROSS_BELOW_SMA50": (-1, 2.0),
+    "CROSS_ABOVE_SMA20": (1, 1.0), "CROSS_BELOW_SMA20": (-1, 1.0),
+}
 
 
 def _agree(direction_sign: int, value: float | None) -> bool | None:
@@ -25,19 +34,33 @@ def _agree(direction_sign: int, value: float | None) -> bool | None:
     return (direction_sign > 0 and value > 0) or (direction_sign < 0 and value < 0)
 
 
+def _best_structure_event(events: list, direction_sign: int) -> tuple:
+    best = (None, 0.0)
+    for event_type in events or ():
+        sign, points = _STRUCTURE_POINTS.get(event_type, (0, 0.0))
+        if direction_sign and sign == direction_sign and points > best[1]:
+            best = (event_type, points)
+    return best
+
+
 def score_setup_quality(inputs: dict, policy: ScoringPolicy) -> ComponentScore:
     cap = policy.weight_setup_quality
     count = inputs.get("independent_signal_count") or 0
     base = _SIGNAL_BASE.get(min(count, 3), 0.0)
+    event, structure = _best_structure_event(inputs.get("technical_events"),
+                                             inputs.get("direction_sign") or 0)
     bonus = _VOLUME_BONUS.get(inputs.get("volume_level") or "", 0.0)
-    score = min(cap, base + bonus)
+    score = min(cap, base + structure + bonus)
     evidence = [f"{count} independent evidence family(ies) active"]
+    if event:
+        evidence.append(f"strongest structural event in the setup direction: {event}")
     if inputs.get("volume_level"):
         evidence.append(f"volume anomaly level {inputs['volume_level']}")
     if inputs.get("technical_events"):
         evidence.append("technical events: " + ", ".join(inputs["technical_events"]))
     return ComponentScore(SETUP_QUALITY, score, cap, SCORED, tuple(evidence), (),
-                          f"base {base:g} (signal count) + {bonus:g} (volume level)")
+                          f"base {base:g} (signal count) + {structure:g} (structural event) + "
+                          f"{bonus:g} (volume level)")
 
 
 def score_market_alignment(inputs: dict, policy: ScoringPolicy) -> ComponentScore:
@@ -65,19 +88,25 @@ def score_market_alignment(inputs: dict, policy: ScoringPolicy) -> ComponentScor
 
 
 def score_sector_alignment(inputs: dict, policy: ScoringPolicy) -> ComponentScore:
+    """Is the stock's SECTOR moving the candidate's way? Reads the sector's own 20-session return
+    against NIFTY 50 (its peers' equal-weight series), never the stock-vs-sector gap, which is a
+    second relative-strength reading and stays evidence only."""
     cap = policy.weight_sector_alignment
-    pp = inputs.get("sector_relative_20d_pp")
+    pp = inputs.get("sector_vs_market_20d_pp")
     direction_sign = inputs.get("direction_sign") or 0
     if pp is None or direction_sign == 0:
         return ComponentScore(SECTOR_ALIGNMENT, 0.0, cap, NOT_SCORABLE, (),
-                              ("sector_relative_20d_pp",),
-                              "no sector mapping or sector series available for this session")
+                              ("sector_vs_market_20d_pp",),
+                              "no sector mapping, sector peers or sector series for this session")
     agree = _agree(direction_sign, pp)
-    score = min(cap, abs(pp) / 2.0) if agree else 0.0
-    evidence = (f"20-session sector-relative performance {pp:+.2f}pp "
-               f"({'agrees' if agree else 'disagrees'} with candidate direction)",)
-    return ComponentScore(SECTOR_ALIGNMENT, score, cap, SCORED, evidence, (),
-                          "magnitude of sector-relative pp when direction agrees, else 0")
+    score = min(cap, abs(pp) * policy.sector_tailwind_points_per_pp) if agree else 0.0
+    evidence = [f"sector 20-session return vs NIFTY 50 {pp:+.2f}pp "
+                f"({'agrees' if agree else 'disagrees'} with candidate direction)"]
+    stock_vs_sector = inputs.get("sector_relative_20d_pp")
+    if stock_vs_sector is not None:
+        evidence.append(f"stock vs its sector peers {stock_vs_sector:+.2f}pp (evidence only)")
+    return ComponentScore(SECTOR_ALIGNMENT, score, cap, SCORED, tuple(evidence), (),
+                          "sector strength vs NIFTY 50 when it agrees with the direction, else 0")
 
 
 def score_relative_strength(inputs: dict, policy: ScoringPolicy) -> ComponentScore:
@@ -168,15 +197,26 @@ def score_event_risk(inputs: dict, policy: ScoringPolicy) -> ComponentScore:
     cap = policy.weight_event_risk
     proximity = inputs.get("event_proximity")
     if proximity == "NO_KNOWN_EVENT":
+        if inputs.get("results_date_not_on_file"):
+            return ComponentScore(EVENT_RISK, cap * policy.results_unverified_credit, cap, SCORED,
+                                  ("no stock-level event on file, but the session is in a "
+                                   "quarterly results window and no results date is on file",),
+                                  (), "NO_KNOWN_EVENT with the results date unverified")
         return ComponentScore(EVENT_RISK, cap, cap, SCORED,
                               ("no known stock-level event near this session",), (),
                               "NO_KNOWN_EVENT")
     if proximity == "EVENT_WITHIN_WINDOW":
-        evidence = [f"{inputs.get('event_family')} event within "
-                   f"{inputs.get('sessions_to_event')} trading session(s)"]
-        # visibility over aggressive exclusion (owner spec section 21): flagged, not zeroed.
-        return ComponentScore(EVENT_RISK, cap * 1 / 3, cap, SCORED, tuple(evidence), (),
-                              "EVENT_WITHIN_WINDOW: flagged for review, not excluded")
+        n = inputs.get("sessions_to_event")
+        recent = n is not None and n < 0
+        timing = (f"{-n} trading session(s) ago" if recent else
+                  "on this session" if n == 0 else f"in {n} trading session(s)")
+        evidence = [f"{inputs.get('event_family')} event {timing}"]
+        # visibility over aggressive exclusion (owner spec section 21): flagged, not zeroed. An
+        # event already past has published its information; an upcoming one has not.
+        credit = policy.event_recent_credit if recent else policy.event_upcoming_credit
+        return ComponentScore(EVENT_RISK, cap * credit, cap, SCORED, tuple(evidence), (),
+                              f"EVENT_WITHIN_WINDOW ({'already happened' if recent else 'upcoming'}):"
+                              " flagged for review, not excluded")
     return ComponentScore(EVENT_RISK, 0.0, cap, NOT_SCORABLE, (), ("event_proximity",),
                           "event data unavailable for this symbol")
 

@@ -42,13 +42,17 @@ from __future__ import annotations
 
 import datetime as dt
 
+from market_events.models import EARNINGS
+
 from . import context, eligibility, metrics, policy as policy_mod, scoring
-from .models import (DAY_MOVE_AGAINST_RADAR_DIRECTION, SCHEMA_VERSION, EventProximity,
-                     TradeCandidateAssessment)
+from .models import (DAY_MOVE_AGAINST_RADAR_DIRECTION, RESULTS_DATE_NOT_ON_FILE, SCHEMA_VERSION,
+                     EventProximity, TradeCandidateAssessment)
 from .shortlist import diversified_shortlist, raw_ranking
 
 POINT_IN_TIME = "POINT_IN_TIME"
 RECONSTRUCTED = "RECONSTRUCTED"
+
+_RADAR_SIGN = {"ALIGNED_POSITIVE": 1, "ALIGNED_NEGATIVE": -1}
 
 # Board views. ALL is engine-neutral (and what capture uses); UPSIDE ranks and shortlists only
 # candidates whose Radar evidence is ALIGNED_POSITIVE, listing the rest as information only.
@@ -115,11 +119,19 @@ def _evidence_summary(components: tuple) -> tuple:
     return tuple(positive), tuple(risk)
 
 
+def _date_in(raw, window: tuple) -> bool:
+    try:
+        d = dt.date.fromisoformat(str(raw)[:10])
+    except ValueError:
+        return False
+    return window[0] <= d <= window[1]
+
+
 def assess_candidate(repo, symbol: str, stored, *, replay: dict, reconcile_status: str,
                      session: dt.date, candidate_as_of: dt.datetime, sector_map: dict,
-                     members_by_sector: dict, nsdl_by_sector: dict, regime_snaps: list,
-                     benchmark_series: list, calendar, universe_company: dict,
-                     policy: policy_mod.ScoringPolicy, capture_mode: str,
+                     members_by_sector: dict, sector_rows_cache: dict, nsdl_by_sector: dict,
+                     regime_snaps: list, benchmark_series: list, calendar,
+                     universe_company: dict, policy: policy_mod.ScoringPolicy, capture_mode: str,
                      captured_at: dt.datetime) -> TradeCandidateAssessment:
     out_dir = repo.out_dir
     cutoff_iso = _ist_cutoff(candidate_as_of).isoformat()
@@ -131,7 +143,12 @@ def assess_candidate(repo, symbol: str, stored, *, replay: dict, reconcile_statu
     relative = (replay_symbol or {}).get("relative") or {}
     close = (replay_symbol or {}).get("close")
     price_change_pct = (replay_candidate or {}).get("price_change_pct")
-    direction_sign = 0 if not price_change_pct else (1 if price_change_pct > 0 else -1)
+    day_sign = 0 if not price_change_pct else (1 if price_change_pct > 0 else -1)
+    # The Radar's own multi-session evidence (structure + relative) sets the direction; the
+    # day's move is only the fallback when that evidence is mixed or absent.
+    radar_direction = stored.direction_compatibility
+    radar_sign = _RADAR_SIGN.get(radar_direction, 0)
+    direction_sign = radar_sign or day_sign
 
     has_volume_anomaly = bool((replay_symbol or {}).get("volume_anomaly"))
     has_technical = bool((replay_symbol or {}).get("technical"))
@@ -142,9 +159,8 @@ def assess_candidate(repo, symbol: str, stored, *, replay: dict, reconcile_statu
     atr = metrics.atr14(daily, policy.atr_window)
     atr_pct = (atr / close * 100) if (atr is not None and close) else None
 
-    weekly = metrics.weekly_alignment(daily, price_change_pct, policy)
-    struct_ref = metrics.structural_reference(technical.get("prior_20_low"),
-                                              technical.get("prior_20_high"), price_change_pct)
+    weekly = metrics.weekly_alignment(daily, direction_sign, policy)
+    struct_ref = metrics.structural_reference(technical, direction_sign)
     ext = metrics.extension_state(technical.get("distance_from_sma20_pct"), close, atr, policy)
     pullback = metrics.pullback_state(close, struct_ref["price"], atr, policy)
     risk_width = metrics.risk_width_label(close, struct_ref["price"], atr, policy)
@@ -157,9 +173,15 @@ def assess_candidate(repo, symbol: str, stored, *, replay: dict, reconcile_statu
     liq = metrics.liquidity_band(avg_vol_20, close, policy)
 
     sector = sector_map.get(symbol)
-    sector_rel = context.sector_relative_performance(repo, symbol, sector, members_by_sector,
-                                                      session, benchmark_series)
-    sector_relative_20d_pp = (sector_rel or {}).get("sector_relative_20d_pp")
+    if sector and sector not in sector_rows_cache:
+        sector_rows_cache[sector] = context.sector_member_rows(
+            repo, members_by_sector.get(sector) or [], session)
+    sector_rel = context.sector_relative_performance(
+        symbol, sector, sector_rows_cache.get(sector) or {}, daily, session, benchmark_series) or {}
+    sector_relative_20d_pp = sector_rel.get("sector_relative_20d_pp")
+    sector_return, market_return = sector_rel.get("sector_return_20d"), sector_rel.get("market_return_20d")
+    sector_vs_market_20d_pp = (sector_return - market_return
+                               if sector_return is not None and market_return is not None else None)
     nsdl_flow = nsdl_by_sector.get(sector) if sector else None
     sector_rotation_context = (f"{sector}: {nsdl_flow.direction}" if nsdl_flow is not None else None)
 
@@ -177,8 +199,12 @@ def assess_candidate(repo, symbol: str, stored, *, replay: dict, reconcile_statu
         proximity = EventProximity.EVENT_WITHIN_WINDOW.value
     else:
         proximity = EventProximity.NO_KNOWN_EVENT.value
+    window = metrics.results_window(session, policy)
+    results_date_not_on_file = (not events_error and window is not None and not any(
+        getattr(ev, "family", None) == EARNINGS and _date_in(getattr(ev, "data_as_of", None), window)
+        for ev in events))
 
-    regime_now = next((s for s in regime_snaps if s.session_date == session.isoformat()), None)
+    regime_now =next((s for s in regime_snaps if s.session_date == session.isoformat()), None)
     regime_label = regime_now.regime if regime_now is not None else None
     streak = metrics.regime_streak(regime_snaps, session.isoformat(), policy.regime_streak_lookback)
 
@@ -193,6 +219,8 @@ def assess_candidate(repo, symbol: str, stored, *, replay: dict, reconcile_statu
         "technical_events": [e.get("event_type") for e in (technical.get("events") or [])],
         "regime_label": regime_label, "direction_sign": direction_sign,
         "regime_streak": streak, "sector_relative_20d_pp": sector_relative_20d_pp,
+        "sector_vs_market_20d_pp": sector_vs_market_20d_pp,
+        "results_date_not_on_file": results_date_not_on_file,
         "market_relative_20d_pp": relative.get("market_relative_20d_pp"),
         "persistence_state": relative.get("persistence_state"),
         "weekly_alignment": weekly["alignment"], "weekly_evidence": weekly["evidence"],
@@ -212,15 +240,15 @@ def assess_candidate(repo, symbol: str, stored, *, replay: dict, reconcile_statu
         has_volume_anomaly=has_volume_anomaly, has_technical=has_technical,
         has_relative=has_relative, ohlcv_sessions=ohlcv_sessions, atr_available=atr is not None,
         score_total=score_total, score_max=score_max, extension_state=ext["state"],
-        volatility_band=vol_band, policy=policy)
+        volatility_band=vol_band, mixed_direction=radar_sign == 0, policy=policy)
     positive_evidence, risk_evidence = _evidence_summary(components)
     missing_context = tuple(sorted({m for c in components for m in c.missing_data}))
 
-    radar_direction = stored.direction_compatibility
     flags = elig["flags"]
-    if ((radar_direction == "ALIGNED_POSITIVE" and direction_sign < 0)
-            or (radar_direction == "ALIGNED_NEGATIVE" and direction_sign > 0)):
-        flags = flags + (DAY_MOVE_AGAINST_RADAR_DIRECTION,)
+    if radar_sign and day_sign and radar_sign != day_sign:
+        flags += (DAY_MOVE_AGAINST_RADAR_DIRECTION,)
+    if results_date_not_on_file:
+        flags += (RESULTS_DATE_NOT_ON_FILE,)
 
     return TradeCandidateAssessment(
         schema_version=SCHEMA_VERSION, score_policy_version=policy.score_policy_version,
@@ -243,7 +271,8 @@ def assess_candidate(repo, symbol: str, stored, *, replay: dict, reconcile_statu
              and c.evidence), None),
         sector_relative_20d_pp=sector_relative_20d_pp, sector_rotation_context=sector_rotation_context,
         positive_evidence=positive_evidence, risk_evidence=risk_evidence,
-        missing_context=missing_context, flags=flags, radar_direction=radar_direction)
+        missing_context=missing_context, flags=flags, radar_direction=radar_direction,
+        sector_vs_market_20d_pp=sector_vs_market_20d_pp)
 
 
 def build_assessments(repo, session: dt.date, *, regime_dir: str | None = None,
@@ -287,11 +316,13 @@ def build_assessments(repo, session: dt.date, *, regime_dir: str | None = None,
     calendar = SessionCalendar.from_index_dates([r["date"] for r in benchmark_series])
 
     out = []
+    sector_rows_cache: dict = {}
     for c in stored:
         out.append(assess_candidate(
             repo, c.instrument, c, replay=replay, reconcile_status=reconcile_map.get(
                 c.instrument, "NOT_REPLAYED"), session=session, candidate_as_of=candidate_as_of,
             sector_map=sector_map, members_by_sector=members_by_sector,
+            sector_rows_cache=sector_rows_cache,
             nsdl_by_sector=nsdl_by_sector, regime_snaps=regime_snaps,
             benchmark_series=benchmark_series, calendar=calendar,
             universe_company=universe_company, policy=policy, capture_mode=capture_mode,

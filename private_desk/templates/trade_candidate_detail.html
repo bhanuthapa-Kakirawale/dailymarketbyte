@@ -24,7 +24,9 @@
     <dt>Candidate as of / captured at</dt><dd class="mono">{{ detail.candidate_as_of }} / {{ detail.captured_at }}</dd>
     <dt>Eligibility reasons</dt><dd>{% for r in detail.eligibility_reasons %}{{ r }}{% if not loop.last %}; {% endif %}{% endfor %}</dd>
     {% if detail.flags %}<dt>Flags</dt><dd>{% for f in detail.flags %}<span class="b warn">{{ f | label }}</span> {% endfor %}
-      {% if 'DAY_MOVE_AGAINST_RADAR_DIRECTION' in detail.flags %}<br><span class="dim">The session's own price move went against the Radar direction. V1 components (alignment, weekly, structural reference) are computed from the day's move, so read them with that in mind.</span>{% endif %}</dd>{% endif %}
+      {% if 'DAY_MOVE_AGAINST_RADAR_DIRECTION' in detail.flags %}<br><span class="dim">The session's own move went against the Radar direction - a pullback or bounce day. The components follow the Radar direction.</span>{% endif %}
+      {% if 'MIXED_DIRECTION_EVIDENCE' in detail.flags %}<br><span class="dim">The Radar's structure and relative evidence disagree, so the components read the day's move as the direction and the research state is capped at REVIEW.</span>{% endif %}
+      {% if 'RESULTS_DATE_NOT_ON_FILE' in detail.flags %}<br><span class="dim">This session is in a quarterly results window and no results date for this quarter is on file - verify it before relying on "no known event".</span>{% endif %}</dd>{% endif %}
   </dl>
 </section>
 
@@ -47,7 +49,7 @@
     <dt>Range position</dt><dd>{{ detail.range_position_pct | num(0) }}% of the way between the prior 20-session low and high</dd>
     <dt>Extension</dt><dd>{{ detail.extension_state | label }}</dd>
     <dt>Pullback state</dt><dd>{{ detail.pullback_state | label }}</dd>
-    <dt>Structural reference price</dt><dd>{{ detail.structural_reference_price | num(2) }} ({{ detail.structural_reference_kind | na }}) <span class="dim">a prior price level, not a stop order</span></dd>
+    <dt>Structural reference price</dt><dd>{{ detail.structural_reference_price | num(2) }} ({{ detail.structural_reference_kind | label }}) <span class="dim">a prior price level - the broken level for a range break - not a stop order</span></dd>
     <dt>Risk width</dt><dd>{{ detail.risk_width_label | label }} <span class="dim">distance to the structural reference in ATR units - never a reward:risk ratio</span></dd>
     <dt>ATR14</dt><dd>{{ detail.atr14 | num(2) }} ({{ detail.atr14_pct | num(2) }}% of close)</dd>
   </dl>
@@ -58,7 +60,8 @@
   <dl class="facts">
     <dt>Regime</dt><dd>{{ detail.regime_label | na }} <span class="dim">streak {{ detail.regime_streak_sessions | na }} session(s)</span> · {{ detail.regime_alignment | na | label }}</dd>
     <dt>Weekly timeframe</dt><dd>{{ detail.weekly_alignment | label }}</dd>
-    <dt>Sector-relative (20d)</dt><dd>{{ detail.sector_relative_20d_pp | pp }}</dd>
+    <dt>Sector vs NIFTY 50 (20d)</dt><dd>{{ detail.sector_vs_market_20d_pp | pp }} <span class="dim">the sector's own strength (peers' equal-weight series, this stock excluded) - what sector alignment reads</span></dd>
+    <dt>Stock vs its sector peers (20d)</dt><dd>{{ detail.sector_relative_20d_pp | pp }} <span class="dim">how far the stock beat its sector - evidence only</span></dd>
     <dt>Sector FPI context</dt><dd>{{ detail.sector_rotation_context | na }} <span class="dim">sector-level only, never a stock-specific claim</span></dd>
   </dl>
 </section>

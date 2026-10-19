@@ -1,4 +1,4 @@
-"""Deterministic, configurable weights/thresholds for Trade Candidate Intelligence V1.
+"""Deterministic, configurable weights/thresholds for Trade Candidate Intelligence.
 
 Every number here is PROVISIONAL (owner spec section 5): a reasonable first-pass judgment call,
 never derived from a backtest, never optimized against historical returns. Mirrors the house
@@ -6,6 +6,14 @@ style of `radar/thresholds.py` - one frozen dataclass per caller can tune withou
 scoring logic, and `score_policy_version` is bumped whenever a weight or threshold changes so a
 stored `TradeCandidateAssessment` snapshot is never silently reinterpreted under a different
 policy (`private_candidates/store.py` keys storage by this version).
+
+Policy 2.0 (2026-10 review) keeps every weight and band of 1.0 and changes what four
+components read: the candidate's direction comes from the Radar's own multi-session evidence
+(MIXED evidence is capped at REVIEW), SECTOR_ALIGNMENT reads the sector's strength against
+NIFTY 50, the structural reference is the broken level for a range breakout/breakdown, setup
+quality grades the structural event, and EVENT_RISK separates past from upcoming events and
+stops treating "no results date on file" in results season as "no event". See
+docs/PRIVATE_TRADE_CANDIDATES.md "Policy 2.0". 1.0 snapshots stay in their own folder.
 """
 from __future__ import annotations
 
@@ -14,7 +22,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ScoringPolicy:
-    score_policy_version: str = "trade-candidate-score-1.0"
+    score_policy_version: str = "trade-candidate-score-2.0"
 
     # Component weights (A-J). Must sum to `max_total` - enforced by a test, not at runtime,
     # so a deliberate change is caught immediately rather than silently shifting the scale.
@@ -68,6 +76,20 @@ class ScoringPolicy:
 
     # Event proximity window (owner spec section 20), in TRADING sessions, not calendar days.
     event_window_sessions: int = 3
+    # EVENT_RISK credit (share of its weight). An upcoming event is the bigger unknown; one that
+    # already happened has published its information. "No event on file" during a quarterly
+    # results window with no results date on file is not proof of no event.
+    event_upcoming_credit: float = 1.0 / 3.0
+    event_recent_credit: float = 2.0 / 3.0
+    results_unverified_credit: float = 2.0 / 3.0
+    # SEBI LODR Reg. 33(3): quarterly results within 45 days of quarter end, annual (March
+    # quarter) within 60 days - the window in which a missing results date matters.
+    results_window_days_quarterly: int = 45
+    results_window_days_annual: int = 60
+
+    # SECTOR_ALIGNMENT: points per percentage point of the sector's 20-session return over
+    # NIFTY 50 when it agrees with the candidate's direction (10 points at 8 pp).
+    sector_tailwind_points_per_pp: float = 1.25
 
     # Diversified shortlist (owner spec sections 28-30).
     sector_cap: int = 2

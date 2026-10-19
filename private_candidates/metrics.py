@@ -79,9 +79,10 @@ def weekly_resample(daily_rows: list) -> list:
     return out
 
 
-def weekly_alignment(daily_rows: list, price_change_pct: float | None,
+def weekly_alignment(daily_rows: list, direction_sign: float | None,
                      policy: ScoringPolicy = DEFAULT_SCORING_POLICY) -> dict:
-    """Is the daily candidate's direction consistent with the larger weekly structure?
+    """Is the candidate's direction (`direction_sign`, only its sign is read) consistent with the
+    larger weekly structure?
 
     Weekly structure = the last completed week's close vs. a simple SMA over the trailing
     `policy.weekly_sma_window` completed weekly closes (inclusive of that last completed week,
@@ -89,7 +90,7 @@ def weekly_alignment(daily_rows: list, price_change_pct: float | None,
     `TechnicalStructure.sma20/50` already documents). Needs at least
     `policy.weekly_min_completed_weeks` completed weeks; below that, insufficient."""
     weeks = weekly_resample(daily_rows)
-    if len(weeks) < policy.weekly_min_completed_weeks or price_change_pct is None:
+    if len(weeks) < policy.weekly_min_completed_weeks or direction_sign is None:
         return {"alignment": MTFAlignment.WEEKLY_INSUFFICIENT_DATA.value,
                "completed_weeks": len(weeks), "weekly_close": None, "weekly_sma": None,
                "evidence": f"{len(weeks)} completed week(s) available, "
@@ -102,8 +103,8 @@ def weekly_alignment(daily_rows: list, price_change_pct: float | None,
     weekly_sma = sum(closes[-policy.weekly_sma_window:]) / policy.weekly_sma_window
     weekly_close = closes[-1]
     weekly_sign = weekly_close - weekly_sma
-    aligned = (price_change_pct > 0 and weekly_sign > 0) or (price_change_pct < 0 and weekly_sign < 0)
-    neutral_daily = price_change_pct == 0 or weekly_sign == 0
+    aligned = (direction_sign > 0 and weekly_sign > 0) or (direction_sign < 0 and weekly_sign < 0)
+    neutral_daily = direction_sign == 0 or weekly_sign == 0
     alignment = (MTFAlignment.ALIGNED if aligned and not neutral_daily
                 else MTFAlignment.DIVERGENT if not neutral_daily
                 else MTFAlignment.WEEKLY_INSUFFICIENT_DATA)
@@ -114,22 +115,49 @@ def weekly_alignment(daily_rows: list, price_change_pct: float | None,
 
 
 # ------------------------------------------------------------------ structural reference
-def structural_reference(prior_20_low: float | None, prior_20_high: float | None,
-                         price_change_pct: float | None) -> dict:
-    """The nearest already-computed structural level this package reuses as a reference
-    (owner spec section 18; option (a) in the design doc - `prior_20_low`/`prior_20_high` from
-    `radar.models.TechnicalStructure`, never a new swing/trendline indicator in V1).
+_BROKEN_LEVELS = {
+    1: (("BREAK_ABOVE_50D_RANGE", "prior_50_high", "BROKEN_PRIOR_50_HIGH"),
+        ("BREAK_ABOVE_20D_RANGE", "prior_20_high", "BROKEN_PRIOR_20_HIGH")),
+    -1: (("BREAK_BELOW_50D_RANGE", "prior_50_low", "BROKEN_PRIOR_50_LOW"),
+         ("BREAK_BELOW_20D_RANGE", "prior_20_low", "BROKEN_PRIOR_20_LOW")),
+}
 
-    A positive `price_change_pct` (or an `ALIGNED_POSITIVE` candidate) reads as long-biased:
-    the reference is `prior_20_low` (the level below which the recent constructive structure
-    would be undermined). A negative reading is short-biased: the reference is
-    `prior_20_high`. Direction-less input (`None` or exactly 0) has no bias to reference -> both
-    `None`."""
-    if price_change_pct is None or price_change_pct == 0:
+
+def structural_reference(technical: dict, direction_sign: int) -> dict:
+    """The already-computed structural level this package reuses as a reference (owner spec
+    section 18 - levels from `radar.models.TechnicalStructure`, never a new swing/trendline
+    indicator).
+
+    A range break in the candidate's direction makes the level it just cleared the reference
+    (the 50-session one first: it is the nearer of the two) - the level whose loss would mean a
+    failed break. Without one, the far end of the prior 20-session range is used:
+    `prior_20_low` for an upside candidate, `prior_20_high` for a downside one. No direction ->
+    no reference."""
+    if not direction_sign:
         return {"price": None, "kind": None}
-    if price_change_pct > 0:
-        return {"price": prior_20_low, "kind": "PRIOR_20_LOW" if prior_20_low is not None else None}
-    return {"price": prior_20_high, "kind": "PRIOR_20_HIGH" if prior_20_high is not None else None}
+    sign = 1 if direction_sign > 0 else -1
+    events = {e.get("event_type") for e in technical.get("events") or []}
+    for event_type, field_name, kind in _BROKEN_LEVELS[sign]:
+        level = technical.get(field_name)
+        if event_type in events and level is not None:
+            return {"price": level, "kind": kind}
+    field_name, kind = ("prior_20_low", "PRIOR_20_LOW") if sign > 0 else ("prior_20_high", "PRIOR_20_HIGH")
+    level = technical.get(field_name)
+    return {"price": level, "kind": kind if level is not None else None}
+
+
+def results_window(session, policy: ScoringPolicy = DEFAULT_SCORING_POLICY) -> tuple | None:
+    """`(first_day, last_day)` of the quarterly-results filing window `session` falls in, or None.
+    Indian quarters end Mar 31 / Jun 30 / Sep 30 / Dec 31; results are due within
+    `results_window_days_quarterly` days, or `results_window_days_annual` after March."""
+    d = _as_date(session)
+    quarter_ends = [dt.date(y, m, day) for y in (d.year - 1, d.year)
+                    for m, day in ((3, 31), (6, 30), (9, 30), (12, 31))]
+    last_end = max(q for q in quarter_ends if q < d)
+    days = (policy.results_window_days_annual if last_end.month == 3
+            else policy.results_window_days_quarterly)
+    last_day = last_end + dt.timedelta(days=days)
+    return (last_end + dt.timedelta(days=1), last_day) if d <= last_day else None
 
 
 def range_position_pct(close: float | None, prior_20_low: float | None,
@@ -361,7 +389,7 @@ def pairwise_return_correlation(rows_a: list, rows_b: list,
 
 
 __all__ = ["atr14", "average_volume", "weekly_resample", "weekly_alignment",
-          "structural_reference", "range_position_pct", "extension_state", "pullback_state",
+          "structural_reference", "results_window", "range_position_pct", "extension_state", "pullback_state",
           "risk_width_label", "volatility_band", "liquidity_band", "regime_streak",
           "trading_session_distance", "nearest_event_distance",
           "build_equal_weight_sector_series", "pairwise_return_correlation"]

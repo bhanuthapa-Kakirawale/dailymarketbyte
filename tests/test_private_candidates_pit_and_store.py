@@ -156,7 +156,8 @@ def test_write_snapshot_is_exclusive_create_never_overwrites(desk_out, tmp_path)
 
 def test_snapshot_store_isolates_policy_versions(desk_out, tmp_path):
     out_dir = str(tmp_path / "store_out2")
-    a_v1 = _make_assessment(desk_out)
+    a_v1 = dataclasses.replace(_make_assessment(desk_out),
+                               score_policy_version="trade-candidate-score-1.0")
     a_v2 = dataclasses.replace(a_v1, score_policy_version="trade-candidate-score-2.0")
     store.write_snapshot(out_dir, a_v1)
     store.write_snapshot(out_dir, a_v2)

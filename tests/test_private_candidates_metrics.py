@@ -47,23 +47,57 @@ def test_weekly_resample_excludes_the_current_partial_week():
 
 def test_weekly_alignment_insufficient_below_minimum_weeks():
     rows = _daily_rows(5 * 3)   # only 3 completed-ish weeks worth
-    out = metrics.weekly_alignment(rows, price_change_pct=1.0, policy=POLICY)
+    out = metrics.weekly_alignment(rows, direction_sign=1, policy=POLICY)
     assert out["alignment"] == "WEEKLY_INSUFFICIENT_DATA"
 
 
 def test_weekly_alignment_detects_aligned_and_divergent():
     rows = _daily_rows(5 * 12)   # an uptrend across 12 weeks
-    aligned = metrics.weekly_alignment(rows, price_change_pct=1.0, policy=POLICY)
+    aligned = metrics.weekly_alignment(rows, direction_sign=1, policy=POLICY)
     assert aligned["alignment"] == "ALIGNED"
-    divergent = metrics.weekly_alignment(rows, price_change_pct=-1.0, policy=POLICY)
+    divergent = metrics.weekly_alignment(rows, direction_sign=-1, policy=POLICY)
     assert divergent["alignment"] == "DIVERGENT"
 
 
-def test_structural_reference_picks_side_by_direction():
-    assert metrics.structural_reference(90, 110, 1.5) == {"price": 90, "kind": "PRIOR_20_LOW"}
-    assert metrics.structural_reference(90, 110, -1.5) == {"price": 110, "kind": "PRIOR_20_HIGH"}
-    assert metrics.structural_reference(90, 110, 0) == {"price": None, "kind": None}
-    assert metrics.structural_reference(90, 110, None) == {"price": None, "kind": None}
+TECH = {"prior_20_low": 90, "prior_20_high": 110, "prior_50_low": 80, "prior_50_high": 115}
+
+
+def _with(*events) -> dict:
+    return dict(TECH, events=[{"event_type": e} for e in events])
+
+
+def test_structural_reference_without_a_range_break_is_the_far_end_of_the_20_session_range():
+    assert metrics.structural_reference(TECH, 1) == {"price": 90, "kind": "PRIOR_20_LOW"}
+    assert metrics.structural_reference(TECH, -1) == {"price": 110, "kind": "PRIOR_20_HIGH"}
+    assert metrics.structural_reference(TECH, 0) == {"price": None, "kind": None}
+
+
+def test_structural_reference_for_a_range_break_is_the_level_it_cleared():
+    """2026-10-16: with the far prior-20 low as reference, 22 of 24 breakouts read
+    EXTENDED_FROM_STRUCTURE / WIDE. A break in the setup direction now references the broken
+    level (the 50-session one first - the nearer of the two)."""
+    assert metrics.structural_reference(_with("BREAK_ABOVE_20D_RANGE"), 1) == {
+        "price": 110, "kind": "BROKEN_PRIOR_20_HIGH"}
+    assert metrics.structural_reference(
+        _with("BREAK_ABOVE_20D_RANGE", "BREAK_ABOVE_50D_RANGE"), 1) == {
+        "price": 115, "kind": "BROKEN_PRIOR_50_HIGH"}
+    assert metrics.structural_reference(_with("BREAK_BELOW_20D_RANGE"), -1) == {
+        "price": 90, "kind": "BROKEN_PRIOR_20_LOW"}
+    # a break against the setup direction is not this setup's reference
+    assert metrics.structural_reference(_with("BREAK_BELOW_20D_RANGE"), 1) == {
+        "price": 90, "kind": "PRIOR_20_LOW"}
+
+
+@pytest.mark.parametrize("session, window", [
+    (dt.date(2026, 10, 16), (dt.date(2026, 10, 1), dt.date(2026, 11, 14))),
+    (dt.date(2026, 7, 1), (dt.date(2026, 7, 1), dt.date(2026, 8, 14))),
+    (dt.date(2026, 1, 10), (dt.date(2026, 1, 1), dt.date(2026, 2, 14))),
+    (dt.date(2026, 5, 29), (dt.date(2026, 4, 1), dt.date(2026, 5, 30))),   # annual: 60 days
+    (dt.date(2026, 11, 20), None),
+    (dt.date(2026, 6, 15), None),
+])
+def test_results_window_follows_the_lodr_filing_deadlines(session, window):
+    assert metrics.results_window(session, POLICY) == window
 
 
 def test_range_position_pct_clamped():

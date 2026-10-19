@@ -127,6 +127,7 @@ class CandidateDetailView:
     notes: tuple
     radar_direction: str | None = None
     source: str | None = None              # STORED_SNAPSHOT | LIVE_RECOMPUTE
+    sector_vs_market_20d_pp: float | None = None
 
     @classmethod
     def from_assessment(cls, a: TradeCandidateAssessment,
@@ -155,7 +156,8 @@ class CandidateDetailView:
             sector_rotation_context=a.sector_rotation_context,
             positive_evidence=a.positive_evidence, risk_evidence=a.risk_evidence,
             missing_context=a.missing_context, notes=a.notes,
-            radar_direction=a.radar_direction, source=source)
+            radar_direction=a.radar_direction, source=source,
+            sector_vs_market_20d_pp=a.sector_vs_market_20d_pp)
 
 
 @dataclass(frozen=True)

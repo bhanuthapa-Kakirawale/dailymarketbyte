@@ -6,7 +6,7 @@ output; never invents a rejection rule to shrink the list artificially.
 """
 from __future__ import annotations
 
-from .models import DataQualityTier, ResearchPriority
+from .models import MIXED_DIRECTION_EVIDENCE, DataQualityTier, ResearchPriority
 from .policy import DEFAULT_SCORING_POLICY, ScoringPolicy
 
 NOT_REPLAYED = "NOT_REPLAYED"
@@ -55,8 +55,12 @@ def data_quality(*, volume_family_active: bool, has_volume_anomaly: bool, has_te
 def assess(*, reconcile_status: str, volume_family_active: bool, has_volume_anomaly: bool,
           has_technical: bool, has_relative: bool, ohlcv_sessions: int, atr_available: bool,
           score_total: float, score_max: float, extension_state: str, volatility_band: str,
+          mixed_direction: bool = False,
           policy: ScoringPolicy = DEFAULT_SCORING_POLICY) -> dict:
-    """`{"research_priority", "data_quality_tier", "eligibility_reasons", "flags"}`."""
+    """`{"research_priority", "data_quality_tier", "eligibility_reasons", "flags"}`.
+
+    `mixed_direction`: the Radar's own evidence sets no single direction, so the direction the
+    components read is only the day's move - capped at REVIEW like PARTIAL data, never ELIGIBLE."""
     if reconcile_status in UNTRUSTED_REPLAY_STATUSES:
         return {"research_priority": ResearchPriority.DATA_INCOMPLETE.value,
                "data_quality_tier": DataQualityTier.INSUFFICIENT.value,
@@ -75,7 +79,8 @@ def assess(*, reconcile_status: str, volume_family_active: bool, has_volume_anom
 
     veto = (extension_state == policy.veto_extension_state
            and volatility_band == policy.veto_volatility_band)
-    flags = ("COMPOUNDING_RISK_VETO",) if veto else ()
+    flags = (("COMPOUNDING_RISK_VETO",) if veto else ()) + (
+        (MIXED_DIRECTION_EVIDENCE,) if mixed_direction else ())
     reasons = list(missing_reasons)
     if veto:
         reasons.append(f"{policy.veto_extension_state} extension combined with "
@@ -85,10 +90,12 @@ def assess(*, reconcile_status: str, volume_family_active: bool, has_volume_anom
                "flags": flags}
 
     pct = (score_total / score_max * 100) if score_max else 0.0
+    if mixed_direction:
+        reasons.append("Radar direction evidence is mixed: capped at REVIEW")
     # A PARTIAL tier is capped at REVIEW regardless of score (owner spec section 7: "a high
-    # technical score with poor data must not rank normally") - only COMPLETE data can reach
-    # ELIGIBLE.
-    if pct >= policy.eligible_floor and tier is DataQualityTier.COMPLETE:
+    # technical score with poor data must not rank normally") - only COMPLETE data with a
+    # Radar-established direction can reach ELIGIBLE.
+    if pct >= policy.eligible_floor and tier is DataQualityTier.COMPLETE and not mixed_direction:
         priority = ResearchPriority.ELIGIBLE
     elif pct >= policy.review_floor or tier is DataQualityTier.PARTIAL:
         priority = ResearchPriority.REVIEW

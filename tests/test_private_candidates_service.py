@@ -9,8 +9,8 @@ import pytest
 
 from conftest import SESSION
 from private_candidates import capture, service, store
-from private_candidates.models import (DAY_MOVE_AGAINST_RADAR_DIRECTION, SCHEMA_VERSION,
-                                       ResearchPriority)
+from private_candidates.models import (DAY_MOVE_AGAINST_RADAR_DIRECTION, MIXED_DIRECTION_EVIDENCE,
+                                       SCHEMA_VERSION, ResearchPriority)
 from test_private_desk import client, desk_out, svc  # noqa: F401  (reused fixtures, house convention)
 
 IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
@@ -68,18 +68,64 @@ def test_every_assessment_carries_the_radar_direction(repo):
         assert a.schema_version == SCHEMA_VERSION
 
 
-def test_a_day_move_against_the_radar_direction_is_flagged_without_changing_the_assessment(
-        repo, monkeypatch):
-    base = {a.symbol: a for a in service.build_assessments(repo, SESSION, candidate_as_of=AS_OF)}
-    target = next(c for c in repo.candidates(SESSION) if c.price_change_pct)
-    against = "ALIGNED_NEGATIVE" if target.price_change_pct > 0 else "ALIGNED_POSITIVE"
-    _with_directions(repo, monkeypatch, {target.instrument: against})
+UPSIDE_REFERENCES = {"PRIOR_20_LOW", "BROKEN_PRIOR_20_HIGH", "BROKEN_PRIOR_50_HIGH"}
+DOWNSIDE_REFERENCES = {"PRIOR_20_HIGH", "BROKEN_PRIOR_20_LOW", "BROKEN_PRIOR_50_LOW"}
 
-    after = {a.symbol: a for a in service.build_assessments(repo, SESSION, candidate_as_of=AS_OF)}
-    flagged = after[target.instrument]
-    assert DAY_MOVE_AGAINST_RADAR_DIRECTION in flagged.flags
-    assert flagged.score_total == base[target.instrument].score_total          # informational only
-    assert flagged.research_priority == base[target.instrument].research_priority
+
+def test_the_radar_direction_drives_the_components_and_a_contrary_day_is_flagged(
+        repo, monkeypatch):
+    """Policy 2.0: a pullback day in an upside setup is still an upside setup (CGPOWER on
+    2026-10-16 was ALIGNED_NEGATIVE on a +3.4% day and used to be scored as an upside one)."""
+    target = next(c for c in repo.candidates(SESSION) if c.price_change_pct)
+    with_day = "ALIGNED_POSITIVE" if target.price_change_pct > 0 else "ALIGNED_NEGATIVE"
+    against = "ALIGNED_NEGATIVE" if with_day == "ALIGNED_POSITIVE" else "ALIGNED_POSITIVE"
+
+    def assess(direction):
+        _with_directions(repo, monkeypatch, {target.instrument: direction})
+        return {a.symbol: a for a in service.build_assessments(
+            repo, SESSION, candidate_as_of=AS_OF)}[target.instrument]
+
+    agreeing, contrary = assess(with_day), assess(against)
+    assert DAY_MOVE_AGAINST_RADAR_DIRECTION not in agreeing.flags
+    assert DAY_MOVE_AGAINST_RADAR_DIRECTION in contrary.flags
+    expected = {"ALIGNED_POSITIVE": UPSIDE_REFERENCES, "ALIGNED_NEGATIVE": DOWNSIDE_REFERENCES}
+    assert agreeing.structural_reference_kind in expected[with_day]
+    assert contrary.structural_reference_kind in expected[against]
+
+
+def test_mixed_direction_evidence_is_never_eligible(repo, monkeypatch):
+    stored = repo.candidates(SESSION)
+    _with_directions(repo, monkeypatch, {c.instrument: "MIXED" for c in stored})
+    for a in service.build_assessments(repo, SESSION, candidate_as_of=AS_OF):
+        assert a.research_priority != ResearchPriority.ELIGIBLE.value
+        if a.research_priority != ResearchPriority.DATA_INCOMPLETE.value:
+            assert MIXED_DIRECTION_EVIDENCE in a.flags
+
+
+def _rows(closes, start=dt.date(2026, 8, 3)):
+    from core.trading_calendar import SessionCalendar
+    cal, days, d = SessionCalendar(), [], start
+    while len(days) < len(closes):
+        if cal.status(d) == "SESSION":
+            days.append(d)
+        d += dt.timedelta(days=1)
+    return [{"date": day, "close": c} for day, c in zip(days, closes)]
+
+
+def test_the_sector_series_excludes_the_stock_itself():
+    """A big mover must not drag its own sector benchmark: with one flat peer the sector
+    return is 0, however far the stock itself ran."""
+    from private_candidates import context
+    stock = _rows([100 * 1.01 ** i for i in range(25)])
+    peer = _rows([50.0] * 25)
+    bench = _rows([1000.0] * 25)
+    session = stock[-1]["date"]
+    rel = context.sector_relative_performance("RUNNER", "IT", {"RUNNER": stock, "PEER": peer},
+                                              stock, session, bench)
+    assert rel["sector_return_20d"] == pytest.approx(0.0)
+    assert rel["sector_relative_20d_pp"] == pytest.approx(rel["stock_return_20d"])
+    assert context.sector_relative_performance("RUNNER", "IT", {"RUNNER": stock}, stock,
+                                               session, bench) is None   # no peers, no sector
 
 
 def test_upside_view_ranks_only_upside_setups_and_keeps_every_assessment(repo, monkeypatch):

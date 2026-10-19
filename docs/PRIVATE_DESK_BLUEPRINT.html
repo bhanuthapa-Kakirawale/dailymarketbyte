@@ -567,34 +567,37 @@ scripts\clean_test_artifacts.bat</pre>
       a future, separate integration. Not connected today.</span></div>
   </div>
 
-  <h3>Quality points - 10 components (PROVISIONAL, policy <code>trade-candidate-score-1.0</code>)</h3>
+  <h3>Quality points - 10 components (PROVISIONAL, policy <code>trade-candidate-score-2.0</code>)</h3>
   <p class="note">Every score carries <code>score_validation_status = PROVISIONAL</code>. Weights are a documented first-pass
     judgment call, never tuned against historical returns. A component that cannot be computed for a candidate returns
     <code>status=NOT_SCORABLE</code>, scored 0 - the denominator (100) is never renormalized, so a low total stays
-    self-explanatory rather than hidden.</p>
+    self-explanatory rather than hidden. "Direction" below is the Radar's own multi-session direction (see
+    <a href="#tc-direction">Direction</a>); policy 2.0 kept 1.0's weights and bands and changed what A, C, I and the
+    direction read (docs/PRIVATE_TRADE_CANDIDATES.md "Policy 2.0").</p>
   <div class="tw"><table>
     <thead><tr><th></th><th>Component</th><th>Max</th><th>What it reads</th></tr></thead>
     <tbody>
-      <tr><td class="mono">A</td><td>SETUP_QUALITY</td><td>20</td><td>How many independent Radar evidence families fired, plus
-        the volume anomaly level (ELEVATED/UNUSUAL/EXTREME).</td></tr>
-      <tr><td class="mono">B</td><td>MARKET_ALIGNMENT</td><td>12</td><td>Market Regime label vs. the candidate's direction
-        (in V1, the sign of the session's own move), plus how many consecutive sessions the regime has held
-        (<code>regime_streak_sessions</code>).</td></tr>
-      <tr><td class="mono">C</td><td>SECTOR_ALIGNMENT</td><td>10</td><td>How much the stock beat (or lagged) its own sector over
-        20 sessions: the stock's return minus a new, local equal-weight series of its NIFTY 200 sector (stock included; not an
-        NSE index). Despite the name it does <b>not</b> say whether the sector itself is strong.</td></tr>
+      <tr><td class="mono">A</td><td>SETUP_QUALITY</td><td>20</td><td>How many independent Radar evidence families fired
+        (4 / 9 / 13), plus the strongest structural event in the direction (50-session range break 4, 20-session break 3,
+        SMA50 cross 2, SMA20 cross 1), plus the volume level (UNUSUAL 2, EXTREME 3).</td></tr>
+      <tr><td class="mono">B</td><td>MARKET_ALIGNMENT</td><td>12</td><td>Market Regime label vs. the direction, plus how many
+        consecutive sessions the regime has held (<code>regime_streak_sessions</code>).</td></tr>
+      <tr><td class="mono">C</td><td>SECTOR_ALIGNMENT</td><td>10</td><td>Is the stock's <em>sector</em> moving its way? The
+        sector's 20-session return minus NIFTY 50's, from a local equal-weight series of its NIFTY 200 peers (the stock
+        itself excluded; not an NSE index). How far the stock beat its sector is shown as evidence only.</td></tr>
       <tr><td class="mono">D</td><td>RELATIVE_STRENGTH</td><td>10</td><td>20-session performance vs. NIFTY 50, plus a
         persistence bonus when the 5D and 20D readings agree.</td></tr>
-      <tr><td class="mono">E</td><td>MTF_CONFIRMATION</td><td>10</td><td>The session's direction vs. a weekly close/SMA10 read
-        over completed ISO weeks (needs &ge;10 completed weeks).</td></tr>
+      <tr><td class="mono">E</td><td>MTF_CONFIRMATION</td><td>10</td><td>The direction vs. a weekly close/SMA10 read over
+        completed ISO weeks (needs &ge;10 completed weeks).</td></tr>
       <tr><td class="mono">F</td><td>RANGE_POSITION_AND_EXTENSION</td><td>12</td><td>Distance from the 20-session mean in
         ATR14 units - NORMAL / STRETCHED / DEEPLY_STRETCHED.</td></tr>
       <tr><td class="mono">G</td><td>LIQUIDITY</td><td>8</td><td>Average 20-session turnover in INR crore (volume &times;
         close) - THIN / ADEQUATE / DEEP.</td></tr>
       <tr><td class="mono">H</td><td>VOLATILITY_FIT</td><td>8</td><td>ATR14 as a percent of close - TIGHT / NORMAL /
         ELEVATED / EXTREME.</td></tr>
-      <tr><td class="mono">I</td><td>EVENT_RISK</td><td>6</td><td>Any known stock-level corporate event within 3 trading
-        sessions (earnings, OFS, buyback, open offer) - flagged, never excluded.</td></tr>
+      <tr><td class="mono">I</td><td>EVENT_RISK</td><td>6</td><td>Known stock-level corporate events within 3 trading
+        sessions (earnings, OFS, buyback, open offer, delisting): none on file 6, already happened 4, upcoming 2; none on file
+        during a results window with no results date on file 4 - flagged, never excluded.</td></tr>
       <tr><td class="mono">J</td><td>DATA_QUALITY_INTEGRITY</td><td>4</td><td>Did the replay MATCH the recorded candidate,
         and were there detector warnings.</td></tr>
       <tr><td></td><td><b>Total</b></td><td><b>100</b></td><td></td></tr>
@@ -603,15 +606,17 @@ scripts\clean_test_artifacts.bat</pre>
   <p class="note">A high total means <b>a stronger combination of today's evidence</b> - not a higher guaranteed probability
     of profit. The score has not been historically validated (see <a href="#tc-future">Historical Edge</a> below).</p>
 
-  <h3>Research priority - the only 4 states V1 has</h3>
+  <h3>Research priority - the only 4 states</h3>
   <div class="tw"><table>
     <thead><tr><th>State</th><th>When</th><th>Practical meaning</th></tr></thead>
     <tbody>
-      <tr><td><span class="badge ok">ELIGIBLE</span></td><td>Score &ge; 60/100 <b>and</b> data quality COMPLETE.</td>
+      <tr><td><span class="badge ok">ELIGIBLE</span></td><td>Score &ge; 60/100 <b>and</b> data quality COMPLETE <b>and</b> a
+        Radar-established direction (not MIXED).</td>
         <td>Strong current evidence on complete data. Worth your review - never a signal to act by itself.</td></tr>
-      <tr><td><span class="badge wa">REVIEW</span></td><td>Score &ge; 35/100, <b>or</b> data quality PARTIAL regardless of
-        score (capped here on purpose).</td><td>Moderate evidence, or a reading (relative performance / ATR) is missing.
-        Read the detail page before trusting the total.</td></tr>
+      <tr><td><span class="badge wa">REVIEW</span></td><td>Score &ge; 35/100, <b>or</b> data quality PARTIAL, <b>or</b> MIXED
+        direction evidence, regardless of score (capped here on purpose).</td><td>Moderate evidence, a missing reading
+        (relative performance / ATR), or conflicting direction evidence. Read the detail page before trusting the
+        total.</td></tr>
       <tr><td><span class="badge bad">NOT_ACTIONABLE</span></td><td>Score &lt; 35/100, or the
         <code>COMPOUNDING_RISK_VETO</code> flag fired (DEEPLY_STRETCHED extension together with EXTREME volatility).</td>
         <td>Do not use for trading research today, whatever any single component looks like.</td></tr>
@@ -622,9 +627,9 @@ scripts\clean_test_artifacts.bat</pre>
   </table></div>
 
   <h3 id="tc-direction">Direction and the long-only view</h3>
-  <p class="note">Research priority says nothing about direction - a downside breakdown can be ELIGIBLE. Every candidate now
-    shows the Radar's own multi-session direction (<code>radar_direction</code>, structure + relative evidence; volume never
-    sets direction), and the board defaults to <b>upside setups only</b>.</p>
+  <p class="note">Research priority says nothing about direction - a downside breakdown can be ELIGIBLE. Every candidate shows
+    the Radar's own multi-session direction (<code>radar_direction</code>, structure + relative evidence; volume never sets
+    direction). Every directional reading in the score follows it, and the board defaults to <b>upside setups only</b>.</p>
   <div class="tw"><table>
     <thead><tr><th>Badge</th><th>Radar evidence</th><th>Long-only reading</th></tr></thead>
     <tbody>
@@ -632,17 +637,17 @@ scripts\clean_test_artifacts.bat</pre>
         <td>Ranked and shortlisted in the default view.</td></tr>
       <tr><td><span class="badge bad">DOWNSIDE</span></td><td>ALIGNED_NEGATIVE: both point down.</td><td>Information only
         (collapsed section). Not something a cash, long-only trader can act on.</td></tr>
-      <tr><td><span class="badge wa">MIXED</span></td><td>Structure and relative performance disagree.</td><td>Information only.
-        Conflicting evidence is not a long setup.</td></tr>
+      <tr><td><span class="badge wa">MIXED</span></td><td>Structure and relative performance disagree.</td><td>Information only,
+        and never ELIGIBLE (capped at REVIEW: the score can only read the day's move as its direction). Conflicting evidence
+        is not a long setup.</td></tr>
       <tr><td><span class="badge wa">DAY AGAINST</span></td><td>The session's own move went against the Radar direction
-        (<code>DAY_MOVE_AGAINST_RADAR_DIRECTION</code>, rare).</td><td>V1 components were computed from the day's move - read
-        alignment, weekly and structural reference with that in mind.</td></tr>
+        (<code>DAY_MOVE_AGAINST_RADAR_DIRECTION</code>, rare).</td><td>A pullback or bounce day inside the setup. The score still
+        follows the Radar direction; look at where price closed against the structural reference.</td></tr>
     </tbody>
   </table></div>
   <p class="note">Why it matters: in the stored 2026-10-16 snapshot all 8 ELIGIBLE candidates were downside breakdowns or
-    mixed, and every upside breakout was REVIEW (with the corrected capture cutoff, 9 of 11 ELIGIBLE are still downside or
-    mixed). <code>?view=ALL</code> ranks every direction; ranking upside-only also stops a downside name from taking an upside
-    name's sector slot in the shortlist.</p>
+    mixed, and every upside breakout was REVIEW. <code>?view=ALL</code> ranks every direction; ranking upside-only also stops a
+    downside name from taking an upside name's sector slot in the shortlist.</p>
 
   <div class="callout g" id="tc-goodstock"><b>A high score can still be a bad time to buy</b>
     Research priority scores <em>evidence quality</em>; it does NOT score <em>current entry location</em>. V1 has no
@@ -702,11 +707,12 @@ scripts\clean_test_artifacts.bat</pre>
       <code>range_position_pct</code>. An ELIGIBLE candidate that is DEEPLY_STRETCHED or EXTENDED_FROM_STRUCTURE stays on
       the watchlist, not the trigger list - see the callout above.</li>
     <li><b>Check event proximity</b><code>event_proximity</code>: NO_KNOWN_EVENT / EVENT_WITHIN_WINDOW (&le;3 trading
-      sessions) / EVENT_DATA_UNAVAILABLE. A known event changes nothing about direction - it is a reason to review, not a
-      signal either way.</li>
-    <li><b>Read the structural reference as research context</b><code>structural_reference_price</code>
-      (PRIOR_20_LOW/PRIOR_20_HIGH), <code>risk_width_label</code> (NARROW/MODERATE/WIDE). A distance label, never an order
-      - no stop-loss is placed anywhere in this system.</li>
+      sessions either side) / EVENT_DATA_UNAVAILABLE, plus the RESULTS DATE? badge in results season. A known event changes
+      nothing about direction - it is a reason to review, not a signal either way.</li>
+    <li><b>Read the structural reference as research context</b><code>structural_reference_price</code> - for a breakout,
+      the level it just cleared (BROKEN_PRIOR_20/50_HIGH); otherwise the prior 20-session low - and
+      <code>risk_width_label</code> (NARROW/MODERATE/WIDE). A distance label, never an order - no stop-loss is placed
+      anywhere in this system.</li>
     <li><b>Build a small next-session watchlist</b>Quality over count - V1 does not prescribe a fixed number.</li>
     <li><b>Next morning: re-verify, don't assume</b>Confirm the candidate is still valid, no event/data flag materially
       changed, and the market/sector context still looks acceptable.</li>
@@ -734,8 +740,8 @@ scripts\clean_test_artifacts.bat</pre>
   <ol class="steps">
     <li><b>Review Market Regime</b>Label, streak length (<code>regime_streak_sessions</code>), and whether it was confirmed
       (no <code>*</code> on the Regime page).</li>
-    <li><b>Review sector leadership/weakness</b>From Market Structure sector breadth and the Sectors page. A candidate's
-      own <code>sector_relative_20d_pp</code> only says how far it beat its sector, not whether the sector is strong.</li>
+    <li><b>Review sector leadership/weakness</b>From Market Structure sector breadth, the Sectors page, and each candidate's
+      "Sector vs NIFTY 50 (20d)" on its detail page (what component C reads).</li>
     <li><b>Review the week's candidate snapshots</b>Open each finalized evening's board with the session selector - it
       shows that evening's stored snapshot. V1 has no automated persistence score, so this is a manual read of available
       snapshots, not a "repeat count" the system computes for you.</li>
@@ -775,14 +781,14 @@ scripts\clean_test_artifacts.bat</pre>
       TRANSITIONAL/INSUFFICIENT_DATA (same classifier as <a href="#selection">section 7</a>). <code>regime_alignment</code>:
       CANDIDATE_ALIGNS_WITH_REGIME / CANDIDATE_AGAINST_REGIME / REGIME_NEUTRAL. A strong setup against the regime loses
       alignment points - it does not erase the stock's own evidence.</div>
-    <div class="card"><div class="k">Sector context</div><h4>Two different questions</h4><code>sector_relative_20d_pp</code>
-      (component C) is the stock's 20-session return minus a local equal-weight series of its own sector, stock included -
-      it says whether the stock <em>beat its sector</em>, not whether the sector is strong. Judge sector strength
-      separately on the Sectors page / Market Structure breadth. Strong stock in a strong sector is the cleaner long
-      setup; a stock beating a weak sector is mixed evidence - never a claim about institutional behaviour.</div>
-    <div class="card"><div class="k">Multi-timeframe</div><h4>Does the week agree with the day?</h4>
+    <div class="card"><div class="k">Sector context</div><h4>Is the sector moving its way?</h4>Component C reads
+      <code>sector_vs_market_20d_pp</code>: the sector's 20-session return minus NIFTY 50's, from a local equal-weight
+      series of the stock's NIFTY 200 peers (the stock excluded). A strong stock in a strong sector is the cleaner long
+      setup; a stock beating a weak sector earns no sector points. How far the stock beat its own sector
+      (<code>sector_relative_20d_pp</code>) is shown as evidence only - never a claim about institutional behaviour.</div>
+    <div class="card"><div class="k">Multi-timeframe</div><h4>Does the week agree with the setup?</h4>
       <code>weekly_alignment</code>: ALIGNED / DIVERGENT / WEEKLY_INSUFFICIENT_DATA (needs &ge;10 completed ISO weeks; the
-      current, still-forming week is always excluded). V1 has no MIXED or COUNTERTREND label - only these three.</div>
+      current, still-forming week is always excluded). There is no MIXED or COUNTERTREND label - only these three.</div>
   </div>
 
   <h3>Entry / extension quality</h3>
@@ -796,7 +802,8 @@ scripts\clean_test_artifacts.bat</pre>
       <tr><td><code>range_position_pct</code></td><td>0-100</td><td>Where the close sits between the prior-20-session low
         (0) and high (100).</td></tr>
       <tr><td><code>pullback_state</code></td><td>AT_STRUCTURE / NEAR_STRUCTURE / EXTENDED_FROM_STRUCTURE /
-        PULLBACK_UNKNOWN</td><td>Distance from the structural reference, in ATR14 units (&lt;1 / &lt;2.5 / &ge;2.5).</td></tr>
+        PULLBACK_UNKNOWN</td><td>Distance from the structural reference (the broken level for a breakout), in ATR14 units
+        (&lt;1 / &lt;2.5 / &ge;2.5). AT_STRUCTURE on a breakout = it closed close to the level it just cleared.</td></tr>
       <tr><td><code>atr14</code> / <code>atr14_pct</code></td><td>number / percent of close</td><td>Standard 14-session
         True Range average - needs 15 OHLCV sessions.</td></tr>
     </tbody>
@@ -810,10 +817,11 @@ scripts\clean_test_artifacts.bat</pre>
     <thead><tr><th>State</th><th>Meaning</th></tr></thead>
     <tbody>
       <tr><td><span class="badge">NO_KNOWN_EVENT</span></td><td>No stock-level event <b>on file</b> within 3 trading sessions
-        either side. It still earns full component-I points, so it is not proof that nothing is scheduled.</td></tr>
+        either side - not proof that nothing is scheduled. Full component-I points, except in a quarterly results window with
+        no results date on file: 2/3 credit and the <span class="badge wa">RESULTS DATE?</span> badge.</td></tr>
       <tr><td><span class="badge wa">EVENT_WITHIN_WINDOW</span></td><td>A named event family is within 3 trading sessions -
-        before <em>or after</em> the session (<code>sessions_to_event</code> negative = already happened). Flagged for your
-        review (component I scores it at 1/3 credit), never excluded outright.</td></tr>
+        before <em>or after</em> the session (<code>sessions_to_event</code> negative = already happened). Upcoming or same-day:
+        1/3 credit; already happened (its information is out): 2/3. Flagged for your review, never excluded outright.</td></tr>
       <tr><td><span class="badge">EVENT_DATA_UNAVAILABLE</span></td><td>No event read available for this symbol this
         session.</td></tr>
     </tbody>
@@ -821,20 +829,30 @@ scripts\clean_test_artifacts.bat</pre>
   <div class="callout"><b>Verify results dates yourself</b>
     Earnings coverage is limited to the board-meeting filings Market Events has captured (it went live on 2026-10-07): on
     2026-10-16 none of the 24 candidates - including INFY, TCS, WIPRO, TECHM and HCLTECH in results season - had an
-    earnings record on file, so every one showed NO_KNOWN_EVENT. A results day is the largest single-stock gap risk for a
-    swing trade. A known event also says nothing about expected direction - never infer bullish/bearish from it.</div>
+    earnings record on file, so every one showed NO_KNOWN_EVENT. Results season (SEBI LODR: within 45 days of a quarter end,
+    60 after March) now marks that gap with RESULTS DATE? - it marks it, it cannot fill it. A results day is the largest
+    single-stock gap risk for a swing trade. A known event also says nothing about expected direction - never infer
+    bullish/bearish from it.</div>
 
   <h3>Structural reference - research context, not an order</h3>
   <div class="callout"><b>This is not an automatic stop-loss</b>
-    <code>structural_reference_price</code>/<code>structural_reference_kind</code> (PRIOR_20_LOW for a long-biased
-    reading, PRIOR_20_HIGH for a short-biased one) and <code>risk_width_label</code> (NARROW/MODERATE/WIDE, by ATR14
-    distance) describe a <em>distance to a prior price level</em>, for research only. No order, quantity or broker field
-    exists anywhere in this package. <code>risk_width_label</code> is never a reward:risk ratio - no profit target exists
-    anywhere in this system to pair it with.</div>
-  <p class="note">V1 caveat for breakouts: an upside setup's reference is always the prior-20-session <em>low</em>, so a stock
-    that just broke above its 20-session high sits a full range away and usually reads EXTENDED_FROM_STRUCTURE / WIDE
-    (22 of 24 candidates on 2026-10-16). For a breakout, look at the broken level itself (the prior 20/50-session high on
-    the stock page) - the engine does not use it yet.</p>
+    <code>structural_reference_price</code>/<code>structural_reference_kind</code> and <code>risk_width_label</code>
+    (NARROW/MODERATE/WIDE, by ATR14 distance) describe a <em>distance to a prior price level</em>, for research only. No
+    order, quantity or broker field exists anywhere in this package. <code>risk_width_label</code> is never a reward:risk
+    ratio - no profit target exists anywhere in this system to pair it with.</div>
+  <div class="tw"><table>
+    <thead><tr><th>Reference kind</th><th>When</th></tr></thead>
+    <tbody>
+      <tr><td><code>BROKEN_PRIOR_50_HIGH</code> / <code>BROKEN_PRIOR_20_HIGH</code></td><td>Upside setup that broke above its
+        prior 50- / 20-session range: the level it just cleared, whose loss would mean a failed breakout.</td></tr>
+      <tr><td><code>PRIOR_20_LOW</code></td><td>Upside setup without a range break (e.g. an average cross): the bottom of the
+        prior 20-session range.</td></tr>
+      <tr><td><code>BROKEN_PRIOR_50_LOW</code> / <code>BROKEN_PRIOR_20_LOW</code> / <code>PRIOR_20_HIGH</code></td><td>The
+        downside mirror images (information only for a long-only review).</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">Before policy 2.0 every upside reference was the prior-20 low, so 499 of 655 candidates over 22 sessions read
+    EXTENDED_FROM_STRUCTURE and 437 WIDE; with the broken level it is 124 and 63.</p>
 
   <h3 id="tc-pit">Point-in-time / data quality fields</h3>
   <div class="tw"><table>
@@ -848,8 +866,8 @@ scripts\clean_test_artifacts.bat</pre>
         catch-up) provably from a same-day Radar run. <code>RECONSTRUCTED</code> - built later; never treat as a genuine
         real-time pick.</td></tr>
       <tr><td><code>quality_policy_version</code></td><td>Which scoring policy produced this snapshot
-        (<code>trade-candidate-score-1.0</code> today). A later policy version never touches an earlier one's stored
-        files.</td></tr>
+        (<code>trade-candidate-score-2.0</code> today). A later policy version never touches an earlier one's stored
+        files; the Desk shows the current policy's snapshots only.</td></tr>
       <tr><td>Page banner</td><td>"Stored evening snapshot" = what the automatic capture recorded at its cutoff (the
         default). "Live re-evaluation" = recomputed now; for a past session it can include information published after
         that evening.</td></tr>
@@ -947,7 +965,8 @@ scripts\clean_test_artifacts.bat</pre>
         genuine point-in-time read.</li>
       <li><code>extension_state = DEEPLY_STRETCHED</code> or <code>pullback_state = EXTENDED_FROM_STRUCTURE</code>
         without a plan for that.</li>
-      <li><code>event_proximity = EVENT_WITHIN_WINDOW</code> and you haven't reviewed what the event actually is.</li>
+      <li><code>event_proximity = EVENT_WITHIN_WINDOW</code> and you haven't reviewed what the event actually is, or the
+        RESULTS DATE? badge is showing and you haven't checked the results date yourself.</li>
       <li><code>risk_width_label = WIDE</code> and that distance doesn't fit your own risk tolerance.</li>
       <li><code>weekly_alignment = DIVERGENT</code> while you're building a positional (not swing) idea.</li>
       <li><code>regime_alignment = CANDIDATE_AGAINST_REGIME</code> without extra confirmation.</li>

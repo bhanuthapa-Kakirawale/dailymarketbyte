@@ -95,19 +95,22 @@ No identifier containing "score" is ever written inside `private_desk/`'s own so
 guard passes naturally; `tests/test_private_candidates_presentation.py` re-runs the same
 AST check directly against `trade_candidates.py` as a standing regression test.
 
-## Component model (PROVISIONAL weights, max 100)
+## Component model (PROVISIONAL weights, max 100) - policy `trade-candidate-score-2.0`
+
+"Direction" below is the candidate's direction from the Radar's own multi-session evidence
+(`radar_direction`; the day's move only as a fallback for MIXED evidence) - see "Policy 2.0".
 
 | # | Component | Max | Reused inputs | New calculation |
 |---|---|---|---|---|
-| A | `SETUP_QUALITY` | 20 | `TechnicalStructure.events`, `VolumeAnomaly.level`, independent signal count | - |
-| B | `MARKET_ALIGNMENT` | 12 | Market Regime label vs. candidate direction | regime streak (metrics.regime_streak) |
-| C | `SECTOR_ALIGNMENT` | 10 | `market_structure.sectors` mapping | equal-weight sector series + `radar.relative` (reused, computed fresh) |
+| A | `SETUP_QUALITY` | 20 | independent signal count (4/9/13 for 1/2/3 families) + the strongest `TechnicalStructure` event IN the direction (50D range break 4, 20D break 3, SMA50 cross 2, SMA20 cross 1) + `VolumeAnomaly.level` (UNUSUAL 2, EXTREME 3) | - |
+| B | `MARKET_ALIGNMENT` | 12 | Market Regime label vs. direction | regime streak (metrics.regime_streak) |
+| C | `SECTOR_ALIGNMENT` | 10 | `market_structure.sectors` mapping; the SECTOR's 20-session return minus NIFTY 50's when it agrees with the direction (1.25 points per pp) | equal-weight series of the stock's sector PEERS + `radar.relative` (reused, computed fresh) |
 | D | `RELATIVE_STRENGTH` | 10 | `RelativePerformance.market_relative_20d_pp`, persistence | - |
 | E | `MTF_CONFIRMATION` | 10 | daily `TechnicalStructure` | weekly OHLCV resample (metrics.weekly_resample) |
 | F | `RANGE_POSITION_AND_EXTENSION` | 12 | `prior_20_high/low`, `sma20` | ATR14 (metrics.atr14) |
 | G | `LIQUIDITY` | 8 | `VolumeAnomaly.average_volume_20` x close | - |
 | H | `VOLATILITY_FIT` | 8 | - | ATR14 as % of close |
-| I | `EVENT_RISK` | 6 | `market_events.store.load_latest` (stock families) | trading-session event window |
+| I | `EVENT_RISK` | 6 | `market_events.store.load_latest` (stock families): no event on file 6, past event within 3 sessions 4, upcoming/same-day 2; no event on file in a results window with no results date on file 4 | trading-session event window, results window |
 | J | `DATA_QUALITY_INTEGRITY` | 4 | replay `reconcile()` status, detector warnings | - |
 
 Every component always appears on every candidate, even at 0 (`status=NOT_SCORABLE`), with
@@ -130,8 +133,10 @@ documented in `metrics.py`:
 - **Weekly resample** - groups daily OHLCV into completed ISO weeks (the week containing the
   session being evaluated is always excluded as still-forming); needs 10 completed weeks before
   a weekly SMA10 reading is trusted.
-- **Equal-weight sector series** - rebases each sector member's close to 100 at its own first
-  available date, then averages across members per date. This is a NEW, LOCAL, READ-ONLY
+- **Equal-weight sector series** - rebases each sector PEER's close to 100 at its own first
+  available date, then averages across peers per date; the candidate itself is excluded, so a
+  big mover never drags its own sector benchmark (in a small sector it otherwise dominated it).
+  Member rows are read once per sector per run and shared. This is a NEW, LOCAL, READ-ONLY
   approximation this package computes for its own private research context; it is NOT NSE's or
   any official sector index, and it is fed into the EXISTING, unmodified
   `radar.relative.scan_relative_performance_universe` (which already supports sector parameters
@@ -147,13 +152,18 @@ documented in `metrics.py`:
   over a trailing window, used only by the diversified shortlist's optional correlation check;
   below `correlation_min_sample` (20) overlapping sessions, correlation is `None`/`UNKNOWN` and
   never used to demote.
+- **Results window** (`metrics.results_window`) - the quarterly-results filing window a session
+  falls in, from SEBI LODR Reg. 33(3): within 45 days of a June/September/December quarter end,
+  60 days after March. Pure calendar arithmetic, no data.
 
-Deliberately NOT built in V1: a per-stock swing-point/trendline/pivot structural level (the
-richer indicators in `market.analyze()` are index-only and promoting them to per-stock is a
-materially bigger change than this package's "minimal new metric" scope allows). The structural
-reference stays `prior_20_low`/`prior_20_high` from the existing `TechnicalStructure` - zero new
-indicator. A future V2 could lift `market.key_levels`/`swing_points`/`trendline` to per-stock if
-the owner wants a richer reference.
+**Structural reference** (`metrics.structural_reference`): a range break in the candidate's
+direction makes the level it just cleared the reference (`BROKEN_PRIOR_50_HIGH`/`_20_HIGH` for
+an upside break, `BROKEN_PRIOR_50_LOW`/`_20_LOW` for a downside one; the 50-session level first,
+being the nearer) - the level whose loss would mean a failed break. Otherwise the far end of the
+prior 20-session range (`PRIOR_20_LOW` upside, `PRIOR_20_HIGH` downside). Every level comes from
+the existing `TechnicalStructure` - zero new indicator. Deliberately NOT built: a per-stock
+swing-point/trendline/pivot level (the richer indicators in `market.analyze()` are index-only);
+a later policy could lift `market.key_levels`/`swing_points`/`trendline` to per-stock.
 
 ## Point-in-time capture contract
 
@@ -276,7 +286,10 @@ fewer than 15 OHLCV sessions), `PARTIAL` (an optional reading - relative-perform
 missing), or `COMPLETE`. A `PARTIAL` tier is capped at `REVIEW` regardless of score - "a high
 technical score with poor data must not rank normally." A compounding-risk veto
 (`DEEPLY_STRETCHED` extension together with `EXTREME` volatility) demotes to `NOT_ACTIONABLE`
-regardless of score, always recorded as the `COMPOUNDING_RISK_VETO` flag - never silent.
+regardless of score, always recorded as the `COMPOUNDING_RISK_VETO` flag - never silent. A
+candidate whose Radar direction is MIXED or NON_DIRECTIONAL is likewise capped at `REVIEW`
+(flag `MIXED_DIRECTION_EVIDENCE`): its components read only the day's move as the direction, so
+it may rank for review but never as ELIGIBLE. Both caps are caps, never lifts.
 
 ## Raw ranking vs. diversified shortlist
 
@@ -293,16 +306,17 @@ sector is shortlisted without either check and listed under `sector_unknown` ("d
 not applied") - missing sector data is not concentration, and pooling every unknown under one
 capped bucket would shrink the shortlist to `sector_cap` names.
 
-## Direction (schema 1.1)
+## Direction
 
 Every assessment carries `radar_direction` - the Radar's own stored `direction_compatibility`
 (STRUCTURE + RELATIVE evidence only, VOLUME excluded: `ALIGNED_POSITIVE` / `ALIGNED_NEGATIVE`
-/ `MIXED` / `NON_DIRECTIONAL`). It is display/view only: V1 component scoring still reads the
-session's own price move. When the two disagree (an ALIGNED_POSITIVE candidate on a down day,
-or the reverse - about 0.8% of candidates over the first 22 recorded sessions) the
-informational flag `DAY_MOVE_AGAINST_RADAR_DIRECTION` is added, so the owner knows the
-alignment / weekly / structural-reference readings were computed from the day's move. It never
-changes the score or research priority.
+/ `MIXED` / `NON_DIRECTIONAL`). Under policy 2.0 it IS the candidate's direction for every
+directional reading (market/sector/relative alignment, weekly alignment, structural
+reference, setup-quality events); the session's own move is used only when the evidence is
+MIXED or NON_DIRECTIONAL (then capped at REVIEW, see Eligibility). When an ALIGNED candidate's
+day moved the other way (a pullback or bounce day - under 1% of candidates over the first 22
+recorded sessions) the informational flag `DAY_MOVE_AGAINST_RADAR_DIRECTION` is added; it never
+changes the score.
 
 `service.run(..., view=...)` / `run_from_store(..., view=...)`: `ALL` (default, what capture
 uses) ranks every direction; `UPSIDE` ranks and shortlists only ALIGNED_POSITIVE candidates -
@@ -310,10 +324,28 @@ so a downside name can never take an upside name's sector slot - and returns the
 candidates as `outside_view` (information only). `direction_counts` gives UPSIDE / DOWNSIDE /
 MIXED totals over all candidates. Why this matters: in the stored 2026-10-16 snapshot all 8
 ELIGIBLE candidates were downside breakdowns (or MIXED), which a long-only owner cannot act on in
-cash, while every upside breakout was REVIEW - invisible on the old board. Recomputed with the
-corrected capture cutoff, 9 of 11 ELIGIBLE are still downside or mixed; the upside view ranks the
-11 upside breakouts on their own (TECHM and GROWW ELIGIBLE; four IT names demoted for sector
-concentration).
+cash, while every upside breakout was REVIEW - invisible on the old board. The upside view ranks
+the 11 upside breakouts on their own.
+
+## Policy 2.0 (`trade-candidate-score-2.0`, 2026-10)
+
+Same ten components, same weights, same ELIGIBLE/REVIEW bands, same research-priority
+vocabulary - what changed is what four components read (each was a finding of the 2026-10
+review, measured on real stored data):
+
+| Change | Why |
+|---|---|
+| Direction = the Radar's own multi-session evidence; MIXED capped at REVIEW | 1.0 used the sign of one day's move: MIXED-evidence candidates (~10%) were scored as directional and 55 of them reached ELIGIBLE over 22 sessions (PHOENIXLTD, 2026-10-16); CGPOWER (ALIGNED_NEGATIVE, +3.4% day) was scored as an upside setup. |
+| C reads the sector's strength vs NIFTY 50 (peers only, the stock excluded) | 1.0 read stock-minus-own-sector (the stock included in its own series) - a second relative-strength reading that scored a stock beating a WEAK sector highest. The stock-vs-sector gap stays as evidence. |
+| Structural reference = the broken level for a range break in the setup direction | With the far prior-20 low, 499 of 655 candidates read EXTENDED_FROM_STRUCTURE and 437 WIDE; now 124 and 63. |
+| Setup quality grades the strongest structural event in the direction | 580 of 655 scored exactly 13/20 under 1.0; an SMA20 cross counted like a 50-session breakout. Now spread 9-20. |
+| EVENT_RISK: a past event within the window gets 2/3 credit, an upcoming one 1/3; "no event on file" in a results window with no results date on file gets 2/3 (flag `RESULTS_DATE_NOT_ON_FILE`) | Earnings coverage is thin (none of the 24 candidates on 2026-10-16 had a record, IT majors in results season included), and absence of data was earning full credit. |
+
+Effect over all 22 recorded sessions (655 candidates, both policies recomputed read-only with an
+end-of-day cutoff): ELIGIBLE 439 -> 341, MIXED-evidence ELIGIBLE 55 -> 0, 109 research
+priorities changed. On 2026-10-16 every upside breakout now references its broken level
+(AT/NEAR structure, NARROW/MODERATE width) and TECHM and WIPRO are the upside ELIGIBLE names.
+Like 1.0, every 2.0 weight and threshold is a documented judgment call, never fitted to returns.
 
 ## Durable snapshot history
 
@@ -327,10 +359,12 @@ changes. `capture_mode`/`candidate_as_of` are resolved once (`service.resolve_ca
 stamped at build time, never inferred later from file metadata. This store is written only by
 `private_candidates.capture`/`service.persist` - never by `private_desk`, which reads it only
 through `service.run_from_store`/`stored_assessment` (`store.list_symbols`/`load_latest`).
-Revisions written before schema 1.1 (no `radar_direction`) are never shown as the stored
-board - the Desk falls back to a labelled live recompute until the next capture supersedes them.
+Revisions written under an older schema are never shown as the stored board - the Desk falls
+back to a labelled live recompute until the next capture supersedes them. Policy 1.0 snapshots
+stay in their own `trade-candidate-score-1_0/` folder, untouched; the Desk reads the current
+policy's folder only.
 
-## Limitations (V1, all explicitly provisional)
+## Limitations (all explicitly provisional)
 
 - Component weights, score bands, and every ATR/weekly/event/sector-cap/correlation threshold
   are a documented first-pass judgment call, not derived from any backtest. `python -m
@@ -339,8 +373,10 @@ board - the Desk falls back to a labelled live recompute until the next capture 
 - Sector relative strength and the weekly multi-timeframe view are NEW, PARALLEL calculations
   introduced by this package - not a fix to Radar's own unwired `RelativePerformance.sector_*`
   fields, which stay `None` in production exactly as before.
-- The structural reference is `prior_20_low`/`prior_20_high` only - no swing/pivot/trendline
-  level (those remain index-only in `market.py`).
+- The structural reference uses only the prior 20/50-session range levels (the broken level
+  for a range break) - no swing/pivot/trendline level (those remain index-only in `market.py`).
+- Earnings coverage is limited to the board-meeting filings Market Events has captured; the
+  results-window rule only marks the gap (`RESULTS_DATE_NOT_ON_FILE`), it cannot fill it.
 - Institutional-flow and event context are sector/index-level and symbol-level-from-official-
   filings respectively - never a claim of stock-specific institutional buying/selling.
 - No historical Edge Analytics in V1: nothing here measures forward returns, MFE/MAE, or
@@ -353,22 +389,6 @@ board - the Desk falls back to a labelled live recompute until the next capture 
   catch-up correctly falls back to `RECONSTRUCTED` rather than guessing.
 - No weight optimization against historical returns, no ML, no LLM, anywhere in this package
   (test-enforced).
-- Known V1 scoring limitations found in the 2026-10 review, recorded here for a future policy
-  version (deliberately NOT changed under `trade-candidate-score-1.0`):
-  - the scoring direction is the sign of the session's own price move, not the Radar's
-    multi-session direction; MIXED-evidence candidates (~10% of candidates) are scored as if
-    directional and can reach ELIGIBLE;
-  - component C (`SECTOR_ALIGNMENT`) reads `sector_relative_20d_pp` = the stock's 20-session
-    return minus its own equal-weight sector's (the stock included) - how much it beat its
-    sector, i.e. a second relative-strength reading, NOT whether the sector itself is strong;
-  - for an upside setup the structural reference is always `prior_20_low`, so a range
-    breakout sits a full range away: most breakouts read `EXTENDED_FROM_STRUCTURE` / `WIDE`
-    (22 of 24 candidates on 2026-10-16) - the broken level itself is not used;
-  - setup quality barely discriminates (every Radar candidate has >= 2 families: 18 of 24
-    scored exactly 13/20 on 2026-10-16; an SMA20 cross counts like a 50-session breakout);
-  - `NO_KNOWN_EVENT` means no event ON FILE and earns full EVENT_RISK points; EARNINGS
-    coverage is limited to captured board-meeting filings (none of the 24 candidates on
-    2026-10-16 had one), and a past event within the window is treated like an upcoming one.
 - Never reaches PUBLIC video production; no public planner imports this package (test-enforced).
 - Future Kite integration (docs/PRIVATE_DESK_KITE_INTEGRATION.md) is explicitly out of scope:
   `TradeCandidateAssessment` carries zero execution authority (no order/quantity/broker field;

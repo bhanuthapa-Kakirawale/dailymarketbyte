@@ -114,48 +114,48 @@ def daily_rows(repo, symbol: str, session: dt.date, lookback_days: int = 400) ->
            if r.quality_status == QualityStatus.OK]
 
 
-def sector_series(repo, members: list, session: dt.date, lookback_days: int = 400) -> list:
-    """`metrics.build_equal_weight_sector_series` over whichever `members` have OHLCV in the
-    store - a read-only batched query (`DeskRepository.ohlcv_rows`), never a per-symbol call."""
-    from .metrics import build_equal_weight_sector_series
-    if not members:
-        return []
-    start = session - dt.timedelta(days=lookback_days)
+def sector_member_rows(repo, members: list, session: dt.date, lookback_days: int = 400) -> dict:
+    """`{symbol: [{"date","close"}]}` for whichever `members` have OK OHLCV in the store - one
+    read-only batched query (`DeskRepository.ohlcv_rows`), never a per-symbol call. Callers
+    cache it per sector: every candidate in a sector shares it."""
     from storage.ohlcv_models import QualityStatus
-    rows = repo.ohlcv_rows(members, start, session)
+    if not members:
+        return {}
+    start = session - dt.timedelta(days=lookback_days)
     by_symbol: dict = {}
-    for r in rows:
+    for r in repo.ohlcv_rows(members, start, session):
         if r.quality_status != QualityStatus.OK:
             continue
-        by_symbol.setdefault(r.symbol, []).append(
-            {"date": r.session_date, "close": r.close})
-    return build_equal_weight_sector_series(by_symbol)
+        by_symbol.setdefault(r.symbol, []).append({"date": r.session_date, "close": r.close})
+    return by_symbol
 
 
-def sector_relative_performance(repo, symbol: str, sector: str | None, members_by_sector: dict,
-                                session: dt.date, benchmark_series: list) -> dict | None:
-    """Stock-vs-sector relative strength via the EXISTING `radar.relative.
-    scan_relative_performance_universe` (which already supports `sector_map`/
-    `sector_series_by_name` - production simply never feeds them). Computed fresh, locally,
-    read-only; never modifies `radar/daily_pipeline.py`'s production wiring. `None` when no
-    sector is known or no sector series could be built."""
-    if not sector:
+def sector_relative_performance(symbol: str, sector: str | None, member_rows: dict,
+                                symbol_rows: list, session: dt.date,
+                                benchmark_series: list) -> dict | None:
+    """The stock's relative performance against its sector and the market, via the EXISTING
+    `radar.relative.scan_relative_performance_universe` (which already supports `sector_map`/
+    `sector_series_by_name` - production simply never feeds them). The sector series is the
+    equal-weight series of the stock's PEERS - the stock itself excluded, so a big mover never
+    drags its own sector benchmark (in a small sector it otherwise dominated it). The result
+    carries both the stock-vs-sector gap and the sector's own return vs the market. Computed
+    fresh, locally, read-only; never modifies `radar/daily_pipeline.py`'s production wiring.
+    `None` when no sector, no peer series or no stock rows exist."""
+    from .metrics import build_equal_weight_sector_series
+    if not sector or not symbol_rows:
         return None
-    members = members_by_sector.get(sector) or []
-    sec_series = sector_series(repo, members, session)
+    sec_series = build_equal_weight_sector_series(
+        {s: rows for s, rows in member_rows.items() if s != symbol})
     if not sec_series:
-        return None
-    symbol_rows = daily_rows(repo, symbol, session)
-    if not symbol_rows:
         return None
     from radar.relative import scan_relative_performance_universe
     snap = scan_relative_performance_universe(
         [symbol], {symbol: symbol_rows}, benchmark_series, session,
         sector_map={symbol: sector}, sector_series_by_name={sector: sec_series},
-        sector_source="private_candidates equal-weight sector series (not an official index)")
+        sector_source="private_candidates equal-weight series of sector peers (not an official index)")
     return snap.results[0].to_dict() if snap.results else None
 
 
 __all__ = ["STOCK_EVENT_FAMILIES", "regime_snapshots", "market_structure_as_of",
           "sector_map_and_members", "observation_index", "nsdl_sector_flows", "stock_events",
-          "daily_rows", "sector_series", "sector_relative_performance"]
+          "daily_rows", "sector_member_rows", "sector_relative_performance"]

@@ -27,7 +27,7 @@
     <th class="sort">Event</th></tr></thead><tbody>
   {% for r in d.shortlist %}<tr>
     <td class="n">{{ r.rank }}</td>
-    <td><a href="/trade-candidates/{{ r.symbol }}?session={{ session }}{{ lq }}">{{ r.symbol }}</a>{% if 'DAY_MOVE_AGAINST_RADAR_DIRECTION' in r.flags %} <span class="b warn" title="the day's move went against the Radar direction; V1 components read the day's move">DAY AGAINST</span>{% endif %}</td>
+    <td><a href="/trade-candidates/{{ r.symbol }}?session={{ session }}{{ lq }}">{{ r.symbol }}</a>{% if 'DAY_MOVE_AGAINST_RADAR_DIRECTION' in r.flags %} <span class="b warn" title="the day's move went against the Radar direction - a pullback or bounce day">DAY AGAINST</span>{% endif %}</td>
     <td>{{ m.tcdir(r.radar_direction) }}</td>
     <td>{{ r.sector | na }}</td>
     <td class="n" data-v="{{ r.quality_points }}">{{ r.quality_points | num(0) }} / {{ r.quality_max | num(0) }}</td>
@@ -36,7 +36,7 @@
     <td>{{ r.weekly_alignment | label }}</td>
     <td>{{ r.volatility_band | label }}</td>
     <td>{{ r.liquidity_band | label }}</td>
-    <td>{{ r.event_proximity | label }}</td>
+    <td>{{ r.event_proximity | label }}{% if 'RESULTS_DATE_NOT_ON_FILE' in r.flags %} <span class="b warn" title="quarterly results window and no results date on file">RESULTS DATE?</span>{% endif %}</td>
   </tr>{% endfor %}
   </tbody></table>
   {% if d.demoted %}
@@ -48,7 +48,7 @@
   {% endif %}
   {% if d.sector_unknown %}<p class="note">Diversification not applied to {{ d.sector_unknown | length }} candidate(s) with no sector data: {{ d.sector_unknown | join(', ') }}.</p>{% endif %}
   {% else %}<p class="na">No ELIGIBLE or REVIEW {% if upside_only %}upside {% endif %}candidate for this session.</p>{% endif %}
-  <p class="note">Event column: NO KNOWN EVENT means no event <b>on file</b> within 3 trading sessions either side. Earnings coverage is limited to the board-meeting filings Market Events has captured - verify results dates yourself, especially in results season.</p>
+  <p class="note">Event column: NO KNOWN EVENT means no event <b>on file</b> within 3 trading sessions either side. Earnings coverage is limited to the board-meeting filings Market Events has captured; RESULTS DATE? marks a quarterly results window with no results date on file - verify it yourself.</p>
 </section>
 
 <section class="panel">

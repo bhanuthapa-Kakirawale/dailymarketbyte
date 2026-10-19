@@ -15,11 +15,18 @@ import datetime as dt
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 
-SCHEMA_VERSION = "private-trade-candidate-1.1"
+SCHEMA_VERSION = "private-trade-candidate-1.2"
 
-# Informational flag: the session's own price move contradicts the Radar's multi-session
-# direction (V1 components are computed from the day's move, so this makes that visible).
+# Informational flags (never change the score on their own).
+# The session's own price move went against the Radar's multi-session direction - a pullback or
+# bounce day; the components follow the Radar direction.
 DAY_MOVE_AGAINST_RADAR_DIRECTION = "DAY_MOVE_AGAINST_RADAR_DIRECTION"
+# The Radar's structure and relative evidence disagree (or set no direction): the day's move is
+# used as the direction and the candidate is capped at REVIEW.
+MIXED_DIRECTION_EVIDENCE = "MIXED_DIRECTION_EVIDENCE"
+# The session falls in a quarterly results window and no results date for this quarter is on
+# file - "no known event" may just be missing data.
+RESULTS_DATE_NOT_ON_FILE = "RESULTS_DATE_NOT_ON_FILE"
 
 
 class ResearchPriority(str, Enum):
@@ -175,7 +182,9 @@ class TradeCandidateAssessment:
     extension_state: str
     pullback_state: str
     structural_reference_price: float | None
-    structural_reference_kind: str | None   # PRIOR_20_LOW | PRIOR_20_HIGH
+    # BROKEN_PRIOR_20/50_HIGH|LOW (the level a range break just cleared) or PRIOR_20_LOW|HIGH
+    # (the far end of the prior 20-session range when no range break is in the setup direction)
+    structural_reference_kind: str | None
     risk_width_label: str
     atr14: float | None
     atr14_pct: float | None
@@ -200,9 +209,12 @@ class TradeCandidateAssessment:
     missing_context: tuple
     flags: tuple = field(default_factory=tuple)
     # The Radar's own stored `direction_compatibility` (STRUCTURE + RELATIVE evidence only:
-    # ALIGNED_POSITIVE / ALIGNED_NEGATIVE / MIXED / NON_DIRECTIONAL). Display/view only - V1
-    # scoring still reads the day's price move. None on snapshots written before schema 1.1.
+    # ALIGNED_POSITIVE / ALIGNED_NEGATIVE / MIXED / NON_DIRECTIONAL). Policy 2.0 scores in this
+    # direction; MIXED/NON_DIRECTIONAL fall back to the day's move. None before schema 1.1.
     radar_direction: str | None = None
+    # The sector's own 20-session return minus NIFTY 50's (equal-weight series of the sector's
+    # peers, the stock itself excluded) - what SECTOR_ALIGNMENT reads. None before schema 1.2.
+    sector_vs_market_20d_pp: float | None = None
     notes: tuple = field(default_factory=lambda: (
         "Research priority, not a trade recommendation.",
         "Score is PROVISIONAL and has not been historically validated.",
@@ -231,7 +243,8 @@ def total_max_score() -> float:
     return 100.0
 
 
-__all__ = ["SCHEMA_VERSION", "DAY_MOVE_AGAINST_RADAR_DIRECTION", "ResearchPriority",
+__all__ = ["SCHEMA_VERSION", "DAY_MOVE_AGAINST_RADAR_DIRECTION", "MIXED_DIRECTION_EVIDENCE",
+          "RESULTS_DATE_NOT_ON_FILE", "ResearchPriority",
           "DataQualityTier", "MTFAlignment",
           "VolatilityBand", "LiquidityBand", "EventProximity", "ExtensionState", "PullbackState",
           "RiskWidthLabel", "RegimeAlignment", "SETUP_QUALITY", "MARKET_ALIGNMENT",

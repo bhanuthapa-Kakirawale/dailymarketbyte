@@ -76,6 +76,24 @@ def test_missing_optional_relative_reading_is_partial_and_at_most_review():
     assert out["research_priority"] == "REVIEW"
 
 
+def test_mixed_direction_evidence_is_capped_at_review_and_flagged():
+    """The Radar's own evidence disagrees, so the direction the components read is only the
+    day's move (2026-10-16: PHOENIXLTD, MIXED, reached ELIGIBLE 65)."""
+    out = elig.assess(reconcile_status="MATCHED", volume_family_active=False,
+                      has_volume_anomaly=False, has_technical=True, has_relative=True,
+                      ohlcv_sessions=60, atr_available=True, score_total=90, score_max=100,
+                      extension_state="NORMAL", volatility_band="NORMAL", mixed_direction=True,
+                      policy=POLICY)
+    assert out["research_priority"] == "REVIEW"
+    assert "MIXED_DIRECTION_EVIDENCE" in out["flags"]
+    low = elig.assess(reconcile_status="MATCHED", volume_family_active=False,
+                      has_volume_anomaly=False, has_technical=True, has_relative=True,
+                      ohlcv_sessions=60, atr_available=True, score_total=10, score_max=100,
+                      extension_state="NORMAL", volatility_band="NORMAL", mixed_direction=True,
+                      policy=POLICY)
+    assert low["research_priority"] == "NOT_ACTIONABLE"      # a cap, never a lift
+
+
 def test_low_score_complete_data_is_not_actionable():
     out = elig.assess(reconcile_status="MATCHED", volume_family_active=True,
                       has_volume_anomaly=True, has_technical=True, has_relative=True,

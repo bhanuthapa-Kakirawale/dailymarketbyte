@@ -78,9 +78,34 @@ _SKIP_DATE_GAP = "date_gap"
 _SKIP_INSUFFICIENT_HISTORY = "insufficient_technical_history"
 
 
+class AcquisitionHealth:
+    """How much of the requested universe this load actually delivered (Radar OHLCV acquisition
+    reliability V1). Says nothing about candidates: a HEALTHY load can legitimately produce zero
+    signals; an INSUFFICIENT/SOURCE_FAILURE load means the Radar could not analyse the session.
+
+      HEALTHY         usable >= MIN_COVERAGE_PCT of requested (Market Structure's own 95%)
+      PARTIAL         0 < usable < that
+      INSUFFICIENT    0 usable although data existed (provider returned frames, or the store
+                      had complete symbols) - every symbol was rejected by validation
+      SOURCE_FAILURE  0 usable and nothing came back at all (empty response / fetch raised)
+      NOT_REQUESTED   the universe itself was empty (reported separately as EMPTY_UNIVERSE)
+    """
+    HEALTHY = "HEALTHY"
+    PARTIAL = "PARTIAL"
+    INSUFFICIENT = "INSUFFICIENT"
+    SOURCE_FAILURE = "SOURCE_FAILURE"
+    NOT_REQUESTED = "NOT_REQUESTED"
+    FAILED = frozenset({INSUFFICIENT, SOURCE_FAILURE})
+
+
 @dataclass
 class CoverageDiagnostics:
-    """Operational telemetry for one `load_universe` call - not publication content."""
+    """Operational telemetry for one `load_universe` call - not publication content.
+
+    The stage counts answer "where did the requested universe go": requested -> cache_complete
+    (served from the store) / cache_partial + cache_miss (sent to the provider as
+    `fetch_requested`) -> `provider_returned` (frames with any Close) -> `bars_written`
+    (bars persisted by the write-through) -> `usable_symbols`; `skip_reason_counts` names every loss."""
     requested_symbols: int = 0
     cache_complete: int = 0
     cache_partial: int = 0
@@ -91,9 +116,40 @@ class CoverageDiagnostics:
     network_call_count: int = 0
     bars_loaded_from_store: int = 0
     bars_written: int = 0
+    fetch_requested: int = 0
+    provider_returned: int = 0
+    fetch_window_short: int = 0
+    skip_reason_counts: dict = field(default_factory=dict)
+    health: str = ""
 
     def to_dict(self) -> dict:
         return dict(self.__dict__)
+
+
+def classify_health(coverage: CoverageDiagnostics) -> str:
+    """`AcquisitionHealth` for one load, from its own counts - deterministic, no threshold of its
+    own: the HEALTHY floor is Market Structure's existing `MIN_COVERAGE_PCT`."""
+    from market_structure.aggregator import MIN_COVERAGE_PCT
+    requested, usable = coverage.requested_symbols, coverage.usable_symbols
+    if requested <= 0:
+        return AcquisitionHealth.NOT_REQUESTED
+    if usable == 0:
+        if coverage.provider_returned == 0 and coverage.cache_complete == 0:
+            return AcquisitionHealth.SOURCE_FAILURE
+        return AcquisitionHealth.INSUFFICIENT
+    if 100.0 * usable / requested >= MIN_COVERAGE_PCT:
+        return AcquisitionHealth.HEALTHY
+    return AcquisitionHealth.PARTIAL
+
+
+def _finish_coverage(dataset: "UniverseOHLCVDataset") -> None:
+    counts: dict = {}
+    for reason in dataset.skipped_symbols.values():
+        counts[reason] = counts.get(reason, 0) + 1
+    dataset.coverage.skip_reason_counts = dict(sorted(counts.items()))
+    dataset.coverage.usable_symbols = len(dataset.series_by_symbol)
+    dataset.coverage.skipped_symbols = len(dataset.skipped_symbols)
+    dataset.coverage.health = classify_health(dataset.coverage)
 
 
 @dataclass
@@ -201,7 +257,9 @@ def load_universe(universe: dict, session_date: dt.date, prev_date: dt.date, *,
             print(f"[radar.ohlcv_service] store unavailable ({exc}); falling back to direct "
                  "Yahoo acquisition")
             dataset.warnings.append(f"OHLCV store unavailable: {exc}")
-            return _fallback_full_fetch(universe, session_date, prev_date, dataset)
+            _fallback_full_fetch(universe, session_date, prev_date, dataset)
+            _finish_coverage(dataset)
+            return dataset
 
     try:
         _load_with_store(store, universe, session_date, prev_date, required_lookback, dataset, spine,
@@ -214,10 +272,12 @@ def load_universe(universe: dict, session_date: dt.date, prev_date: dt.date, *,
         dataset.skipped_symbols.clear()
         dataset.cache_served_symbols.clear()
         dataset.freshly_fetched_symbols.clear()
+        dataset.coverage.provider_returned = 0
         _fallback_full_fetch(universe, session_date, prev_date, dataset)
     finally:
         if owns_store:
             store.close()
+    _finish_coverage(dataset)
     return dataset
 
 
@@ -271,13 +331,16 @@ def _load_with_store(store: OHLCVStore, universe: dict, session_date: dt.date,
         dataset.warnings.append("fetch_on_gap=False: tail/cold symbols read from the store "
                                 "as-is, never topped up via Yahoo")
 
+    all_window_short: set = set()
     for bucket, period in ((tail_bucket, TAIL_FETCH_PERIOD), (cold_bucket, COLD_FETCH_PERIOD)):
         if not bucket:
             continue
         subset = {s: universe[s] for s in bucket}
+        dataset.coverage.fetch_requested += len(bucket)
+        stats: dict = {}
         try:
             _series, skip_reasons = market.get_universe_technical_series(
-                subset, session_date, prev_date, period=period)
+                subset, session_date, prev_date, period=period, stats=stats)
         except Exception as exc:
             print(f"[radar.ohlcv_service] Yahoo fetch failed for {len(bucket)} symbols "
                  f"({period}): {exc}")
@@ -287,9 +350,27 @@ def _load_with_store(store: OHLCVStore, universe: dict, session_date: dt.date,
                 dataset.skipped_symbols[s] = _SKIP_FETCH_FAILED
             continue
         dataset.coverage.network_call_count += 1
+        dataset.coverage.provider_returned += stats.get("provider_returned", 0)
+        dataset.coverage.bars_written += stats.get("written_through", 0)
+        window_short = set()
         for s, reason in skip_reasons.items():
+            if reason == _SKIP_INSUFFICIENT_HISTORY:
+                # Radar OHLCV acquisition reliability V1 - the recurring 0/200 root cause. This
+                # reason describes the FETCH WINDOW, not the symbol: Yahoo serves `period` as a
+                # calendar range back from the run's own wall-clock date, so the 1-month tail
+                # window holds 19-22 sessions depending on weekday/holidays, and below
+                # MIN_TECHNICAL_SESSIONS (21) the fetch rejected EVERY symbol at once (2026-10-05/
+                # 06/08/12/19) although the store already held ~500 sessions each. The merged
+                # store history (old bars + this fetch's write-through) is what the detectors
+                # read, so `_finalize_symbol` re-judges it there under the SAME 21-session floor,
+                # recap-row and prev_date checks - never waived, only applied to the right series.
+                window_short.add(s)
+                continue
             dataset.skipped_symbols[s] = reason
-        dataset.freshly_fetched_symbols.update(s for s in bucket if s not in skip_reasons)
+        dataset.coverage.fetch_window_short += len(window_short)
+        all_window_short |= window_short
+        dataset.freshly_fetched_symbols.update(s for s in bucket if s not in skip_reasons
+                                               or s in window_short)
 
     fetched_all = tail_bucket + cold_bucket
     if fetched_all:
@@ -306,6 +387,11 @@ def _load_with_store(store: OHLCVStore, universe: dict, session_date: dt.date,
             by_symbol.setdefault(r.symbol, []).append(r)
         refreshed_by_symbol = {s: by_symbol[s] for s in fetched_all if s in by_symbol}
         dropped = apply_session_spine(refreshed_by_symbol, spine)
+        # `apply_session_spine` rebinds the lists in the dict it is GIVEN - write them back, or
+        # the filter is a no-op for `_finalize_symbol` (Radar OHLCV acquisition reliability V1:
+        # a holiday placeholder such as 2026-10-02 then sat between prev_date and the session
+        # and turned the first post-holiday session into a false universe-wide `date_gap`).
+        by_symbol.update(refreshed_by_symbol)
         if dropped:
             dataset.warnings.append(f"session spine filter: {dropped} provider row(s) for "
                                     "confirmed non-trading dates excluded from freshly-fetched "
@@ -316,6 +402,8 @@ def _load_with_store(store: OHLCVStore, universe: dict, session_date: dt.date,
         _finalize_symbol(dataset, s, ok_rows, session_date, prev_date)
 
     dataset.available_symbols = sorted(dataset.series_by_symbol)
+    # a window-short symbol counts as freshly fetched only if its merged history was usable
+    dataset.freshly_fetched_symbols -= {s for s in all_window_short if s in dataset.skipped_symbols}
     dataset.coverage.freshly_fetched = len(dataset.freshly_fetched_symbols)
     dataset.coverage.usable_symbols = len(dataset.series_by_symbol)
     dataset.coverage.skipped_symbols = len(dataset.skipped_symbols)
@@ -350,9 +438,11 @@ def _fallback_full_fetch(universe: dict, session_date: dt.date, prev_date: dt.da
     existing seam (which still attempts its own best-effort write-through, so a store that
     recovers by the next run picks the data back up) - a broken cache must never stop the
     Radar from running at all (Packet 5.2's failure-isolation guarantee, extended here)."""
+    stats: dict = {}
+    dataset.coverage.fetch_requested = len(universe)
     try:
         series, skip_reasons = market.get_universe_technical_series(
-            universe, session_date, prev_date, period=COLD_FETCH_PERIOD)
+            universe, session_date, prev_date, period=COLD_FETCH_PERIOD, stats=stats)
     except Exception as exc:
         print(f"[radar.ohlcv_service] Yahoo fallback fetch failed: {exc}")
         dataset.warnings.append(f"Yahoo fallback fetch failed: {exc}")
@@ -363,6 +453,8 @@ def _fallback_full_fetch(universe: dict, session_date: dt.date, prev_date: dt.da
         return dataset
 
     dataset.coverage.network_call_count += 1
+    dataset.coverage.provider_returned = stats.get("provider_returned", 0)
+    dataset.coverage.bars_written += stats.get("written_through", 0)
     for s, rows in series.items():
         dataset.series_by_symbol[s] = [
             {"date": r["date"], "open": r.get("open"), "high": r["high"], "low": r["low"],
@@ -409,6 +501,7 @@ def relative_volume_rows_from_dataset(dataset: UniverseOHLCVDataset, universe: d
     return rows, skip_reasons
 
 
-__all__ = ["UniverseOHLCVDataset", "CoverageDiagnostics", "load_universe", "apply_session_spine",
+__all__ = ["UniverseOHLCVDataset", "CoverageDiagnostics", "AcquisitionHealth", "classify_health",
+          "load_universe", "apply_session_spine",
           "relative_volume_rows_from_dataset", "REQUIRED_LOOKBACK_SESSIONS",
           "STORE_QUERY_WINDOW_DAYS", "TAIL_FETCH_PERIOD", "COLD_FETCH_PERIOD"]

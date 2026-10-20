@@ -377,3 +377,24 @@ def test_same_session_rerun_after_bootstrap_reprocesses_nothing(tmp_path, monkey
     store = CandidateHistoryStore(ch_path(str(tmp_path)))
     assert store.count_rows() == count_after_first  # 0 duplicate rows
     store.close()
+
+
+# --------------------------------------------------------------------------- acquisition health
+def test_failed_acquisition_session_is_failed_not_complete(tmp_path, monkeypatch):
+    """Radar OHLCV acquisition reliability V1: a backfill session whose OHLCV load delivered no
+    usable symbol is marked FAILED (retryable), never COMPLETE with zero candidates."""
+    from test_daily_pipeline import _stub_with_health
+    _stub_with_health(monkeypatch, {}, "INSUFFICIENT", usable=[],
+                      skipped={"AAA": "date_gap", "BBB": "date_gap"})
+    result = chb.backfill_candidate_history(
+        spine=SPINE, universe=UNIVERSE, benchmark_series=BENCHMARK,
+        sessions=[_date(14)], out_dir=str(tmp_path))
+    assert result.failed_sessions == [_date(14)] and result.processed_sessions == []
+    assert any("OHLCV acquisition INSUFFICIENT" in w for w in result.warnings)
+    store = CandidateHistoryStore(ch_path(str(tmp_path)))
+    try:
+        assert store.get_run_status(_date(14), result.calculation_version).status == \
+            RunStatus.FAILED.value
+        assert not store.is_session_complete(_date(14), result.calculation_version)
+    finally:
+        store.close()

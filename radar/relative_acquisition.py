@@ -97,6 +97,46 @@ def last_benchmark_recovery() -> list:
     return list(_LAST_RECOVERY)
 
 
+def extend_benchmark_to_session(series: list, session_date: dt.date, *, now=None,
+                                fetch=None) -> list:
+    """Recap-session recovery for the Radar's benchmark (Radar OHLCV acquisition reliability V1).
+
+    Verified 2026-10-14 07:03 IST: Yahoo's ^NSEI chart still ended at 2026-10-12 while
+    2026-10-13 was a completed session. `main.collect` recovered that recap close from NSE's
+    end-of-day index file (`market.recover_recap_session`, the owner-approved recap rule) and
+    built the report, but the Radar's spine - built from this series - had no 2026-10-13, so the
+    Radar FAILED with SESSION_NOT_ON_CANONICAL_SPINE. This applies that SAME function, unchanged,
+    to the benchmark: only canonical sessions after the series' last bar up to `session_date`,
+    only once FINAL, at most `market.RECAP_RECOVERY_MAX_SESSIONS`, each validated against the
+    previous canonical close. A rejected/unavailable row adds nothing (the session stays off the
+    spine, exactly as before). Every attempt is appended to `last_benchmark_recovery()`.
+
+    No-op (no network) whenever `session_date` is already covered by the series."""
+    if not series or session_date is None:
+        return series
+    last = max(row["date"] for row in series)
+    if session_date <= last:
+        return series
+    import pandas as pd
+    frame = pd.DataFrame({"Close": [row["close"] for row in series]},
+                         index=pd.to_datetime([row["date"] for row in series]))
+    try:
+        frame, records = market.recover_recap_session(frame, BENCHMARK_SYMBOL, until=session_date,
+                                                      now=now, fetch=fetch)
+    except Exception as exc:
+        print(f"[radar.relative_acquisition] benchmark recap recovery failed: {exc}")
+        return series
+    _LAST_RECOVERY.extend(records)
+    validated = {r["session_date"]: r for r in records if r.get("validation_status") == "VALIDATED"}
+    out = list(series)
+    for ts, row in frame.iterrows():
+        rec = validated.get(ts.date().isoformat())
+        if ts.date() > last and rec is not None and row.Close > 0:
+            out.append({"date": ts.date(), "close": float(row.Close), "source": rec["source"],
+                        "provenance": rec})
+    return out
+
+
 def _write_through_benchmark_ohlcv(df, *, symbol: str = BENCHMARK_SYMBOL,
                                    source: str = "yahoo", out_dir: str | None = None) -> None:
     """Persist the benchmark OHLCV `build_market_benchmark_series` already downloaded into

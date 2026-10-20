@@ -799,3 +799,23 @@ measured against 21 Sep. Consequences, verified by `validate_session_alignment.p
     Stories MFSL, POLICYBZR (held by the move guard), COROMANDEL, BAJAJFINSV, APLAPOLLO. The POST
     publishes MFSL / COROMANDEL / BAJAJFINSV and is the new 24 Sep reference
     (`output/benchmark_gap_recovery/2026-09-24/full_post_corrected.mp4`).
+
+## Acquisition health: a failed acquisition is not a quiet day (reliability V1)
+
+- `run_daily_radar` reads `ohlcv_service.AcquisitionHealth` right after the shared OHLCV load
+  (docs/OHLCV_STORE.md "Acquisition health"). **INSUFFICIENT / SOURCE_FAILURE** (no usable
+  symbol): the Radar is `FAILED` (`OHLCV_ACQUISITION_FAILED` / `OHLCV_SOURCE_FAILURE`) and stops
+  before Market Structure, candidate history and editorial selections - no `COMPLETE(0)` marker,
+  so the session stays retryable (the 19:30 pass re-runs a FAILED Radar; the candidate-history
+  preflight re-backfills it). **PARTIAL**: `DEGRADED` (`OHLCV_PARTIAL_COVERAGE`). **HEALTHY**
+  with zero candidates stays `SUCCESS` - a genuine quiet session.
+- Before V1, 2026-10-05/06/08/12/19 were recorded `SUCCESS` with `universe_usable=0` and
+  `COMPLETE(0)` candidate history: the Radar never analysed them (root cause: the tail fetch's
+  1-month window was held to the 21-session floor). Market Structure showed 0% breadth coverage
+  (UNDER THE SURFACE suppressed) and the Private Desk / trade-candidate capture saw an empty
+  Radar. Those records are history and were not rewritten.
+- For an explicit session, the Radar benchmark now uses the same validated NSE recap-session
+  recovery as `main.collect` (`extend_benchmark_to_session`), so a lagging Yahoo ^NSEI no longer
+  removes a real session from the spine (2026-10-13: `SESSION_NOT_ON_CANONICAL_SPINE`).
+- Audit: `python -m radar.acquisition_diagnostics --sessions 20` (read-only).
+

@@ -151,6 +151,18 @@ A fact can be `VERIFIED`/`SINGLE_SOURCE` and still not be publishable as a *rank
   (validated moves / universe size), recorded at acquisition in
   `report.metadata["movers_coverage"]`. No record means UNKNOWN, which is not publishable.
 
+- `get_movers_audited`'s shortfall error names the lost stage (Radar OHLCV acquisition
+  reliability V1): `Only k/N stocks had clean data for D: provider_returned= date_gap=
+  backfill_pending= malformed= primary_cause=<PROVIDER_EMPTY_RESPONSE | SESSION_DATE_MISMATCH |
+  PARTIAL_CURRENT_SESSION | CLEANER_REJECTED | MISSING_FINAL_BAR> prev_row_seen=<date>xN`. The
+  2026-10-13 evening runs failed with all 100 NIFTY100 frames date-gapped against 10-12; no raw
+  payload survived, so `prev_row_seen` now records which previous row the frames actually
+  carried. The `< 2n` rule itself is unchanged.
+- The Radar's universe acquisition has its own health classification (HEALTHY / PARTIAL /
+  INSUFFICIENT / SOURCE_FAILURE): docs/OHLCV_STORE.md "Acquisition health". A fetch-window
+  length is never a reason to reject a symbol whose merged store history satisfies the same
+  21-session floor.
+
 ## 9. Session alignment - provider rows never define trading sessions
 
 `core/trading_calendar.py` is the canonical NSE session rule. A date is a session if the
@@ -259,7 +271,12 @@ under the same validation as section 10, plus these gates:
   not a lag, so nothing is filled (`NOT_ATTEMPTED_PRIMARY_STALE`).
 
 It is applied to ^NSEI in `get_market`, and to ^NSEBANK and the Yahoo sector indices up to the
-Nifty recap date (`until=`). None of them can reach past the benchmark's session. Provenance:
+Nifty recap date (`until=`). None of them can reach past the benchmark's session. Since Radar
+OHLCV acquisition reliability V1 the Radar's own benchmark applies it too
+(`radar.relative_acquisition.extend_benchmark_to_session`, only for an explicit session, no-op
+and no fetch when ^NSEI already covers it): on 2026-10-14 07:03 Yahoo's ^NSEI still ended at
+10-12, the report recovered 10-13, but the Radar spine lacked it and the Radar FAILED with
+`SESSION_NOT_ON_CANONICAL_SPINE`. Provenance:
 - each record carries `role: RECAP_SESSION`, `fallback_reason: PRIMARY_MISSING_RECAP_SESSION`
   and `session_final_check`;
 - `session_alignment.recap_close_source` and `m["close_source"]` hold `NSE_INDEX_CLOSE_ARCHIVE`,

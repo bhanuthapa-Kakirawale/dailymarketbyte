@@ -309,3 +309,104 @@ def test_artifact_deterministic_single_path(tmp_path, monkeypatch):
     radar_dir = os.path.join(str(tmp_path), "radar")
     files = [f for f in os.listdir(radar_dir) if f.startswith("daily_radar_")]
     assert files == [f"daily_radar_{_date(19).isoformat()}.json"]
+
+
+# --------------------------------------------------------------------------- acquisition health
+# Radar OHLCV acquisition reliability V1: a load with no usable symbol is a FAILED Radar, never
+# a healthy zero-candidate session; a partial load is DEGRADED; a healthy zero stays SUCCESS.
+@dataclass
+class _HealthCoverage(_FakeCoverage):
+    health: str = "HEALTHY"
+    requested_symbols: int = 2
+    fetch_requested: int = 2
+    provider_returned: int = 2
+    bars_written: int = 40
+    fetch_window_short: int = 0
+    skip_reason_counts: dict = field(default_factory=dict)
+
+
+def _stub_with_health(monkeypatch, candidates_by_session, health, usable, skipped=None):
+    _stub_pipeline(monkeypatch, candidates_by_session)
+
+    def load(*a, **k):
+        skipped_ = dict(skipped or {})
+        counts = {}
+        for reason in skipped_.values():
+            counts[reason] = counts.get(reason, 0) + 1
+        return _FakeDataset(series_by_symbol={s: [] for s in usable}, skipped_symbols=skipped_,
+                            coverage=_HealthCoverage(health=health, skip_reason_counts=counts,
+                                                     provider_returned=len(UNIVERSE)))
+    monkeypatch.setattr(dp.ohlcv_service, "load_universe", load)
+
+
+def _marker(tmp_path, session):
+    from storage.candidate_history_repository import CandidateHistoryStore, default_db_path
+    store = CandidateHistoryStore(default_db_path(str(tmp_path)))
+    try:
+        return store.get_run_status(session, "1.0")
+    finally:
+        store.close()
+
+
+def test_failed_acquisition_is_a_failed_radar_not_a_quiet_day(tmp_path, monkeypatch):
+    import json
+    import os
+    _stub_with_health(monkeypatch, {}, "INSUFFICIENT", usable=[],
+                      skipped={"AAA": "insufficient_technical_history",
+                               "BBB": "insufficient_technical_history"})
+    result = dp.run_daily_radar(_date(19), out_dir=str(tmp_path))
+
+    assert result.pipeline_status == "FAILED"
+    assert result.universe_requested == 2 and result.universe_usable == 0
+    codes = [i.code for i in result.issues]
+    assert codes[0] == "OHLCV_ACQUISITION_FAILED"
+    assert "NOT a zero-candidate session" in result.issues[0].message
+    # retryable: no COMPLETE marker, no editorial selection written
+    assert _marker(tmp_path, _date(19)) is None
+    assert not os.path.exists(os.path.join(str(tmp_path), "data", "editorial_selections.db"))
+    path = os.path.join(str(tmp_path), "radar", f"daily_radar_{_date(19).isoformat()}.json")
+    art = json.load(open(path, encoding="utf-8"))
+    assert art["pipeline_status"] == "FAILED"
+    assert art["coverage_diagnostics"]["acquisition"]["health"] == "INSUFFICIENT"
+    assert art["coverage_diagnostics"]["acquisition"]["skip_reason_counts"] == {
+        "insufficient_technical_history": 2}
+
+
+def test_source_failure_has_its_own_code(tmp_path, monkeypatch):
+    _stub_with_health(monkeypatch, {}, "SOURCE_FAILURE", usable=[],
+                      skipped={"AAA": "fetch_failed", "BBB": "fetch_failed"})
+    result = dp.run_daily_radar(_date(19), out_dir=str(tmp_path), dry_run=True)
+    assert result.pipeline_status == "FAILED"
+    assert result.issues[0].code == "OHLCV_SOURCE_FAILURE"
+
+
+def test_failed_acquisition_never_overwrites_a_good_artifact(tmp_path, monkeypatch):
+    import json
+    import os
+    _stub_pipeline(monkeypatch, {_date(19): [make_candidate("AAA", _date(19))]})
+    good = dp.run_daily_radar(_date(19), out_dir=str(tmp_path))
+    assert good.pipeline_status != "FAILED"
+    _stub_with_health(monkeypatch, {}, "SOURCE_FAILURE", usable=[],
+                      skipped={"AAA": "fetch_failed", "BBB": "fetch_failed"})
+    dp.run_daily_radar(_date(19), out_dir=str(tmp_path))
+    path = os.path.join(str(tmp_path), "radar", f"daily_radar_{_date(19).isoformat()}.json")
+    assert json.load(open(path, encoding="utf-8"))["pipeline_status"] == good.pipeline_status
+
+
+def test_healthy_acquisition_with_zero_candidates_is_success(tmp_path, monkeypatch):
+    _stub_with_health(monkeypatch, {}, "HEALTHY", usable=list(UNIVERSE))
+    result = dp.run_daily_radar(_date(19), out_dir=str(tmp_path))
+    assert result.pipeline_status == "SUCCESS"
+    assert result.composite_candidate_count == 0
+    assert result.coverage_diagnostics["acquisition"]["health"] == "HEALTHY"
+    marker = _marker(tmp_path, _date(19))
+    assert marker is not None and marker.status == "COMPLETE" and marker.candidate_count == 0
+
+
+def test_partial_acquisition_is_degraded(tmp_path, monkeypatch):
+    _stub_with_health(monkeypatch, {_date(19): [make_candidate("AAA", _date(19))]}, "PARTIAL",
+                      usable=["AAA"], skipped={"BBB": "no_recap_row"})
+    result = dp.run_daily_radar(_date(19), out_dir=str(tmp_path))
+    assert result.pipeline_status == "DEGRADED"
+    assert "OHLCV_PARTIAL_COVERAGE" in [i.code for i in result.issues]
+    assert _marker(tmp_path, _date(19)).status == "COMPLETE"

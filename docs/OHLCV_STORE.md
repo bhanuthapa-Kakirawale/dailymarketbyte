@@ -307,3 +307,61 @@ follow-up, deliberately deferred rather than folded in here.
 - Index bars recovered from NSE's end-of-day file (VALIDATION_RULES section 10) are
   **never written to this store**. `source="yahoo"` rows remain exactly what Yahoo returned.
 
+
+## Acquisition health (Radar OHLCV acquisition reliability V1)
+
+**The defect (2026-10-05/06/08/12/19, 5 of the last 11 sessions at 0/200 usable).** Every
+evening every symbol is a *tail* symbol (the store has everything except today's bar), so
+`load_universe` calls `market.get_universe_technical_series(period=TAIL_FETCH_PERIOD="1mo")`.
+Yahoo serves `range=1mo` as a calendar month back from the **run's own date**, so the window
+holds 19-22 sessions depending on weekday and holidays. That function holds its own frame to
+`MIN_TECHNICAL_SESSIONS` (21) and, on a 19/20-session window, rejected **every** symbol as
+`insufficient_technical_history` - and `_finalize_symbol` used to trust a fetch's reason over the
+merged store history (~500 sessions). The provider had returned and written through every bar
+(e.g. "4000 bars persisted for 200 symbols" on 2026-10-19). Predicted outcome = actual outcome on
+14/14 tail-fetch sessions; a deterministic replay from the store reproduces 5/14 at 0/200 before
+the fix and 14/14 at 200/200 after.
+
+**The rule now.** A fetch's `insufficient_technical_history` describes its WINDOW, not the symbol:
+`_load_with_store` drops it (`coverage.fetch_window_short`) and `_finalize_symbol` judges the
+merged history under the SAME 21-session floor, recap-row and `prev_date` checks. Every other
+fetch reason (`no_recap_row`, `backfill_pending`, `date_gap`, `fetch_failed`, `malformed`) stays
+authoritative - deep history never stands in for a session bar the provider did not deliver. The
+post-re-read session-spine filter now actually reaches `_finalize_symbol` (it used to filter a
+throwaway dict, so a holiday placeholder such as 2026-10-02 could fake a universe-wide
+`date_gap` on the first session after the holiday).
+
+**Failure isolation.** In `market.get_universe_technical_series` and `_write_through_ohlcv`
+every per-symbol step is inside its own `try`: one malformed frame is `malformed` for that symbol
+only and is skipped by the write-through - it can no longer abort the fetch (which made
+`ohlcv_service` mark the whole bucket `fetch_failed`) or drop every bar from the write-through.
+
+**Stage counts** (`CoverageDiagnostics`, written to the Radar artifact as
+`coverage_diagnostics.acquisition`): `expected_universe` -> `cache_complete` (served from the
+store) / `fetch_requested` -> `provider_returned` (frames with any Close) -> `bars_written` ->
+`usable`, plus `fetch_window_short` and `skip_reason_counts` - "where did my 200 symbols go".
+
+**Health** (`ohlcv_service.AcquisitionHealth`, `classify_health`), no threshold of its own:
+
+| health | meaning | Radar |
+|---|---|---|
+| HEALTHY | usable >= 95% of requested (`market_structure.aggregator.MIN_COVERAGE_PCT`) | SUCCESS (0 candidates is a genuine quiet day) |
+| PARTIAL | 0 < usable < 95% | DEGRADED, issue `OHLCV_PARTIAL_COVERAGE` |
+| INSUFFICIENT | 0 usable, but data existed (provider frames / complete store symbols) | FAILED, `OHLCV_ACQUISITION_FAILED` |
+| SOURCE_FAILURE | 0 usable, nothing came back (empty response / fetch raised) | FAILED, `OHLCV_SOURCE_FAILURE` |
+
+A FAILED acquisition returns before Market Structure, candidate history and editorial
+selections are written: no `COMPLETE` marker (the candidate-history preflight / backfill retries
+it, and `radar.candidate_history_backfill` marks such a session `FAILED`), and
+`report_job.existing_radar` re-runs a FAILED Radar on the next pass (19:15 -> 19:30). The FAILED
+artifact is saved for diagnosis but never over an existing non-FAILED one.
+
+**No retry was added.** The five 0/200 sessions were deterministic (the window), not transient.
+
+**Troubleshooting.** `python -m radar.acquisition_diagnostics [--sessions 20] [--json]` -
+read-only (no network, no write): one row per session with Radar status, health, usable/expected,
+candidate count, the `candidate_history_runs` marker, every REPORT-job attempt, and the rejected
+reasons. Artifacts written before V1 have no `acquisition` block; their health is inferred from
+the recorded usable/requested counts and marked `*`. The `COMPLETE(0)` markers already recorded
+for 2026-10-05/06/08/12/19 are history and were not rewritten; re-processing them is the manual
+`CandidateHistoryStore.invalidate_sessions` + backfill decision, never automatic.

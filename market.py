@@ -732,9 +732,11 @@ def get_movers_audited(universe: dict, recap_date: dt.date, prev_date: dt.date, 
 
     raw = retry(_fetch)
     rows, skipped_gap, pending_backfill, malformed = [], [], [], []
+    returned, gap_prev_seen = 0, {}
     align = AlignmentAudit()
     for attempt in range(3):
         rows, skipped_gap, pending_backfill, malformed = [], [], [], []
+        returned, gap_prev_seen = 0, {}
         align = AlignmentAudit()
         for s in syms:
             try:
@@ -742,6 +744,7 @@ def get_movers_audited(universe: dict, recap_date: dt.date, prev_date: dt.date, 
             except Exception:
                 continue
             try:
+                returned += bool(full["Close"].notna().any())
                 has_recap_row = recap_date in {ts.date() for ts in _normalize_index(full).index}
                 d = _prepare_series(full, recap_date, calendar, align)
             except Exception:
@@ -753,6 +756,8 @@ def get_movers_audited(universe: dict, recap_date: dt.date, prev_date: dt.date, 
                 continue
             if d.index[-2].date() != prev_date:
                 skipped_gap.append(s)
+                seen = d.index[-2].date().isoformat()
+                gap_prev_seen[seen] = gap_prev_seen.get(seen, 0) + 1
                 continue
             try:
                 c, v = d.Close, d.Volume
@@ -780,7 +785,10 @@ def get_movers_audited(universe: dict, recap_date: dt.date, prev_date: dt.date, 
     if malformed:
         print(f"[market] excluded {len(malformed)} malformed stock series: {malformed}")
     if len(rows) < 2 * n:
-        raise RuntimeError(f"Only {len(rows)} stocks had clean data for {recap_date}")
+        raise RuntimeError(_movers_shortfall_message(
+            recap_date, prev_date, expected=len(syms), clean=len(rows), returned=returned,
+            date_gap=len(skipped_gap), backfill_pending=len(pending_backfill),
+            malformed=len(malformed), gap_prev_seen=gap_prev_seen))
     valid, excluded = [], []
     for r in rows:
         verdict = validate_move(close=r["close"], prev_close=r["prev_close"], open_=r["open"],
@@ -809,6 +817,38 @@ def get_movers_audited(universe: dict, recap_date: dt.date, prev_date: dt.date, 
         return [], [], audit
     df = pd.DataFrame(valid).sort_values("pct", ascending=False)
     return df.head(n).to_dict("records"), df.tail(n).iloc[::-1].to_dict("records"), audit
+
+
+def movers_primary_cause(*, returned: int, clean: int, date_gap: int, backfill_pending: int,
+                         malformed: int) -> str:
+    """The stage where most of the universe was lost - deterministic, for the error message."""
+    if returned == 0:
+        return "PROVIDER_EMPTY_RESPONSE"
+    lost = {"SESSION_DATE_MISMATCH": date_gap, "PARTIAL_CURRENT_SESSION": backfill_pending,
+            "CLEANER_REJECTED": malformed,
+            "MISSING_FINAL_BAR": returned - clean - date_gap - backfill_pending - malformed}
+    cause, count = max(lost.items(), key=lambda kv: kv[1])
+    return cause if count > 0 else "UNKNOWN"
+
+
+def _movers_shortfall_message(recap_date, prev_date, *, expected: int, clean: int, returned: int,
+                              date_gap: int, backfill_pending: int, malformed: int,
+                              gap_prev_seen: dict) -> str:
+    """"Only k/N stocks had clean data" plus WHERE the universe was lost (Radar OHLCV acquisition
+    reliability V1): one line, no per-symbol dump. `prev_row_seen` is the previous-session date
+    the date-gapped frames actually carried (expected: `prev_date`) - the one fact that tells a
+    provider dropping a session apart from a calendar problem."""
+    cause = movers_primary_cause(returned=returned, clean=clean, date_gap=date_gap,
+                                 backfill_pending=backfill_pending, malformed=malformed)
+    msg = (f"Only {clean}/{expected} stocks had clean data for {recap_date}: "
+           f"provider_returned={returned} date_gap={date_gap} "
+           f"backfill_pending={backfill_pending} malformed={malformed} "
+           f"primary_cause={cause}")
+    if gap_prev_seen:
+        top = sorted(gap_prev_seen.items(), key=lambda kv: (-kv[1], kv[0]))[:2]
+        msg += (f" prev_row_seen={','.join(f'{d}x{c}' for d, c in top)}"
+                f" (expected {prev_date})")
+    return msg
 
 
 def _alignment_status(align, skipped_gap, malformed) -> str:
@@ -908,7 +948,8 @@ MIN_TECHNICAL_SESSIONS = 21
 
 
 def get_universe_technical_series(universe: dict, recap_date: dt.date, prev_date: dt.date,
-                                  period: str = "1y", session_dates=None, audit=None):
+                                  period: str = "1y", session_dates=None, audit=None,
+                                  stats: dict | None = None):
     """Per-symbol OHLC session history for the Market Intelligence Radar's technical-structure
     detector (Phase 4.2 Packet 2) - close/high/low across the whole bulk-fetched window, not
     just today's row.
@@ -930,47 +971,66 @@ def get_universe_technical_series(universe: dict, recap_date: dt.date, prev_date
               fetch - the technical-structure windows below never read these two fields.
       skip_reasons: "no_recap_row" | "backfill_pending" | "date_gap" (same vocabulary as
                     `get_universe_relative_volume`) plus "insufficient_technical_history" when
-                    fewer than `MIN_TECHNICAL_SESSIONS` valid sessions remain - too little even
-                    for the 20-session detector, the shortest one this package implements.
+                    fewer than `MIN_TECHNICAL_SESSIONS` valid sessions remain IN THIS FETCH'S
+                    WINDOW (a short `period` window can trip this for every symbol at once -
+                    `radar.ohlcv_service` therefore re-judges it over the merged store
+                    history), plus "malformed" for one symbol whose frame raised while being
+                    read - isolated to that symbol, never the whole batch.
+
+    `stats` (optional out-param, Radar OHLCV acquisition reliability V1): when given, it is
+    filled with stage counts for "where did the universe go" diagnostics - `provider_returned`
+    (symbols whose frame came back with at least one Close), `provider_recap_row` (symbols whose
+    frame has a `recap_date` row at all), `fetch_attempts` (bulk downloads made) and
+    `written_through` (bars persisted). Return values are identical with or without it.
     """
     syms = list(universe)
     calendar = session_calendar(session_dates)
     raw = _bulk_download_universe_ohlcv(syms, period=period)
+    attempts = 1
 
     series, skip_reasons, pending_backfill = {}, {}, []
+    returned, recap_rows = set(), set()
     for attempt in range(3):
         series, skip_reasons, pending_backfill = {}, {}, []
+        returned, recap_rows = set(), set()
         for s in syms:
             try:
                 full = raw[s + ".NS"][["Open", "High", "Low", "Close", "Volume"]]
             except Exception:
                 skip_reasons[s] = "no_recap_row"
                 continue
-            has_recap_row = recap_date in {ts.date() for ts in _normalize_index(full).index}
+            # Everything per-symbol below sits inside ONE try: a symbol whose frame raises
+            # anywhere (unparseable index, non-numeric cell) is excluded on its own - it must
+            # never abort the loop and take the other ~199 symbols with it.
             try:
+                if full["Close"].notna().any():
+                    returned.add(s)
+                has_recap_row = recap_date in {ts.date() for ts in _normalize_index(full).index}
+                if has_recap_row:
+                    recap_rows.add(s)
                 # Non-session provider rows out BEFORE the [-2] == prev_date check and before
                 # any window (RVOL's prior 20, SMA/range) counts sessions.
                 d = _prepare_series(full, recap_date, calendar,
                                     audit if attempt == 0 else None)
+                if len(d) < 3 or d.index[-1].date() != recap_date:
+                    if has_recap_row:
+                        pending_backfill.append(s)
+                        skip_reasons[s] = "backfill_pending"
+                    else:
+                        skip_reasons[s] = "no_recap_row"
+                    continue
+                if d.index[-2].date() != prev_date:
+                    skip_reasons[s] = "date_gap"
+                    continue
+                rows = [{"date": ts.date(),
+                        "open": None if pd.isna(r.Open) else float(r.Open),
+                        "high": float(r.High), "low": float(r.Low), "close": float(r.Close),
+                        "volume": None if pd.isna(r.Volume) else float(r.Volume)}
+                       for ts, r in d.iterrows()
+                       if r.High >= r.Low and r.High > 0 and r.Low > 0 and r.Close > 0]
             except Exception:
-                skip_reasons[s] = "no_recap_row"
+                skip_reasons[s] = "malformed"
                 continue
-            if len(d) < 3 or d.index[-1].date() != recap_date:
-                if has_recap_row:
-                    pending_backfill.append(s)
-                    skip_reasons[s] = "backfill_pending"
-                else:
-                    skip_reasons[s] = "no_recap_row"
-                continue
-            if d.index[-2].date() != prev_date:
-                skip_reasons[s] = "date_gap"
-                continue
-            rows = [{"date": ts.date(),
-                    "open": None if pd.isna(r.Open) else float(r.Open),
-                    "high": float(r.High), "low": float(r.Low), "close": float(r.Close),
-                    "volume": None if pd.isna(r.Volume) else float(r.Volume)}
-                   for ts, r in d.iterrows()
-                   if r.High >= r.Low and r.High > 0 and r.Low > 0 and r.Close > 0]
             if len(rows) < MIN_TECHNICAL_SESSIONS:
                 skip_reasons[s] = "insufficient_technical_history"
                 continue
@@ -983,14 +1043,19 @@ def get_universe_technical_series(universe: dict, recap_date: dt.date, prev_date
               f"(attempt {attempt + 1}/3)")
         time.sleep(wait)
         raw = _bulk_download_universe_ohlcv(syms, period=period)
+        attempts += 1
 
+    written = 0
     try:
-        _write_through_ohlcv(raw, syms, recap_date)
+        written = _write_through_ohlcv(raw, syms, recap_date) or 0
     except Exception as exc:
         # Storage failure must never take down the acquisition it rides on (Phase 4.2
         # Packet 5.2, section 9) - `_write_through_ohlcv` already guards internally, this is
         # defense in depth so a future edit inside it can't regress that guarantee silently.
         print(f"[market] OHLCV write-through raised unexpectedly, ignoring: {exc}")
+    if stats is not None:
+        stats.update(provider_returned=len(returned), provider_recap_row=len(recap_rows),
+                     fetch_attempts=attempts, written_through=written)
     return series, skip_reasons
 
 
@@ -1002,6 +1067,10 @@ def _write_through_ohlcv(raw, syms: list, recap_date: dt.date, source: str = "ya
     Write-only from acquisition's point of view: nothing here is read back to influence
     `series`/`skip_reasons`, and this function is a pure log-and-return-on-failure - it must
     never raise and never change acquisition's returned values (section 9).
+
+    Returns the number of bars persisted (0 on any store failure). A symbol whose frame raises
+    while its bars are built is skipped and named in the log - one malformed symbol must never
+    drop every other symbol's bars from the write-through.
     """
     try:
         from config import OUT_DIR
@@ -1009,7 +1078,7 @@ def _write_through_ohlcv(raw, syms: list, recap_date: dt.date, source: str = "ya
         from storage.ohlcv_repository import OHLCVStore, default_db_path
     except Exception as exc:
         print(f"[market] OHLCV store unavailable, skipping write-through: {exc}")
-        return
+        return 0
 
     retrieved_at = dt.datetime.now(dt.timezone.utc)
     # `_clean`'s rule, applied to the cache too: a session still trading is never persisted as a
@@ -1018,7 +1087,7 @@ def _write_through_ohlcv(raw, syms: list, recap_date: dt.date, source: str = "ya
     # warm-cache read would have treated as that session's final closes.
     now = now_ist()
     in_progress = now.date() if session_in_progress(now.date(), now) else None
-    bars = []
+    bars, malformed = [], []
     for s in syms:
         try:
             full = raw[s + ".NS"][["Open", "High", "Low", "Close", "Volume"]]
@@ -1030,38 +1099,51 @@ def _write_through_ohlcv(raw, syms: list, recap_date: dt.date, source: str = "ya
                                  low=None, close=None, volume=None, source=source,
                                  retrieved_at=retrieved_at, quality_status=QualityStatus.NO_DATA))
             continue
-        for ts, r in _normalize_index(full).iterrows():
-            if ts.date() == in_progress:
-                continue
-            close = None if pd.isna(r.Close) else float(r.Close)
-            open_ = None if pd.isna(r.Open) else float(r.Open)
-            high = None if pd.isna(r.High) else float(r.High)
-            low = None if pd.isna(r.Low) else float(r.Low)
-            volume = None if pd.isna(r.Volume) else float(r.Volume)
-            if close is None:
-                # Open/High/Low/Volume populated but Close still NaN: the known Yahoo
-                # backfill-lag signature (see market.py module notes) - never a valid OK row.
-                quality = QualityStatus.BACKFILL_PENDING
-            elif high is not None and low is not None and high >= low and high > 0 and low > 0:
-                quality = QualityStatus.OK
-            else:
-                continue  # not a usable or informative row - skip rather than guess a status
-            bars.append(OHLCVBar(symbol=s, session_date=ts.date(), open=open_, high=high,
-                                 low=low, close=close, volume=volume, source=source,
-                                 retrieved_at=retrieved_at, quality_status=quality))
+        symbol_bars = []
+        try:
+            for ts, r in _normalize_index(full).iterrows():
+                if ts.date() == in_progress:
+                    continue
+                close = None if pd.isna(r.Close) else float(r.Close)
+                open_ = None if pd.isna(r.Open) else float(r.Open)
+                high = None if pd.isna(r.High) else float(r.High)
+                low = None if pd.isna(r.Low) else float(r.Low)
+                volume = None if pd.isna(r.Volume) else float(r.Volume)
+                if close is None:
+                    # Open/High/Low/Volume populated but Close still NaN: the known Yahoo
+                    # backfill-lag signature (see market.py module notes) - never a valid OK row.
+                    quality = QualityStatus.BACKFILL_PENDING
+                elif high is not None and low is not None and high >= low and high > 0 and low > 0:
+                    quality = QualityStatus.OK
+                else:
+                    continue  # not a usable or informative row - skip rather than guess a status
+                symbol_bars.append(OHLCVBar(symbol=s, session_date=ts.date(), open=open_,
+                                            high=high, low=low, close=close, volume=volume,
+                                            source=source, retrieved_at=retrieved_at,
+                                            quality_status=quality))
+        except Exception:
+            malformed.append(s)
+            continue
+        bars.extend(symbol_bars)
+    if malformed:
+        print(f"[market] OHLCV write-through skipped {len(malformed)} malformed symbol "
+              f"frame(s): {malformed}")
 
     try:
         store = OHLCVStore(default_db_path(OUT_DIR))
     except Exception as exc:
         print(f"[market] OHLCV store unavailable, skipping write-through: {exc}")
-        return
+        return 0
+    n = 0
     try:
         n = store.upsert_bars(bars)
         print(f"[market] OHLCV write-through: {n} bars persisted for {len(syms)} symbols")
     except Exception as exc:
         print(f"[market] OHLCV write-through failed: {exc}")
+        n = 0
     finally:
         store.close()
+    return n
 
 
 # ----------------------------------------------------------------------------- analysis

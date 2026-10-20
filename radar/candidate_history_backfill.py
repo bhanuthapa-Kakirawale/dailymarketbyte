@@ -220,6 +220,16 @@ def backfill_candidate_history(*, spine: list, universe: dict, benchmark_series:
                 result.cache_hits += 1
             result.warnings.extend(f"{session_date}: {w}" for w in detector_output.warnings)
 
+            # Radar OHLCV acquisition reliability V1: an acquisition that delivered no usable
+            # symbol is FAILED (retryable), never a COMPLETE session with zero candidates.
+            dataset = detector_output.dataset
+            if universe and dp.acquisition_health(dataset) in dp.ohlcv_service.AcquisitionHealth.FAILED:
+                result.failed_sessions.append(session_date)
+                result.warnings.append(f"{session_date}: " + dp.acquisition_failure_message(
+                    session_date, dp.acquisition_summary(dataset)))
+                store.mark_run(session_date, calculation_version, RunStatus.FAILED, 0, as_of)
+                continue
+
             candidates = detector_output.composite_snapshot.candidates
             try:
                 # Candidates persisted BEFORE the COMPLETE marker - see docstring above.

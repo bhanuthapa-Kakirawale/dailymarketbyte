@@ -486,6 +486,88 @@ def save_artifact(result: DailyRadarResult, out_dir: str = ARTIFACT_DIR) -> str:
     return path
 
 
+def acquisition_summary(dataset) -> dict:
+    """Compact "where did the requested universe go" block for the artifact (Radar OHLCV
+    acquisition reliability V1) - stage counts + reason counts, never a per-symbol dump."""
+    cov = dataset.coverage
+    get = lambda name, default=0: getattr(cov, name, default)  # noqa: E731 - older dataset shapes
+    return {"health": acquisition_health(dataset),
+            "expected_universe": get("requested_symbols", len(dataset.requested_symbols)),
+            "cache_complete": get("cache_complete"), "fetch_requested": get("fetch_requested"),
+            "provider_returned": get("provider_returned"), "bars_written": get("bars_written"),
+            "fetch_window_short": get("fetch_window_short"),
+            "usable": len(dataset.series_by_symbol), "rejected": len(dataset.skipped_symbols),
+            "skip_reason_counts": dict(get("skip_reason_counts", {}))}
+
+
+def acquisition_health(dataset) -> str:
+    """`ohlcv_service.AcquisitionHealth` of a loaded dataset ("" for a dataset that predates it)."""
+    return getattr(dataset.coverage, "health", "") or ""
+
+
+def acquisition_failure_message(session_date, summary: dict) -> str:
+    reasons = ", ".join(f"{k}={v}" for k, v in sorted(
+        summary["skip_reason_counts"].items(), key=lambda kv: (-kv[1], kv[0]))[:3]) or "none"
+    return (f"OHLCV acquisition {summary['health']}: 0/{summary['expected_universe']} usable "
+            f"symbols for {session_date} (provider_returned={summary['provider_returned']}, "
+            f"bars_written={summary['bars_written']}, rejected: {reasons}) - the Radar could not "
+            "analyse this session; this is NOT a zero-candidate session")
+
+
+def _acquisition_failed_result(session_date: dt.date, as_of: dt.datetime, detector_output,
+                               *, dry_run: bool, timings: dict, network_calls: dict,
+                               warnings: list, out_dir: str) -> DailyRadarResult:
+    """FAILED result for an INSUFFICIENT/SOURCE_FAILURE acquisition, returned BEFORE Market
+    Structure, candidate history and editorial selections are written: a session whose OHLCV
+    never arrived must stay retryable (`report_job.existing_radar` re-runs a FAILED Radar; the
+    candidate-history preflight re-backfills a session with no COMPLETE marker) instead of being
+    recorded as a genuine quiet day with zero candidates."""
+    dataset = detector_output.dataset
+    summary = acquisition_summary(dataset)
+    message = acquisition_failure_message(session_date, summary)
+    code = ("OHLCV_SOURCE_FAILURE" if summary["health"] == ohlcv_service.AcquisitionHealth.SOURCE_FAILURE
+            else "OHLCV_ACQUISITION_FAILED")
+    issues = [PipelineIssue(code=code, severity=IssueSeverity.ERROR.value, message=message,
+                            stage="ohlcv_acquisition")]
+    issues += _issues_from_warnings(list(dataset.warnings), stage="ohlcv_acquisition")
+    alignment = detector_output.alignment_report
+    result = DailyRadarResult(
+        session_date=session_date.isoformat(), generated_at=as_of.isoformat(),
+        pipeline_status="FAILED", dry_run=dry_run,
+        universe_requested=len(dataset.requested_symbols), universe_usable=0,
+        volume_event_count=0, technical_event_count=0, relative_count=0,
+        composite_candidate_count=0, novel_candidate_count=0, continuation_count=0,
+        editorial_selection_count=0,
+        coverage_diagnostics={
+            "requested_symbols": len(dataset.requested_symbols), "usable_symbols": 0,
+            "skipped_symbols": len(dataset.skipped_symbols),
+            "cache_complete": dataset.coverage.cache_complete,
+            "cache_partial": dataset.coverage.cache_partial,
+            "cache_miss": dataset.coverage.cache_miss,
+            "alignment_symbols_filtered": alignment.symbols_filtered,
+            "alignment_rows_dropped": alignment.rows_dropped,
+            "acquisition": summary},
+        issues=issues,
+        pipeline_diagnostics={"stage_timings_ms": timings, "network_calls": network_calls},
+        warnings=[message] + list(warnings) + list(dataset.warnings))
+    if not dry_run:
+        _save_failed_artifact(result, os.path.join(out_dir, "radar"))
+    return result
+
+
+def _save_failed_artifact(result: DailyRadarResult, radar_dir: str) -> None:
+    """Persist a FAILED acquisition for diagnosis - but never over an existing non-FAILED
+    artifact for the same session (a failed manual rerun must not erase a good result)."""
+    path = os.path.join(radar_dir, f"daily_radar_{result.session_date}.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            if json.load(fh).get("pipeline_status") != "FAILED":
+                return
+    except (OSError, ValueError):
+        pass
+    save_artifact(result, radar_dir)
+
+
 # ------------------------------------------------------------------ production entry point
 def _market_structure_step(universe_name, session_date, prev_date, detector_output,
                            out_dir, universe=None, spine=None) -> dict:
@@ -560,6 +642,11 @@ def run_daily_radar(session_date: dt.date | None = None, *, universe_name: str =
     except Exception as exc:
         return _failed_result(session_date, as_of, f"benchmark/spine acquisition failed: {exc}",
                               dry_run=dry_run, issue_code="BENCHMARK_SPINE_ACQUISITION_FAILED")
+    if session_date is not None:
+        # explicit session the Yahoo benchmark lags behind: the validated NSE recap close (the
+        # same rule main.collect uses) - no-op, no network, when the series already covers it
+        benchmark_series_full = relative_acquisition.extend_benchmark_to_session(
+            benchmark_series_full, session_date)
     spine = session_alignment.canonical_session_list(benchmark_series_full)
     timings["benchmark_ms"] = round((time.time() - t0) * 1000, 1)
     for rec in relative_acquisition.last_benchmark_recovery():
@@ -610,6 +697,15 @@ def run_daily_radar(session_date: dt.date | None = None, *, universe_name: str =
     composite_snapshot = detector_output.composite_snapshot
     timings.update(detector_output.timings)
     network_calls["universe_yahoo"] = detector_output.network_calls["universe_yahoo"]
+
+    # ---- acquisition health gate (Radar OHLCV acquisition reliability V1) ----
+    # An analysis that never received its OHLCV is a FAILED Radar, never a healthy zero-candidate
+    # day - stop before Market Structure / candidate history / editorial selections record it.
+    if universe and acquisition_health(dataset) in ohlcv_service.AcquisitionHealth.FAILED:
+        timings["total_ms"] = round((time.time() - t_start) * 1000, 1)
+        return _acquisition_failed_result(session_date, as_of, detector_output, dry_run=dry_run,
+                                          timings=timings, network_calls=network_calls,
+                                          warnings=warnings, out_dir=out_dir)
 
     # ---- public Market Structure (additive): counts over the SAME detector output, per named
     # universe, saved as an internal artifact. Never fatal, never a second detector, no fetch.
@@ -746,6 +842,7 @@ def run_daily_radar(session_date: dt.date | None = None, *, universe_name: str =
         "cache_miss": dataset.coverage.cache_miss,
         "alignment_symbols_filtered": alignment_report.symbols_filtered,
         "alignment_rows_dropped": alignment_report.rows_dropped,
+        "acquisition": acquisition_summary(dataset),
     }
     timings["total_ms"] = round((time.time() - t_start) * 1000, 1)
 
@@ -773,6 +870,14 @@ def run_daily_radar(session_date: dt.date | None = None, *, universe_name: str =
     if not universe:
         issues.append(PipelineIssue(code="EMPTY_UNIVERSE", severity=IssueSeverity.WARNING.value,
                                     message="universe is empty", stage="universe"))
+    if acquisition_health(dataset) == ohlcv_service.AcquisitionHealth.PARTIAL:
+        summary = acquisition_summary(dataset)
+        issues.append(PipelineIssue(
+            code="OHLCV_PARTIAL_COVERAGE", severity=IssueSeverity.WARNING.value,
+            message=(f"OHLCV acquisition PARTIAL: {summary['usable']}/"
+                     f"{summary['expected_universe']} usable symbols "
+                     f"(rejected: {summary['skip_reason_counts']})"),
+            stage="ohlcv_acquisition"))
     if selection_result.degraded:
         issues.append(PipelineIssue(code="EDITORIAL_SELECTION_DEGRADED",
                                     severity=IssueSeverity.WARNING.value,

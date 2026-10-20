@@ -36,6 +36,13 @@ def test_coverage_gap_is_true_only_for_a_completed_run_with_a_real_shortfall():
     assert radar_health.coverage_gap(not_success) is False
     assert radar_health.coverage_gap(no_universe) is False
     assert radar_health.coverage_gap(None) is False
+    # Radar OHLCV acquisition reliability V1: a partial acquisition now runs DEGRADED
+    degraded_partial = {"pipeline_status": "DEGRADED", "universe_requested": 200,
+                        "universe_usable": 150}
+    degraded_full = {"pipeline_status": "DEGRADED", "universe_requested": 200,
+                     "universe_usable": 200}
+    assert radar_health.coverage_gap(degraded_partial) is True
+    assert radar_health.coverage_gap(degraded_full) is False
 
 
 # ------------------------------------------------------------------ fixture helpers

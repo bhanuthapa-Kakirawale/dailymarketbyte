@@ -489,7 +489,10 @@ FROZEN = {
     "daily_video/composer.py": "4bc8d5f95505cc47764e42fe06740037b2b1d800609b2e7ab2c84e8bee49ccce",
     "daily_video/hook_kit.py": "65054d18a31ce549a9da2ea5adbdcadda7fc9e1366283fcff0d71c462e688cee",
     "daily_video/hook_scene.py": "f6af246492bc2d0d5b92f24b18ed84cccd7fdbfddd99f26930ec865d88759d2f",
-    "daily_video/market_scenes.py": "e2b981425c12d98def8ed3da62d58a405f54eaab411c168bbd4b8f669820e12d",
+    # Re-pinned 2026-10-23 with owner approval: the Market Pulse day-range strip lays its OPEN /
+    # CLOSE labels out as one non-overlapping group when the two markers nearly coincide (2026-10-22
+    # POST failed freeze-frame QA, open-close 0.1 pt). The ordinary layout is unchanged.
+    "daily_video/market_scenes.py": "c59eb8069b35c63495504b82867dc9d6254b9d12ff8949c3d86cafa5f8eaca67",
     "daily_video/pre_scenes.py": "87ad294e425015ea8bf3e1db150dc69d3de06865010af150d0487117077d70c3",
     # Re-pinned 2026-10-05 with owner approval: Institutional Flow Intelligence V1
     # (feature/institutional-flow-intelligence-v1) - pre_provenance() reads a CDSL/NSDL FLOWS

@@ -115,17 +115,26 @@ class MarketPulseScene(Scene):
             ctx.ink.text(ctx.d, (x1 - tlen(tx["high_label"], fs) / 2, y + 38), tx["high_label"], fs,
                          theme.TEXT_SECONDARY, "label")
         fl = font(theme.T_LABEL)
-        # the left-most marker's label runs left, the right-most runs right: never collide
-        left_is_open = xo <= xc
-        for label, x, p, is_left in ((tx["open_label"], xo, po, left_is_open),
-                                     (tx["close_label"], xc, pm, not left_is_open)):
+        # the left-most marker's label runs left, the right-most runs right; when the open and
+        # close sit (almost) on top of each other the two still meet over the markers (22 Oct
+        # 2026: open-close gap < 20 px failed freeze-frame QA), so then the pair is laid out as
+        # one group centred on the markers, a fixed gap apart, kept inside the card
+        left, right = ("open", "close") if xo <= xc else ("close", "open")
+        xm = {"open": xo, "close": xc}
+        w = {k: tlen(tx[f"{k}_label"], fl) for k in xm}
+        lo_x, hi_x = self.SUPPORT[0] + 20, self.SUPPORT[2] - 20
+        pos = {left: min(max(xm[left] - w[left] + 10, lo_x), hi_x - w[left]),
+               right: min(max(xm[right] - 10, lo_x), hi_x - w[right])}
+        gap = 24
+        if pos[left] + w[left] + gap > pos[right]:
+            span = w[left] + gap + w[right]
+            gx = min(max((xo + xc) / 2 - span / 2, lo_x), hi_x - span)
+            pos = {left: gx, right: gx + w[left] + gap}
+        for k, p in (("open", po), ("close", pm)):
             if p <= 0:
                 continue
-            w = tlen(label, fl)
-            lx = (x - w + 10) if is_left else (x - 10)
-            lx = min(max(lx, self.SUPPORT[0] + 20), self.SUPPORT[2] - 20 - w)
-            ctx.ink.text(ctx.d, (lx, y - 72), label, fl,
-                         alpha(col if label == tx["close_label"] else theme.TEXT_SECONDARY, p), "label")
+            ctx.ink.text(ctx.d, (pos[k], y - 72), tx[f"{k}_label"], fl,
+                         alpha(col if k == "close" else theme.TEXT_SECONDARY, p), "label")
 
 
 # --------------------------------------------------------------------------- Nifty chart story

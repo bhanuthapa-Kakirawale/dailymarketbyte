@@ -215,8 +215,32 @@ def post_fatal(m: dict | None, session: str, report_id: str, *, rendered_now: bo
                 f"(report_source {m.get('report_source')})")
     ok, verdict = post_content_verdict(m)
     if not ok:
-        return f"POST QA / content failure (audit {verdict})"
+        return f"POST QA / content failure: {'; '.join(post_failed_gates(m))} (audit {verdict})"
     return None
+
+
+def post_failed_gates(m: dict) -> list:
+    """Which of `post_content_verdict`'s gates failed, by name - the audit verdict alone hid a
+    freeze-frame failure behind "audit RIGHTS_BLOCK_ONLY" (2026-10-22)."""
+    from operations.daily_check import audit_verdict
+    qa = m.get("qa") or {}
+    pa = m.get("publication_audit") or {}
+    frames = qa.get("frames_qa") or {}
+    out = []
+    if qa.get("video_qa") != "PASS":
+        out.append(f"video QA {qa.get('video_qa')} {qa.get('video_qa_blocking') or ''}".rstrip())
+    if not frames.get("passed"):
+        raw = frames.get("issues") or {}
+        issues = "; ".join(f"{k}: {v if isinstance(v, str) else ', '.join(map(str, v))}"
+                           for k, v in raw.items()) if isinstance(raw, dict) else str(raw)
+        out.append("freeze-frame QA failed" + (f" ({issues})" if issues else ""))
+    if qa.get("content_qa") != "SAFE":
+        out.append(f"final content scan {qa.get('content_qa')}")
+    verdict = audit_verdict(pa.get("final"), pa.get("failed_checks"))
+    if verdict not in ("PASS", "RIGHTS_BLOCK_ONLY"):
+        out.append(f"publication audit {pa.get('final')}: "
+                   f"{', '.join(pa.get('failed_checks') or []) or 'no failed checks recorded'}")
+    return out or ["unknown"]
 
 
 # --------------------------------------------------------------------------- the run

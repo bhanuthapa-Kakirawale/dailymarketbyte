@@ -82,16 +82,18 @@ def test_overall_attention_on_business_blocked(tmp_path):
     pre_latest_dir = os.path.join(business_root, "production_runs", "PRE")
     os.makedirs(pre_latest_dir, exist_ok=True)
     with open(os.path.join(pre_latest_dir, "latest.json"), "w", encoding="utf-8") as fh:
-        json.dump({"orchestrator_status": "BLOCKED", "started_at": "2026-10-09T01:00:00+00:00"},
+        json.dump({"orchestrator_status": "BLOCKED", "started_at": "2026-10-09T01:35:00+00:00"},
                  fh)
     # A business result only ever appears today because the scheduler's OWN run record for
     # this job is also from today - the runner always writes its own record before invoking
     # the child that eventually updates the business latest.json.
     from shadow_scheduler.models import CHILD_NONZERO, RunRecord
+    # PK-OPS-1: an in-window (07:05 IST) PRE run, observed afterwards (07:30) - a record invoked
+    # after `now`, or outside PRE's own window, is never today's scheduled execution.
     records.write_record(out_dir, RunRecord(job="pre", run_id="r1",
-                                            started_at="2026-10-09T01:00:00+00:00",
+                                            started_at="2026-10-09T01:35:00+00:00",
                                             runner_status=CHILD_NONZERO, child_exit_code=20))
-    now_ist = dt.datetime(2026, 10, 9, 6, 0, tzinfo=IST)
+    now_ist = dt.datetime(2026, 10, 9, 7, 30, tzinfo=IST)
     s = status.overall_status(out_dir, business_root=business_root, now=now_ist,
                               calendar=_FixedCalendar(True))
     assert s["overall"] == ATTENTION
@@ -114,7 +116,9 @@ def test_overall_broken_on_a_runner_infra_failure(tmp_path):
     rec = RunRecord(job="post", run_id="r1", started_at="2026-10-09T01:00:00+00:00",
                     runner_status=FAILED, error="boom")
     records.write_record(out_dir, rec)
-    now_ist = dt.datetime(2026, 10, 9, 6, 0, tzinfo=IST)
+    # PK-OPS-1: observed after the (06:30 IST) invocation - an infra FAILED record is BROKEN
+    # whichever occurrence it is attributed to.
+    now_ist = dt.datetime(2026, 10, 9, 6, 45, tzinfo=IST)
     s = status.overall_status(out_dir, business_root=business_root, now=now_ist,
                               calendar=_FixedCalendar(True))
     assert s["overall"] == BROKEN

@@ -40,8 +40,23 @@ RUNNING, COMPLETED, CHILD_NONZERO, LOCKED, FAILED, EXPIRED = (
 # (shadow_scheduler.config.DEPENDENCIES).
 WAITING_DEPENDENCY, DEPENDENCY_FAILED = "WAITING_DEPENDENCY", "DEPENDENCY_FAILED"
 
+# PK-OPS-1 (2026-10-24): two more terminal outcomes.
+# EARLY - invoked BEFORE its occurrence's window_start (`config.resolve_occurrence` class
+#   EARLY): the child was deliberately never launched, nothing was waited for, nothing is
+#   rescheduled. Never a successful scheduled execution, never retried (exit 0, like EXPIRED).
+#   An out-of-window invocation that belongs to a PAST occurrence (e.g. last night's job fired
+#   by StartWhenAvailable at 06:48) is EXPIRED, never EARLY - see config.resolve_occurrence.
+# ABANDONED - never written by the runner itself. It is the EFFECTIVE status of a RUNNING /
+#   WAITING_DEPENDENCY checkpoint whose owning runner is verifiably gone on this host (see
+#   shadow_scheduler/orphans.py), and it exists only through an APPEND-ONLY reconciliation
+#   marker (`reconciliations/<run_id>.json`): the original run file is never rewritten, so the
+#   checkpoint it left behind stays the evidence. Never a success - nothing is claimed about
+#   what the child did.
+EARLY, ABANDONED = "EARLY", "ABANDONED"
+
 TERMINAL_STATUSES = frozenset({COMPLETED, CHILD_NONZERO, LOCKED, FAILED, EXPIRED,
-                               DEPENDENCY_FAILED})
+                               DEPENDENCY_FAILED, EARLY, ABANDONED})
+NON_TERMINAL_STATUSES = frozenset({RUNNING, WAITING_DEPENDENCY})
 
 # Infra-only exit codes, used ONLY when no child exit code exists to propagate (lock timeout,
 # launch failure before/while starting the subprocess, or a dependency that never became
@@ -59,6 +74,7 @@ INFRA_EXIT_CODES = {LOCKED: 3, FAILED: 4, DEPENDENCY_FAILED: 5}
 # opportunity, not a crash. The run record's `runner_status` field (EXPIRED, never COMPLETED)
 # is what actually distinguishes it from an ordinary successful run.
 EXPIRED_EXIT_CODE = 0
+EARLY_EXIT_CODE = 0
 
 # status.py's own per-job/overall health vocabulary (distinct again from runner_status and
 # from business readiness). WAITING is new (PK-E follow-up): "scheduled_time <= now <
@@ -118,6 +134,22 @@ class RunRecord:
     dependency_run_id: str | None = None    # the upstream job's own run_id, once SATISFIED
     dependency_wait_seconds: float | None = None
     dependency_satisfied_at: str | None = None   # UTC ISO-8601, only when SATISFIED
+    # Scheduled-occurrence identity (PK-OPS-1, 2026-10-24) - see config.resolve_occurrence.
+    # `window_start`/`window_end` above are now the ATTRIBUTED occurrence's window (before this
+    # change they were always computed on the invocation's own calendar date). Records written
+    # before this change have neither field; readers infer both from `started_at` with the same
+    # `resolve_occurrence` rule (orphans.attribution).
+    scheduled_date: str | None = None   # IST "YYYY-MM-DD" of the occurrence this run belongs to
+    invocation: str | None = None       # "IN_WINDOW" | "EARLY" | "LATE"
+    # The launched child's own process identity (PK-OPS-1) - written in a second RUNNING
+    # checkpoint right after the child starts, so an orphan check can tell "runner died, child
+    # still running" apart from "both gone". None when no child launched, or for a record
+    # written before this change.
+    child_pid: int | None = None
+    child_started_at: str | None = None   # UTC ISO-8601
+    # "NOT_LAUNCHED" (no child can exist) -> "LAUNCHING" (checkpointed immediately before the
+    # launch: a child may exist) -> "LAUNCHED" (PID known). None on a pre-PK-OPS-1 record.
+    child_phase: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -129,10 +161,12 @@ class RunRecord:
                 "updated_at": self.completed_at or self.started_at,
                 "dependency_job": self.dependency_job,
                 "dependency_status": self.dependency_status,
-                "dependency_wait_seconds": self.dependency_wait_seconds}
+                "dependency_wait_seconds": self.dependency_wait_seconds,
+                "scheduled_date": self.scheduled_date, "invocation": self.invocation}
 
 
 __all__ = ["SCHEMA", "LATEST_SCHEMA", "JOBS", "RUNNING", "COMPLETED", "CHILD_NONZERO", "LOCKED",
           "FAILED", "EXPIRED", "WAITING_DEPENDENCY", "DEPENDENCY_FAILED", "TERMINAL_STATUSES",
-          "INFRA_EXIT_CODES", "EXPIRED_EXIT_CODE", "PENDING", "MISSED", "NOT_EXPECTED", "OK",
+          "INFRA_EXIT_CODES", "EXPIRED_EXIT_CODE", "EARLY", "ABANDONED",
+          "NON_TERMINAL_STATUSES", "EARLY_EXIT_CODE", "PENDING", "MISSED", "NOT_EXPECTED", "OK",
           "UNKNOWN", "WAITING", "HEALTHY", "ATTENTION", "BROKEN", "JobSpec", "RunRecord"]

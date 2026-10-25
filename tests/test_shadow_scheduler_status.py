@@ -333,3 +333,61 @@ def test_overall_status_not_pushed_to_attention_by_a_stale_business_record(tmp_p
     s = status.overall_status(out_dir, business_root=business_root, now=now_ist,
                               calendar=_FixedCalendar(True))
     assert s["overall"] == HEALTHY
+
+
+def test_overall_status_distinguishes_missed_business_failure_and_orphan_in_one_call(
+        tmp_path, monkeypatch):
+    """One `overall_status()` call must tell apart three different kinds of trouble at once:
+    a job with NO invocation at all today (MISSED), a job whose scheduler run completed but
+    whose own business result failed (BLOCKED - a business failure, not a scheduling miss),
+    and a job whose scheduler checkpoint is a stale RUNNING record left by a dead runner
+    (ORPHAN_SUSPECTED - an incomplete checkpoint, not a missed invocation or a business
+    failure). Existing tests prove each distinction pairwise; this proves none of the three
+    collapses into another when they occur together."""
+    import socket
+
+    from shadow_scheduler import orphans
+    from shadow_scheduler.models import COMPLETED, RUNNING, RunRecord
+
+    out_dir = str(tmp_path / "ss")
+    business_root = str(tmp_path / "out")
+    host = socket.gethostname()
+    today = "2026-10-22"
+
+    # "pre": ran fine today, but ITS OWN business result (the PRE production run) was BLOCKED.
+    records.write_record(out_dir, RunRecord(
+        job="pre", run_id="r-pre", started_at="2026-10-22T01:35:00+00:00",   # 07:05 IST
+        runner_status=COMPLETED, child_exit_code=0, scheduled_date=today,
+        invocation=config.IN_WINDOW))
+    _write_latest_business(business_root, ("production_runs", "PRE"), "BLOCKED",
+                           "2026-10-22T01:35:00+00:00")
+
+    # "intelligence_am": a RUNNING checkpoint from today whose runner is verifiably dead - a
+    # stale, unfinished checkpoint, distinct from both a missed invocation and a business
+    # failure.
+    records.write_record(out_dir, RunRecord(
+        job="intelligence_am", run_id="r-am", started_at="2026-10-22T01:11:00+00:00",
+        hostname=host, pid=999999, runner_status=RUNNING, child_phase="NOT_LAUNCHED",
+        scheduled_date=today, invocation=config.IN_WINDOW))
+    monkeypatch.setattr(orphans, "probe_process",
+                        lambda pid, started: {"state": orphans.DEAD, "created_at": None})
+
+    # "post": no record of any kind today, observed well after its own 20:30 IST deadline.
+    now_ist = dt.datetime(2026, 10, 22, 20, 35, tzinfo=IST)
+    s = status.overall_status(out_dir, business_root=business_root, now=now_ist,
+                              calendar=_FixedCalendar(True))
+
+    assert s["jobs"]["post"]["missed_state"] == MISSED
+    assert s["jobs"]["post"]["runner_status"] is None
+    assert s["jobs"]["post"]["business_status"] is None
+
+    assert s["jobs"]["pre"]["missed_state"] == OK
+    assert s["jobs"]["pre"]["runner_status"] == COMPLETED
+    assert s["jobs"]["pre"]["business_status"] == "BLOCKED"
+
+    assert s["jobs"]["intelligence_am"]["runner_status"] == orphans.ORPHAN_SUSPECTED
+    assert s["jobs"]["intelligence_am"]["missed_state"] == OK
+    assert s["jobs"]["intelligence_am"]["business_status"] is None
+
+    assert s["overall"] == ATTENTION
+    assert [o["run_id"] for o in s["orphan_records"]] == ["r-am"]

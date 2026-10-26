@@ -105,20 +105,28 @@ def daily_rows(repo, symbol: str, session: dt.date, lookback_days: int = 400) ->
     """`[{"date","open","high","low","close","volume"}]` oldest first, from the read-only
     OHLCV store (`DeskRepository.ohlcv_rows`), bounded by `session` (date-bound PIT safety -
     OHLCV has no revision chain, unlike the other three subsystems; sufficient for a session
-    that is fully in the past, see docs/PRIVATE_TRADE_CANDIDATES.md)."""
+    that is fully in the past, see docs/PRIVATE_TRADE_CANDIDATES.md). Drops any row the
+    canonical calendar calls a non-trading placeholder (`core.trading_calendar.align_rows`) -
+    a holiday's OK-status, zero-volume bar is a provider artifact (docs/OHLCV_STORE.md), never
+    a real session, and must not reach ATR/weekly-resample/average-volume/liquidity-band."""
     from storage.ohlcv_models import QualityStatus
+    from core.trading_calendar import SessionCalendar, align_rows
     start = session - dt.timedelta(days=lookback_days)
     rows = repo.ohlcv_rows([symbol], start, session)
-    return [{"date": r.session_date, "open": r.open, "high": r.high, "low": r.low,
-            "close": r.close, "volume": r.volume} for r in sorted(rows, key=lambda r: r.session_date)
-           if r.quality_status == QualityStatus.OK]
+    ok_rows = [{"date": r.session_date, "open": r.open, "high": r.high, "low": r.low,
+               "close": r.close, "volume": r.volume} for r in sorted(rows, key=lambda r: r.session_date)
+              if r.quality_status == QualityStatus.OK]
+    return align_rows(ok_rows, SessionCalendar())
 
 
 def sector_member_rows(repo, members: list, session: dt.date, lookback_days: int = 400) -> dict:
     """`{symbol: [{"date","close"}]}` for whichever `members` have OK OHLCV in the store - one
     read-only batched query (`DeskRepository.ohlcv_rows`), never a per-symbol call. Callers
-    cache it per sector: every candidate in a sector shares it."""
+    cache it per sector: every candidate in a sector shares it. Same holiday-placeholder
+    exclusion as `daily_rows()` - otherwise a flat O=H=L=C holiday row would show up as a
+    zero-return day inside the equal-weight sector series."""
     from storage.ohlcv_models import QualityStatus
+    from core.trading_calendar import SessionCalendar, align_rows
     if not members:
         return {}
     start = session - dt.timedelta(days=lookback_days)
@@ -127,7 +135,8 @@ def sector_member_rows(repo, members: list, session: dt.date, lookback_days: int
         if r.quality_status != QualityStatus.OK:
             continue
         by_symbol.setdefault(r.symbol, []).append({"date": r.session_date, "close": r.close})
-    return by_symbol
+    calendar = SessionCalendar()
+    return {symbol: align_rows(rows, calendar) for symbol, rows in by_symbol.items()}
 
 
 def sector_relative_performance(symbol: str, sector: str | None, member_rows: dict,

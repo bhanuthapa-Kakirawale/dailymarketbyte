@@ -4,8 +4,10 @@ occurrence rule (PK-OPS-1, 2026-10-24).
     python -m shadow_scheduler audit [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--json]
 
 For every run record (filtered by its IST invocation date) it reports what the runner recorded
-at the time (status, the window it compared itself against, whether a child launched) next to
-what `config.resolve_occurrence` says now (scheduled_date, IN_WINDOW/EARLY/LATE), and a verdict:
+at the time (status, the window it compared itself against, whether a child launched), its
+attribution (`orphans.attribution`: the stored scheduled_date/invocation, else inferred under
+the windows in force when it was written), what the CURRENT windows would do with the same
+invocation time (`current_runner_would`), and a verdict on the attributed invocation:
 
     IN_WINDOW                 the invocation was inside its own occurrence's window
     CORRECTLY_REJECTED        out of window and no child was launched
@@ -55,9 +57,10 @@ def audit(out_dir: str | None = None, *, date_from: dt.date | None = None,
         if spec is None:
             continue
         occ = config.resolve_occurrence(spec, orphans._parse_utc(rec["started_at"]))
+        attr = orphans.attribution(rec)
         status = rec.get("runner_status")
         child_started = rec.get("child_started", True)
-        if occ.invocation == config.IN_WINDOW:
+        if attr["invocation"] == config.IN_WINDOW:
             verdict = IN_WINDOW_V
         elif status in NON_TERMINAL_STATUSES:
             verdict = OUT_OF_WINDOW_ATTEMPT
@@ -73,9 +76,11 @@ def audit(out_dir: str | None = None, *, date_from: dt.date | None = None,
             "child_started": child_started,
             "recorded_window_start": rec.get("window_start"),
             "recorded_scheduled_date": rec.get("scheduled_date"),
-            "attributed_scheduled_date": occ.scheduled_date.isoformat(),
-            "attributed_window": [occ.window_start.isoformat(), occ.window_end.isoformat()],
-            "invocation": occ.invocation,
+            "attributed_scheduled_date": attr["scheduled_date"],
+            "attribution_inferred": attr["inferred"],
+            "invocation": attr["invocation"],
+            "current_window": [occ.window_start.isoformat(), occ.window_end.isoformat()],
+            "current_invocation": occ.invocation,
             "current_runner_would": {config.IN_WINDOW: "PROCEED (subject to dependency/lock)",
                                      config.EARLY: "REJECT as EARLY (no child)",
                                      config.LATE: "REJECT as EXPIRED (no child)"}[occ.invocation],

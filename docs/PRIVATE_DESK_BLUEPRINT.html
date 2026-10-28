@@ -334,8 +334,8 @@ pip install -r requirements-desk.txt</pre>
   <h2><span class="n">04</span>Daily routine</h2>
   <p class="sub">Two pipeline commands plus a structured desk review. The desk is end-of-day intelligence; it has no intraday data.</p>
   <div class="callout i"><b>If the 4 shadow jobs are installed (PK-E)</b>
-    The commands below may already be running automatically on schedule (Intelligence AM 06:40,
-    PRE 07:00, Intelligence PM 19:15, POST 19:30 IST) instead of by hand. Check
+    The commands below may already be running automatically on schedule (Intelligence AM 06:00,
+    PRE 06:30, Intelligence PM 19:15, POST 19:30 IST) instead of by hand. Check
     <code>scripts\check_shadow_operations.bat</code> first (today's actual run times and
     outcomes) before running anything manually - see <a href="#reference">section 10</a>. As of
     the 2026-10-16 power-policy fix, these jobs are allowed to run on battery, inside their own
@@ -667,7 +667,7 @@ scripts\clean_test_artifacts.bat</pre>
   <div class="callout i"><b>Capture is automatic, not a command you run</b>
     <code>intelligence_refresh</code> calls <code>private_candidates.capture.capture_latest_session</code> on its own PM
     pass (19:15 IST) right after that evening's Radar/Market Structure/Market Events data exists for the session, and
-    again as an AM catch-up (06:40 IST) if the PM pass was missed. Opening <code>/trade-candidates</code> never triggers a
+    again as an AM catch-up (06:00 IST) if the PM pass was missed. Opening <code>/trade-candidates</code> never triggers a
     capture. The page shows that <b>stored evening snapshot</b> by default (the banner says so, with its capture time);
     <b>Re-evaluate now (live)</b> is a separately labelled recompute with cutoff = now.</div>
   <ul class="tl">
@@ -678,7 +678,7 @@ scripts\clean_test_artifacts.bat</pre>
       Check the banner reads "stored evening snapshot", then start from the upside diversified shortlist and the raw
       ranking (<a href="#selection">section 7</a>'s evidence checks apply the same way). Prepare the NEXT session's
       watchlist - not tonight's, since the market is already closed.</div></li>
-    <li><span class="when">06:40</span><div class="what"><b>AM catch-up (if PM was missed)</b><code>POINT_IN_TIME</code>
+    <li><span class="when">06:00</span><div class="what"><b>AM catch-up (if PM was missed)</b><code>POINT_IN_TIME</code>
       only if Radar's own COMPLETE marker for that session was itself dated the session's own day; otherwise the snapshot
       is honestly labelled <code>RECONSTRUCTED</code>. Check <code>capture_mode</code> on the detail page before trusting
       it as same-day.</div></li>

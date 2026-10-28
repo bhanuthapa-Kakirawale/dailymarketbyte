@@ -1,6 +1,7 @@
-"""shadow_scheduler.runner: the thin runner. Enforces the 1-hour execution window (PK-E
-follow-up, 2026-10-12), acquires the global scheduler lock (bounded wait, capped at whatever
-remains of that window), writes a RUNNING checkpoint record, launches the existing `.bat` entry
+"""shadow_scheduler.runner: the thin runner. Enforces the job's permitted start window
+(`JobSpec.window_start`..`window_end`, 2026-10-28 timing packet; originally a fixed 1-hour
+window, PK-E follow-up 2026-10-12), acquires the global scheduler lock (bounded wait, capped at
+whatever remains of that window), writes a RUNNING checkpoint record, launches the existing `.bat` entry
 point named in `config.JOB_REGISTRY` as a subprocess, captures its exit code and console output
 verbatim, releases the lock, writes the terminal record, and returns the runner's own process
 exit code.
@@ -29,9 +30,11 @@ so an upstream run that belonged to another occurrence (or was itself rejected o
 can never satisfy this one.
 
 Never leave an orphan behind (PK-OPS-1): every wait (dependency, lock) is also capped at
-`config.RUNNER_WAIT_BUDGET_SECONDS` after this runner's own start, so the runner always writes
-its own terminal record before Task Scheduler's ExecutionTimeLimit (PT50M) can terminate it -
-the 2026-10-21 06:48 POST checkpoint was left WAITING_DEPENDENCY exactly that way. Any
+`config.RUNNER_WAIT_BUDGET_SECONDS` (25 min) after this runner's own start, and no child is
+launched after it, so the runner always writes its own terminal record before Task Scheduler's
+ExecutionTimeLimit (PT50M) can terminate it - the 2026-10-21 06:48 POST checkpoint was left
+WAITING_DEPENDENCY exactly that way - and every launched child keeps at least
+`CHILD_RUNTIME_RESERVE_SECONDS` + `RUNNER_FINALIZE_MARGIN_SECONDS` of that limit to finish. Any
 unexpected runner exception (e.g. the 2026-10-19 / 2026-10-21 RUNNING checkpoints, whose
 runner died between the checkpoint and the child launch) is finalized as FAILED with the
 exception text and the global lock released, instead of leaving a RUNNING checkpoint and a
@@ -160,7 +163,8 @@ def _run_job(job: str, *, _holder: dict, cli_argv: list | None = None,
                        scheduled_time=spec.scheduled_time,
                        window_start=scheduled_dt.isoformat(), window_end=deadline_dt.isoformat(),
                        scheduled_date=scheduled_date.isoformat(),
-                       invocation=occurrence.invocation, child_phase="NOT_LAUNCHED")
+                       invocation=occurrence.invocation, child_phase="NOT_LAUNCHED",
+                       window_policy=config.WINDOW_POLICY)
     _holder.update(record=record, utcnow=utcnow, started_at_dt=started_at_dt, out_dir=out_dir)
 
     # Every wait ends at the window deadline OR this runner's own wait budget, whichever is
@@ -179,10 +183,12 @@ def _run_job(job: str, *, _holder: dict, cli_argv: list | None = None,
                     f"of the {scheduled_date.isoformat()} occurrence closed {what} - child "
                     f"was not started")
         if _ist(at_utc) >= budget_end:
-            return (f"runner wait budget ({config.RUNNER_WAIT_BUDGET_SECONDS}s after its own "
-                    f"start, ending {budget_end.isoformat()}) exhausted {what}, ahead of Task "
-                    f"Scheduler's {config.EXECUTION_TIME_LIMIT} ExecutionTimeLimit - child was "
-                    f"not started")
+            return (f"insufficient remaining execution time: runner wait budget "
+                    f"({config.RUNNER_WAIT_BUDGET_SECONDS}s after its own start, ending "
+                    f"{budget_end.isoformat()}) exhausted {what} - a child launched now would "
+                    f"have less than {config.CHILD_RUNTIME_RESERVE_SECONDS}s + "
+                    f"{config.RUNNER_FINALIZE_MARGIN_SECONDS}s before Task Scheduler's "
+                    f"{config.EXECUTION_TIME_LIMIT} ExecutionTimeLimit - child was not started")
         return None
 
     def _expire(reason: str) -> int:
@@ -207,11 +213,12 @@ def _run_job(job: str, *, _holder: dict, cli_argv: list | None = None,
         records.write_record(out_dir, record)
         return EARLY_EXIT_CODE
 
-    def _dependency_failed(reason: str) -> int:
+    def _dependency_failed(reason: str, upstream: dict | None = None) -> int:
         record.runner_status = DEPENDENCY_FAILED
         record.child_exit_code = None
         record.child_started = False
-        record.dependency_status = "FAILED"
+        record.dependency_status = (dependency.MISSING if (upstream or {}).get("runner_status")
+                                    == dependency.MISSING else "FAILED")
         record.error = reason
         completed_at_dt = utcnow()
         record.completed_at = completed_at_dt.isoformat()
@@ -242,12 +249,13 @@ def _run_job(job: str, *, _holder: dict, cli_argv: list | None = None,
         import config as root_config
         record.dependency_job = dep_job
         quick_outcome, quick_record = dependency.check(out_dir, dep_job, scheduled_date,
-                                                       root_config.IST)
+                                                       root_config.IST, now=started_at_dt)
         if quick_outcome == dependency.DEP_FAILED:
             return _dependency_failed(
                 f"dependency {dep_job!r} had already reached a terminal non-satisfying outcome "
                 f"for {scheduled_date.isoformat()} "
-                f"({(quick_record or {}).get('runner_status')!r}) before {job!r} began")
+                f"({(quick_record or {}).get('runner_status')!r}) before {job!r} began",
+                quick_record)
         if quick_outcome == dependency.PENDING:
             # An actual wait is about to happen - checkpoint it (WAITING_DEPENDENCY) so a
             # concurrent `status` call can see it live, the same way the ordinary RUNNING
@@ -272,7 +280,8 @@ def _run_job(job: str, *, _holder: dict, cli_argv: list | None = None,
                 return _dependency_failed(
                     f"dependency {dep_job!r} reached a terminal non-satisfying outcome for "
                     f"{scheduled_date.isoformat()} while {job!r} was waiting "
-                    f"({(wait_result.record or {}).get('runner_status')!r})")
+                    f"({(wait_result.record or {}).get('runner_status')!r})",
+                    wait_result.record)
             record.dependency_satisfied_at = wait_result.satisfied_at
             record.dependency_run_id = (wait_result.record or {}).get("run_id")
             record.runner_status = "RUNNING"   # restore the ordinary in-flight checkpoint status
@@ -301,7 +310,7 @@ def _run_job(job: str, *, _holder: dict, cli_argv: list | None = None,
     # Fails closed rather than re-entering a nested wait.
     if dep_job:
         recheck_outcome, _recheck_record = dependency.check(out_dir, dep_job, scheduled_date,
-                                                            root_config.IST)
+                                                            root_config.IST, now=utcnow())
         if recheck_outcome != dependency.SATISFIED:
             return _dependency_failed(
                 f"dependency {dep_job!r} was no longer SATISFIED immediately before acquiring "
@@ -344,7 +353,7 @@ def _run_job(job: str, *, _holder: dict, cli_argv: list | None = None,
     # the child actually launches (lock already held - this does not wait, only observes).
     if dep_job:
         recheck_outcome, _recheck_record = dependency.check(
-            out_dir, dep_job, scheduled_date, root_config.IST)
+            out_dir, dep_job, scheduled_date, root_config.IST, now=utcnow())
         if recheck_outcome != dependency.SATISFIED:
             run_lock.release()
             return _dependency_failed(

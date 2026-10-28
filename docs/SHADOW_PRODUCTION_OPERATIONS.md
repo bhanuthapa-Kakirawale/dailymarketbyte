@@ -47,12 +47,15 @@ something any Claude Code packet runs automatically.
 
 ## The four jobs
 
-| job | entry point | IST time | business outcome read from |
-|---|---|---|---|
-| `intelligence_am` | `scripts\run_intelligence_refresh.bat` | 06:40 | `output/intelligence_refresh/latest.json` |
-| `pre` | `scripts\run_production_pre.bat` | 07:00 | `output/production_runs/PRE/latest.json` |
-| `intelligence_pm` | `scripts\run_intelligence_refresh.bat` | 19:15 | `output/intelligence_refresh/latest.json` |
-| `post` | `scripts\run_production_post.bat` | 19:30 | `output/production_runs/POST/latest.json` |
+| job | entry point | IST trigger | permitted start window | business outcome read from |
+|---|---|---|---|---|
+| `intelligence_am` | `scripts\run_intelligence_refresh.bat` | 06:00 | 06:00-08:45 | `output/intelligence_refresh/latest.json` |
+| `pre` | `scripts\run_production_pre.bat` | 06:30 | 06:00-09:00 | `output/production_runs/PRE/latest.json` |
+| `intelligence_pm` | `scripts\run_intelligence_refresh.bat` | 19:15 | 19:15-23:30 | `output/intelligence_refresh/latest.json` |
+| `post` | `scripts\run_production_post.bat` | 19:30 | 19:00-23:59 | `output/production_runs/POST/latest.json` |
+
+Trigger and window are separate since the 2026-10-28 timing packet - see "Schedule and
+permitted start windows" below.
 
 All Mon-Fri. On an NSE holiday the tasks still fire - PK-C/PK-D remain the authority on
 whether rendering is actually safe at that moment; PK-E does not encode the trading calendar
@@ -81,7 +84,7 @@ outcome and is `CHILD_NONZERO`, never a scheduler failure, never retried.
 | `CHILD_NONZERO` | the child launched and exited nonzero - a business outcome, preserved verbatim | the child's own exit code |
 | `LOCKED` | the global scheduler lock was still held past the bounded wait | `3` |
 | `FAILED` | the child could not even be launched (missing executable, launch exception), **or** the runner itself hit an unexpected exception after its run record existed (PK-OPS-1: `run_job` finalizes it as `FAILED` with the exception text in `error` and releases the global lock, instead of leaving a `RUNNING` checkpoint and a stale lock) | `4` |
-| `DEPENDENCY_FAILED` | the upstream intelligence job reached a terminal non-satisfying outcome for the same occurrence (its own `FAILED`/`LOCKED`/`EXPIRED`/`DEPENDENCY_FAILED`, or an abandoned checkpoint), or the dependency state could not be re-confirmed immediately before the lock/child launch - the child was deliberately never launched | `5` |
+| `DEPENDENCY_FAILED` | the upstream intelligence job reached a terminal non-satisfying outcome for the same occurrence (anything but `COMPLETED`: its own `CHILD_NONZERO`/`FAILED`/`LOCKED`/`EXPIRED`/`DEPENDENCY_FAILED`, an abandoned checkpoint, or `MISSING` - no record at all once its window closed), or the dependency state could not be re-confirmed immediately before the lock/child launch - the child was deliberately never launched | `5` |
 | `EXPIRED` | a LATE invocation (attributed to a past occurrence whose window had already closed), or the window / runner wait budget closed while waiting for the dependency or the lock - the child was deliberately never launched | `0` |
 | `EARLY` | (PK-OPS-1) invoked before its occurrence's `window_start`, within `EARLY_ATTRIBUTION_MINUTES` of it - rejected, nothing waited for, nothing rescheduled, never a successful scheduled execution | `0` |
 | `ABANDONED` | (PK-OPS-1) **never written by the runner.** The effective status of a `RUNNING`/`WAITING_DEPENDENCY` checkpoint whose runner is verifiably gone, recorded only by an append-only `reconciliations/<run_id>.json` marker; the run file itself is never rewritten. Never a success - nothing is claimed about what the child did | - |
@@ -103,22 +106,61 @@ ever be auto-retried by Task Scheduler - only the `runner_status` field (`EXPIRE
 `COMPLETED`) actually distinguishes it from an ordinary successful run; see the run-record
 fields below. `EARLY` exits `0` for the same reason.
 
-## Execution windows (PK-E follow-up, 2026-10-12)
+## Schedule and permitted start windows (2026-10-28 timing packet)
 
-Each job has a strict **1-hour operational execution window**, IST, during which the runner
-will even agree to start the child at all:
+Each job has a Windows Task Scheduler **trigger** (`JobSpec.scheduled_time`) and, separately, a
+**permitted start window** (`JobSpec.window_start`..`window_end`, IST, start inclusive, end
+exclusive, always inside one calendar day) during which the runner will even agree to start
+the child at all:
 
-| job | scheduled | window (start inclusive, end exclusive) |
-|---|---|---|
-| `intelligence_am` | 06:40 | 06:40-07:40 |
-| `pre` | 07:00 | 07:00-08:00 |
-| `intelligence_pm` | 19:15 | 19:15-20:15 |
-| `post` | 19:30 | 19:30-20:30 |
+| job | trigger | window | was (PK-E follow-up, 2026-10-12: trigger + 60 min) |
+|---|---|---|---|
+| `intelligence_am` | 06:00 | 06:00-08:45 | 06:40, 06:40-07:40 |
+| `pre` | 06:30 | 06:00-09:00 (09:00 = hard cutoff) | 07:00, 07:00-08:00 |
+| `intelligence_pm` | 19:15 | 19:15-23:30 | 19:15, 19:15-20:15 |
+| `post` | 19:30 | 19:00-23:59 | 19:30, 19:30-20:30 |
 
-This is a **different concept** from `ExecutionTimeLimit` (50 minutes, Windows Task
+Why the wider windows: recent occurrences were lost only because the machine woke after a
+1-hour window (2026-10-27: AM fired 07:42, EXPIRED, so PRE was DEPENDENCY_FAILED; 2026-10-28:
+PM and POST both fired 20:43 and EXPIRED). `StartWhenAvailable` fires a missed trigger on
+wake; the window decides whether that late start may still run.
+
+How the edges were chosen (from the run records in `output/shadow_scheduler/runs`, 2026-10-09
+.. 10-28; slowest observed child: PM 521 s, PRE 518 s, POST ~408 s, AM 212 s):
+
+- **AM 08:45, not 08:00** (owner decision): AM rebuilds the previous session's end-of-day
+  chain, so nothing in it goes stale after 08:00, and PRE depends on it - with an 08:00 AM
+  cutoff a wake between 08:00 and 09:00 would expire AM and so fail PRE although PRE's own
+  window was still open. 08:45 still leaves AM's worst runtime well before PRE's 09:00 cutoff.
+- **PM 23:30**: POST's last permitted start is 23:59 and PM must have finished by then.
+  23:59 minus `CHILD_RUNTIME_RESERVE_SECONDS` (20 min, >= 2.3x PM's 521 s worst) = 23:39,
+  rounded down. A late PM's lock wait is also capped at its own window end.
+- **PRE window opens at 06:00, half an hour before its 06:30 trigger, and POST's at 19:00
+  before its 19:30 trigger**: an early manual start is allowed; Task Scheduler itself never
+  fires before the trigger.
+- **Source availability at 06:00/06:30 is no worse than at 06:40/07:00** (checked against the
+  PRE briefs in `output/pre_shadow/*/pre_brief_*.json`): Hang Seng opens at 07:00 IST and was
+  already STALE at every 07:00 run; Nikkei opens at 05:30 IST and was FRESH from its 06:50 bar,
+  so it is fresh at 06:30; the GIFT shadow audit is already invalid every morning
+  (DAYCHANGE CONFLICT) and its display gate is OFF; US closes are final by ~02:30 IST. No
+  freshness rule (`core/freshness.py`) was changed - a cue that is not fresh is still omitted.
+
+Across midnight: a POST started by 23:59 keeps its attributed `scheduled_date` for the whole
+run (the occurrence is fixed at invocation and never re-derived). PK-D resolves its own
+session once at start (`products.report_job.resolve_session`); `latest_final_session` stays on
+D until D+1's 15:40 close, and PK-D already BLOCKs if it moved during the REPORT step. A run
+can last at most `PT50M`, so a POST launched at 23:58 ends by ~00:48 - long before the next
+06:00 AM - and the global lock would make any overlap wait, never run concurrently. An
+invocation after 23:59 (e.g. 00:30) is LATE for D, never a D+1 run. A permitted start at
+23:59 is not a promise the run finishes before midnight - it only must finish inside PT50M.
+
+The window is a **different concept** from `ExecutionTimeLimit` (50 minutes, Windows Task
 Scheduler's own cap on how long an already-*running* process may keep running) - the window is
 about whether the runner will *start* the child at all, not how long it may run once started.
-Both are kept, unchanged from each other.
+Both are kept. Records written before PK-OPS-1 (no stored `scheduled_date`/`invocation`) are
+attributed under the rule that was in force when they were written (`config.LEGACY_WINDOWS`,
+trigger + 60 min), never re-attributed under these wider windows; new records carry
+`window_policy: "2"`.
 
 `StartWhenAvailable=$true` still lets Windows Task Scheduler invoke a job late if the machine
 was off, asleep or hibernating at the scheduled moment - that setting is unchanged and is
@@ -164,12 +206,22 @@ checked at the invocation, and again:
    that consumed the rest of the window).
 
 Every wait (dependency and lock) ends at `min(window_end, runner_start +
-RUNNER_WAIT_BUDGET_SECONDS)`. The budget is 45 minutes - Task Scheduler's `ExecutionTimeLimit`
-(`PT50M`, `EXECUTION_TIME_LIMIT_SECONDS`) minus 5 minutes of margin - so a runner always
-writes its own terminal record before Task Scheduler can terminate it (a terminated runner's
-`finally` never runs). It never changes a schedule or a window, only how long a runner waits;
-it only binds for an invocation in the first 15 minutes of its window. An exhausted budget is
-`EXPIRED` with the budget named in `error`.
+RUNNER_WAIT_BUDGET_SECONDS)`, and no child is launched after it. Task Scheduler terminates the
+runner at `ExecutionTimeLimit` (`PT50M`) counted from its own start - a terminated runner's
+`finally` never runs, and its `.bat` child tree is not reliably terminated with it - so the
+budget must leave a launched child enough time to finish:
+
+    RUNNER_WAIT_BUDGET_SECONDS = EXECUTION_TIME_LIMIT (50 min)
+                               - CHILD_RUNTIME_RESERVE_SECONDS (20 min, >= 2.3x the slowest child, 521 s)
+                               - RUNNER_FINALIZE_MARGIN_SECONDS (5 min, terminal record + lock release)
+                               = 25 min
+
+25 minutes still covers the worst observed upstream wait (POST waited 640 s for PM's 521 s
+run on 2026-10-22). Before the 2026-10-28 timing packet the budget was 45 minutes, which kept
+the runner's own record safe but could launch a child with ~5 minutes left. `PT50M` itself is
+unchanged. An exhausted budget is `EXPIRED` with the budget named in `error` ("insufficient
+remaining execution time" when it is the launch re-check that refuses); `config._validate_registry`
+fails the import if the three numbers ever stop adding up.
 
 No historical PRE/POST production is created to compensate for an expired window - intelligence
 refresh self-heals recent data on its own next valid run; a missed/expired PRE or POST is
@@ -274,19 +326,25 @@ existed - `resolve_occurrence` applied to its `started_at`). Before this change 
 satisfy last night's POST fired at 06:48. An `EARLY` upstream record is ignored entirely (the
 real in-window run may still come).
 
-- **Satisfied**: an upstream record for the occurrence is `COMPLETED` or `CHILD_NONZERO`. A
-  nonzero business exit code (e.g. PK-D's own `BLOCKED=20`) still counts - "the refresh ATTEMPT
-  finished" is all this layer asks; duplicating PK-C's business judgement here is exactly what
-  must not happen.
-- **Failed** (never satisfies, and never worth waiting out): the upstream record is `FAILED`,
-  `LOCKED`, `EXPIRED` or `DEPENDENCY_FAILED`, or an abandoned checkpoint (effective status
-  `ABANDONED` / `ORPHAN_SUSPECTED` - it will never finish, so it fails fast instead of being
-  waited on until the deadline). If `pre`/`post` sees this immediately (e.g. `intelligence_am`
-  was itself invoked after its own 07:40 deadline and reached `EXPIRED`, while `pre` still has
-  until 08:00), it stops right away rather than waiting out the rest of its own window.
-- **Pending** (keep waiting): no record for the occurrence, a record attributed to another
-  occurrence (yesterday's completion never satisfies today's dependency), or still `RUNNING`/
-  `WAITING_DEPENDENCY` with a runner that is not provably gone.
+- **Satisfied**: an upstream record for the occurrence is `COMPLETED` (child exit 0 -
+  intelligence_refresh `SUCCESS` or `DEGRADED`). Owner decision, 2026-10-28 timing packet:
+  before it `CHILD_NONZERO` counted too ("the refresh ATTEMPT finished"); now a refresh that
+  exited 20 (`BLOCKED`) or 30 (`FAILED`/`LOCKED`) is a failed dependency. Only zero vs nonzero
+  is read - PK-C still owns every business judgement about the data.
+- **Failed** (never satisfies, and never worth waiting out): the upstream record is
+  `CHILD_NONZERO`, `FAILED`, `LOCKED`, `EXPIRED` or `DEPENDENCY_FAILED`, an abandoned checkpoint
+  (effective status `ABANDONED` / `ORPHAN_SUSPECTED` - it will never finish, so it fails fast
+  instead of being waited on until the deadline), or **`MISSING`**: no record at all for the
+  occurrence once the upstream's own window has closed plus
+  `DEPENDENCY_MISSING_GRACE_SECONDS` (2 min; an upstream's lock wait is capped at its window
+  end, after which it always writes a terminal record). `dependency_status` is then `MISSING`,
+  otherwise `FAILED`. If `pre`/`post` sees this immediately (e.g. `intelligence_am` was itself
+  invoked after its own 08:45 window end and reached `EXPIRED`, while `pre` still has until
+  09:00), it stops right away rather than waiting out the rest of its own window.
+- **Pending** (keep waiting): no record for the occurrence while the upstream's window is still
+  open (or inside the grace), a record attributed to another occurrence (yesterday's
+  completion never satisfies today's dependency), or still `RUNNING`/`WAITING_DEPENDENCY` with
+  a runner that is not provably gone.
 
 **Critical lock rule**: the wait happens entirely **before** the global scheduler lock is even
 attempted - a job must never wait for its dependency *while holding* that lock, or the two jobs
@@ -298,7 +356,7 @@ whichever is first), never indefinite: each poll
 iteration checks the deadline *first* - even if the dependency becomes `SATISFIED` at the exact
 instant the deadline is reached, this is still `TIMED_OUT` → `EXPIRED`, never a late launch. The
 window's deadline authority always wins. A dependency that only finishes after the dependent's
-own deadline (e.g. `intelligence_am` finishes at 08:01, after PRE's 08:00 cutoff) means `pre`
+own deadline (e.g. `intelligence_am` finishes at 09:01, after PRE's 09:00 cutoff) means `pre`
 simply never launches that day - no extension, no fallback to a stale prior refresh.
 
 Checked at **three points** (state can change while waiting or acquiring the lock): once before
@@ -451,11 +509,11 @@ of the business package's own `latest.json` - never recomputed.
 
 **PENDING / WAITING / MISSED / NOT_EXPECTED** (per job, today in IST) reuses the real
 `core.trading_calendar.SessionCalendar().is_session(today)` - never a second calendar
-implementation - plus `config.execution_window()` for the 1-hour window boundary: `PENDING`
-before `scheduled_time`, `WAITING` from `scheduled_time` up to (not including) the deadline
-with no run yet today, `MISSED` only once the deadline itself has passed with still no run
-today. A job inside its window that simply hasn't fired yet (e.g. PRE checked at 07:15, deadline
-08:00) is `WAITING`, never `MISSED` - `status` does not call a job missed merely because it
+implementation - plus `config.execution_window()` for the permitted start window: `PENDING`
+before `window_start`, `WAITING` from `window_start` up to (not including) `window_end` with no
+run yet today, `MISSED` only once `window_end` itself has passed with still no run today. A job
+inside its window that simply hasn't fired yet (e.g. PRE checked at 06:10, window 06:00-09:00,
+trigger 06:30) is `WAITING`, never `MISSED` - `status` does not call a job missed merely because it
 hasn't run yet. `UNKNOWN` (outside the hardcoded holiday-year coverage) is never asserted as
 either MISSED or NOT_EXPECTED.
 
@@ -515,15 +573,15 @@ in-flight record that merely can't be probed is not an orphan). It is `ATTENTION
 owner-approved `reconcile --execute` records it.
 
 `render_human()`'s table now shows each job's actual run time (`ran=HH:MM` IST, or `-` if it
-hasn't run today) beside its scheduled time:
+hasn't run today) beside its trigger and permitted start window:
 
 ```
 DMB SHADOW OPERATIONS
 --------------------------------------------------------------
-Intelligence AM    COMPLETED   sched=06:40 ran=07:36  SUCCESS
-PRE                COMPLETED   sched=07:00 ran=07:36  DEGRADED
-Intelligence PM    PENDING     sched=19:15 ran=-
-POST               PENDING     sched=19:30 ran=-
+Intelligence AM    COMPLETED   sched=06:00 window=06:00-08:45 ran=07:36  SUCCESS
+PRE                COMPLETED   sched=06:30 window=06:00-09:00 ran=07:36  DEGRADED
+Intelligence PM    PENDING     sched=19:15 window=19:15-23:30 ran=-
+POST               PENDING     sched=19:30 window=19:00-23:59 ran=-
 --------------------------------------------------------------
 ```
 
@@ -573,7 +631,8 @@ now leaves the pre-existing task exactly as it was.
 
 Registration settings: `MultipleInstances=IgnoreNew`, `StartWhenAvailable=$true`,
 `ExecutionTimeLimit=PT50M` (50 minutes - comfortably above every observed PRE/POST/refresh
-runtime, well under the "hung process" range), `RestartCount=0` (no automatic restart-on-
+runtime, well under the "hung process" range; the runner's own 25-minute wait budget keeps a
+20-minute child reserve inside it, see "Window rechecks and the runner wait budget"), `RestartCount=0` (no automatic restart-on-
 failure loop - a nonzero result may be an intentional PK-C safety block), plus the power policy
 below. Principal: the current interactive user, `LogonType=Interactive`, no stored password,
 never SYSTEM.
@@ -599,10 +658,9 @@ laptop was on battery, because `New-ScheduledTaskSettingsSet` was never given ex
 settings and so fell back to the cmdlet's own defaults - `DisallowStartIfOnBatteries=$true`,
 `StopIfGoingOnBatteries=$true`, `WakeToRun=$false`. The four DMB tasks now explicitly request
 the opposite: DMB is a lightweight scheduled workflow and is allowed to run inside its own
-one-hour execution window even on battery. The execution windows themselves (AM 06:40-07:40,
-PRE 07:00-08:00, PM 19:15-20:15, POST 19:30-20:30) remain the actual safety boundary - no new
-retry/reconnect logic is added; `StartWhenAvailable` plus the existing window is the whole
-mechanism.
+permitted start window even on battery. The windows themselves (AM 06:00-08:45, PRE
+06:00-09:00, PM 19:15-23:30, POST 19:00-23:59) remain the actual safety boundary - no new
+retry/reconnect logic is added; `StartWhenAvailable` plus the window is the whole mechanism.
 
 What these settings can and cannot do:
 
@@ -637,15 +695,19 @@ could drift out of sync.
   picture.
 - `StartWhenAvailable=$true` still fires missed triggers late (after boot, resume from
   sleep/hibernation, or a frozen process thawing), and the tasks have no `EndBoundary`. The
-  runner launches such a start normally **only if it is still inside that job's own 1-hour
-  window of the occurrence it belongs to**; anything else is rejected (`EXPIRED`/`EARLY`) - see
-  "Execution windows" above. PK-C alone decides whether a late-but-in-window start is actually
+  runner launches such a start normally **only if it is still inside that job's own permitted
+  start window of the occurrence it belongs to**; anything else is rejected
+  (`EXPIRED`/`EARLY`) - see "Schedule and permitted start windows" above. There is one trigger
+  per job and no retry trigger: recovery is `StartWhenAvailable` + the window + the bounded
+  wait. A second in-window invocation (e.g. a manual one) is its own scheduler record; PK-D's
+  idempotency (`ALREADY_COMPLETED`) is what prevents a second video/report. PK-C alone decides whether a late-but-in-window start is actually
   safe to render.
 - No developer bypass flag for dependency ordering in V1 (deliberate) - a manual
   `python -m shadow_scheduler run pre` during a genuine dependency wait will actually block for
   up to its own window's remaining time (and the runner wait budget), the same as the scheduled
   task.
-- Stuck checkpoints: the runner wait budget (45 min < `PT50M`) and crash finalization
+- Stuck checkpoints: the runner wait budget (25 min, leaving a 20-min child reserve under
+  `PT50M`) and crash finalization
   (`FAILED`, lock released) mean no live code path leaves a `RUNNING`/`WAITING_DEPENDENCY`
   checkpoint behind any more. A hard kill or power loss still can - `status` then lists it
   under `orphan_records` (`ORPHAN_SUSPECTED`), and an owner-approved `reconcile --execute`
@@ -707,7 +769,7 @@ Task Scheduler cmdlet - no Pester dependency, and no real
 re-reads the real `\DMB\` task set before/after the whole PowerShell test module and fails the
 suite if it ever changes).
 
-`test_shadow_scheduler_execution_window.py` covers the 1-hour execution window specifically:
+`test_shadow_scheduler_execution_window.py` covers the permitted start window specifically:
 exact start/deadline boundaries for all four jobs, the lock-wait-vs-deadline interaction
 (a lock wait that would otherwise carry a job past its deadline becomes `EXPIRED`, not
 `LOCKED`; a lock that frees up before the deadline still launches normally), a late-but-
@@ -724,7 +786,7 @@ completes at the same instant). The `# --- dependency ordering ---` section of
 `test_shadow_scheduler_runner.py` covers the full `run_job()` integration end to end: the
 morning/evening wake-up races (proving the global lock is acquirable by a second `RunLock`
 instance *while* the dependent job is mid-wait), every upstream terminal state
-(`CHILD_NONZERO`→proceeds, `FAILED`/`EXPIRED`→`DEPENDENCY_FAILED` fast, never waiting out the
+(`CHILD_NONZERO`/`FAILED`/`EXPIRED`→`DEPENDENCY_FAILED` fast, never waiting out the
 rest of the window), and the window-deadline interaction.
 
 `test_shadow_scheduler_window_recovery.py` (PK-OPS-1) covers, with every clock injected: the

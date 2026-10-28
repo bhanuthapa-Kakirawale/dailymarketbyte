@@ -1,6 +1,7 @@
-"""shadow_scheduler's 1-hour per-job execution window (PK-E follow-up, 2026-10-12):
-`scheduled_time <= now < scheduled_time + EXECUTION_WINDOW_MINUTES` is the only valid start
-range. Windows Task Scheduler's own `StartWhenAvailable` can still invoke a job late - this
+"""shadow_scheduler's per-job permitted start window (PK-E follow-up, 2026-10-12; windows
+widened and decoupled from the trigger by the 2026-10-28 timing packet):
+`JobSpec.window_start <= now < JobSpec.window_end` is the only valid start range - AM
+06:00-08:45, PRE 06:00-09:00, PM 19:15-23:30, POST 19:00-23:59 IST. Windows Task Scheduler's own `StartWhenAvailable` can still invoke a job late - this
 runner, not Task Scheduler, is what refuses to launch the child once the deadline has passed
 (EXPIRED, exit 0, no child started, never retried). Every clock here is injected
 (`utcnow`/`now_ist`); no test depends on the real wall clock.
@@ -61,14 +62,17 @@ def _seed_dependency_satisfied(out_dir, job, utcnow):
     """This file is about the execution-window boundary, not dependency ordering (that's
     test_shadow_scheduler_dependency.py / the dependency-ordering section of
     test_shadow_scheduler_runner.py) - pre-seed `job`'s upstream dependency (if any) as already
-    COMPLETED today so these tests exercise exactly the window/lock behavior they document,
-    unaffected by the dependency-wait layer."""
+    COMPLETED for the same scheduled occurrence so these tests exercise exactly the window/lock
+    behavior they document, unaffected by the dependency-wait layer."""
     dep_job = config.DEPENDENCIES.get(job)
     if not dep_job:
         return
     started = utcnow()
+    occ = config.resolve_occurrence(config.JOB_REGISTRY[job], started)
     rec = RunRecord(job=dep_job, run_id=f"seed-{dep_job}", started_at=started.isoformat(),
-                    completed_at=started.isoformat(), duration=1.0, runner_status=COMPLETED)
+                    completed_at=started.isoformat(), duration=1.0, runner_status=COMPLETED,
+                    scheduled_date=occ.scheduled_date.isoformat(), invocation=config.IN_WINDOW,
+                    window_policy=config.WINDOW_POLICY)
     records.write_record(out_dir, rec)
 
 
@@ -93,24 +97,24 @@ class _FixedCalendar:
         return self._is_session
 
 
-# --- B/C/D: Intelligence AM (06:40-07:40) ---------------------------------------------------
+# --- B/C/D: Intelligence AM (06:00-08:45) ---------------------------------------------------
 
 def test_b_intelligence_am_at_exactly_scheduled_time_is_allowed(tmp_path):
-    utcnow = lambda: dt.datetime(2026, 10, 9, 1, 10, tzinfo=UTC)   # 06:40:00 IST
+    utcnow = lambda: dt.datetime(2026, 10, 9, 0, 30, tzinfo=UTC)   # 06:00:00 IST
     exit_code, fake = _run(tmp_path, "intelligence_am", utcnow)
     assert exit_code == 0
     assert len(fake.calls) == 1
 
 
 def test_c_intelligence_am_one_second_before_deadline_is_allowed(tmp_path):
-    utcnow = lambda: dt.datetime(2026, 10, 9, 2, 9, 59, tzinfo=UTC)   # 07:39:59 IST
+    utcnow = lambda: dt.datetime(2026, 10, 9, 3, 14, 59, tzinfo=UTC)   # 08:44:59 IST
     exit_code, fake = _run(tmp_path, "intelligence_am", utcnow)
     assert exit_code == 0
     assert len(fake.calls) == 1
 
 
 def test_d_intelligence_am_at_exactly_the_deadline_is_expired(tmp_path):
-    utcnow = lambda: dt.datetime(2026, 10, 9, 2, 10, 0, tzinfo=UTC)   # 07:40:00 IST
+    utcnow = lambda: dt.datetime(2026, 10, 9, 3, 15, 0, tzinfo=UTC)   # 08:45:00 IST
     exit_code, fake = _run(tmp_path, "intelligence_am", utcnow)
     assert exit_code == 0   # EXPIRED is scheduler-safe, never a crash code
     assert len(fake.calls) == 0   # no child launch (packet section 12)
@@ -123,17 +127,17 @@ def test_d_intelligence_am_at_exactly_the_deadline_is_expired(tmp_path):
     assert not os.path.exists(lock_path(out_dir))   # the lock was never even attempted
 
 
-# --- E/F: PRE (07:00-08:00) ------------------------------------------------------------------
+# --- E/F: PRE (06:00-09:00) ------------------------------------------------------------------
 
 def test_e_pre_one_second_before_deadline_is_allowed(tmp_path):
-    utcnow = lambda: dt.datetime(2026, 10, 9, 2, 29, 59, tzinfo=UTC)   # 07:59:59 IST
+    utcnow = lambda: dt.datetime(2026, 10, 9, 3, 29, 59, tzinfo=UTC)   # 08:59:59 IST
     exit_code, fake = _run(tmp_path, "pre", utcnow)
     assert exit_code == 0
     assert len(fake.calls) == 1
 
 
 def test_f_pre_at_exactly_the_deadline_is_expired(tmp_path):
-    utcnow = lambda: dt.datetime(2026, 10, 9, 2, 30, 0, tzinfo=UTC)   # 08:00:00 IST
+    utcnow = lambda: dt.datetime(2026, 10, 9, 3, 30, 0, tzinfo=UTC)   # 09:00:00 IST
     exit_code, fake = _run(tmp_path, "pre", utcnow)
     assert exit_code == 0
     assert len(fake.calls) == 0
@@ -142,17 +146,17 @@ def test_f_pre_at_exactly_the_deadline_is_expired(tmp_path):
     assert latest["runner_status"] == EXPIRED
 
 
-# --- G/H: POST (19:30-20:30) -----------------------------------------------------------------
+# --- G/H: POST (19:00-23:59) -----------------------------------------------------------------
 
 def test_g_post_one_second_before_deadline_is_allowed(tmp_path):
-    utcnow = lambda: dt.datetime(2026, 10, 9, 14, 59, 59, tzinfo=UTC)   # 20:29:59 IST
+    utcnow = lambda: dt.datetime(2026, 10, 9, 18, 28, 59, tzinfo=UTC)   # 23:58:59 IST
     exit_code, fake = _run(tmp_path, "post", utcnow)
     assert exit_code == 0
     assert len(fake.calls) == 1
 
 
 def test_h_post_at_exactly_the_deadline_is_expired(tmp_path):
-    utcnow = lambda: dt.datetime(2026, 10, 9, 15, 0, 0, tzinfo=UTC)   # 20:30:00 IST
+    utcnow = lambda: dt.datetime(2026, 10, 9, 18, 29, 0, tzinfo=UTC)   # 23:59:00 IST
     exit_code, fake = _run(tmp_path, "post", utcnow)
     assert exit_code == 0
     assert len(fake.calls) == 0
@@ -164,7 +168,7 @@ def test_h_post_at_exactly_the_deadline_is_expired(tmp_path):
 # --- I/J: lock-wait interaction with the deadline -------------------------------------------
 
 def test_i_lock_wait_carries_the_job_past_its_deadline_is_expired_no_child(tmp_path):
-    """POST starts at 20:25 IST, 5 minutes of window remain. The holder never releases; the
+    """POST starts at 23:54 IST, 5 minutes of window remain. The holder never releases; the
     lock wait is capped at the remaining window (5 min, well under the default 15-min bounded
     wait), so by the time it gives up, the wall clock has reached the deadline exactly -
     EXPIRED, not LOCKED, and the child is never launched."""
@@ -172,7 +176,7 @@ def test_i_lock_wait_carries_the_job_past_its_deadline_is_expired_no_child(tmp_p
     holder = RunLock(out_dir)
     holder.acquire("holder-run", "intelligence_pm", [])
 
-    clock = _FakeClock(dt.datetime(2026, 10, 9, 14, 55, 0, tzinfo=UTC))   # 20:25:00 IST
+    clock = _FakeClock(dt.datetime(2026, 10, 9, 18, 24, 0, tzinfo=UTC))   # 23:54:00 IST
     _seed_dependency_satisfied(out_dir, "post", clock.utcnow)   # isolate the LOCK-vs-deadline
     fake = _FakeSubprocess(returncode=0)
     exit_code = runner.run_job(
@@ -222,8 +226,8 @@ def test_j_lock_becomes_available_before_deadline_launches_the_child(tmp_path):
 # --- K: a laptop-late/StartWhenAvailable-style invocation inside the window ------------------
 
 def test_k_late_start_still_inside_window_launches_normally(tmp_path):
-    """Intelligence AM invoked at 07:00 IST - 20 minutes late relative to its 06:40 schedule,
-    but still inside the 06:40-07:40 window (e.g. the laptop was off and just came back)."""
+    """Intelligence AM invoked at 07:00 IST - an hour late relative to its 06:00 trigger, but
+    still inside the 06:00-08:45 window (e.g. the laptop was off and just came back)."""
     utcnow = lambda: dt.datetime(2026, 10, 9, 1, 30, tzinfo=UTC)   # 07:00:00 IST
     exit_code, fake = _run(tmp_path, "intelligence_am", utcnow)
     assert exit_code == 0
@@ -233,8 +237,8 @@ def test_k_late_start_still_inside_window_launches_normally(tmp_path):
 # --- L: invocation after the window (a second job, for diversity) ---------------------------
 
 def test_l_invocation_after_the_window_never_launches(tmp_path):
-    """Intelligence PM (19:15-20:15) invoked at 20:20 IST - 5 minutes after its own deadline."""
-    utcnow = lambda: dt.datetime(2026, 10, 9, 14, 50, tzinfo=UTC)   # 20:20:00 IST
+    """Intelligence PM (19:15-23:30) invoked at 23:35 IST - 5 minutes after its own deadline."""
+    utcnow = lambda: dt.datetime(2026, 10, 9, 18, 5, tzinfo=UTC)   # 23:35:00 IST
     exit_code, fake = _run(tmp_path, "intelligence_pm", utcnow)
     assert exit_code == 0
     assert len(fake.calls) == 0
@@ -246,7 +250,7 @@ def test_l_invocation_after_the_window_never_launches(tmp_path):
 # --- A/M/N/O: status.py (missed_state), no runner/lock/subprocess involved ------------------
 
 def test_a_before_scheduled_time_is_pending_not_waiting_or_missed(tmp_path):
-    now_ist = dt.datetime(2026, 10, 9, 6, 39, tzinfo=IST)   # 1 minute before 06:40
+    now_ist = dt.datetime(2026, 10, 9, 5, 59, tzinfo=IST)   # 1 minute before 06:00
     spec = config.JOB_REGISTRY["intelligence_am"]
     row = status.job_status(str(tmp_path), str(tmp_path), spec, now_ist, _FixedCalendar(True))
     assert row["missed_state"] == PENDING
@@ -260,7 +264,7 @@ def test_m_weekend_or_holiday_is_not_expected(tmp_path):
 
 
 def test_n_inside_window_with_no_record_is_waiting_never_missed(tmp_path):
-    now_ist = dt.datetime(2026, 10, 9, 7, 15, tzinfo=IST)   # inside PRE's 07:00-08:00 window
+    now_ist = dt.datetime(2026, 10, 9, 7, 15, tzinfo=IST)   # inside PRE's 06:00-09:00 window
     spec = config.JOB_REGISTRY["pre"]
     row = status.job_status(str(tmp_path), str(tmp_path), spec, now_ist, _FixedCalendar(True))
     assert row["missed_state"] == WAITING
@@ -268,7 +272,7 @@ def test_n_inside_window_with_no_record_is_waiting_never_missed(tmp_path):
 
 
 def test_o_after_deadline_with_no_record_is_missed(tmp_path):
-    now_ist = dt.datetime(2026, 10, 9, 8, 1, tzinfo=IST)   # 1 minute after PRE's 08:00 deadline
+    now_ist = dt.datetime(2026, 10, 9, 9, 1, tzinfo=IST)   # 1 minute after PRE's 09:00 deadline
     spec = config.JOB_REGISTRY["pre"]
     row = status.job_status(str(tmp_path), str(tmp_path), spec, now_ist, _FixedCalendar(True))
     assert row["missed_state"] == MISSED

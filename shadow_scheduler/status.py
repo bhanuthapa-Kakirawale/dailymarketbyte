@@ -8,8 +8,9 @@ asserts this statically, not just behaviorally, which is why `records.py` (which
 
 MISSED/PENDING/NOT_EXPECTED/WAITING reuses the existing `core.trading_calendar.SessionCalendar`
 - never a second calendar implementation - plus `config.execution_window` (PK-E follow-up,
-2026-10-12) for the 1-hour per-job window: WAITING means "inside the window, no run yet today",
-distinct from MISSED ("the deadline has passed with no run today"). `now`/`calendar` are
+2026-10-12) for the per-job permitted start window (`JobSpec.window_start`..`window_end`,
+2026-10-28 timing packet): PENDING means "before window_start", WAITING "inside the window, no
+run yet today", distinct from MISSED ("window_end has passed with no run today"). `now`/`calendar` are
 always injected parameters, never a bare `datetime.now()` call, so every decision here is
 deterministic and testable without a real wall clock. A job's own `runner_status` (including
 EXPIRED - invoked at/after its deadline, child never launched) always takes display precedence
@@ -138,7 +139,7 @@ def _missed_state(job_spec, scheduler_latest: dict | None, now_ist: dt.datetime,
         return PENDING
     if ran_in_window:
         return OK
-    # Still inside the 1-hour execution window with no run yet today - NOT a miss. Only
+    # Still inside the permitted start window with no run yet today - NOT a miss. Only
     # at/after the deadline, with still no run, does this become MISSED.
     if now_ist < deadline_dt:
         return WAITING
@@ -243,6 +244,8 @@ def job_status(out_dir: str, business_root: str, job_spec, now_ist: dt.datetime,
         "job": job_spec.job,
         "task_name": job_spec.task_name,
         "scheduled_time": job_spec.scheduled_time,
+        "window_start": job_spec.window_start,
+        "window_end": job_spec.window_end,
         "scheduled_date": today.isoformat(),
         "runner_status": effective,
         "recorded_runner_status": current.get("runner_status") if sched_is_today else None,
@@ -349,7 +352,9 @@ def render_human(status: dict) -> str:
         shown = row["runner_status"] or row["missed_state"]
         ran = row["ran_at"] or "-"
         business = f"  {row['business_status']}" if row["business_status"] else ""
-        lines.append(f"{label:<18} {shown:<11} sched={row['scheduled_time']} ran={ran}{business}")
+        window = f"{row.get('window_start')}-{row.get('window_end')}"
+        lines.append(f"{label:<18} {shown:<11} sched={row['scheduled_time']} "
+                     f"window={window} ran={ran}{business}")
         for rej in row.get("rejected_invocations") or []:
             what = {"EARLY": "rejected EARLY", "EXPIRED": "rejected LATE (EXPIRED)",
                     OUT_OF_WINDOW_ATTEMPT: f"out-of-window attempt by the pre-fix runner "

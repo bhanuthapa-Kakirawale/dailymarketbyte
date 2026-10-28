@@ -161,8 +161,10 @@ def _business_evidence(business_root: str | None, record: dict) -> dict | None:
 
 def attribution(record: dict) -> dict:
     """(scheduled_date, invocation) for any record - the stored fields when present, else
-    inferred from `started_at` with the SAME `config.resolve_occurrence` rule the runner now
-    enforces (records written before PK-OPS-1 carry neither field)."""
+    inferred from `started_at` with the `config.resolve_occurrence` rule under the windows that
+    were in force when it was written (`config.LEGACY_WINDOWS`: records written before PK-OPS-1
+    carry neither field, and all of them predate the 2026-10-28 window change - so history is
+    never re-attributed under today's wider windows)."""
     if record.get("scheduled_date") and record.get("invocation"):
         return {"scheduled_date": record["scheduled_date"], "invocation": record["invocation"],
                 "inferred": False}
@@ -170,7 +172,7 @@ def attribution(record: dict) -> dict:
     started = _parse_utc(record.get("started_at"))
     if spec is None or started is None:
         return {"scheduled_date": None, "invocation": None, "inferred": True}
-    occ = config.resolve_occurrence(spec, started)
+    occ = config.resolve_occurrence(spec, started, windows=config.LEGACY_WINDOWS)
     return {"scheduled_date": occ.scheduled_date.isoformat(), "invocation": occ.invocation,
             "inferred": True}
 

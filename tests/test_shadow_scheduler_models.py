@@ -35,10 +35,19 @@ def test_job_registry_has_exactly_the_four_jobs_in_order():
 
 
 def test_job_registry_schedule_times_match_the_packet():
-    expected = {"intelligence_am": "06:40", "pre": "07:00", "intelligence_pm": "19:15",
+    # 2026-10-28 timing packet: AM 06:40 -> 06:00, PRE 07:00 -> 06:30; PM/POST unchanged.
+    expected = {"intelligence_am": "06:00", "pre": "06:30", "intelligence_pm": "19:15",
                "post": "19:30"}
     for job, time_str in expected.items():
         assert config.JOB_REGISTRY[job].scheduled_time == time_str
+
+
+def test_job_registry_permitted_start_windows_match_the_packet():
+    expected = {"intelligence_am": ("06:00", "08:45"), "pre": ("06:00", "09:00"),
+               "intelligence_pm": ("19:15", "23:30"), "post": ("19:00", "23:59")}
+    for job, window in expected.items():
+        spec = config.JOB_REGISTRY[job]
+        assert (spec.window_start, spec.window_end) == window
 
 
 def test_job_registry_weekdays_are_monday_to_friday_only():

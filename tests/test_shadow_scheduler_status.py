@@ -26,14 +26,14 @@ class _FixedCalendar:
 
 
 def test_pending_before_scheduled_time_on_a_trading_day(tmp_path):
-    now_ist = dt.datetime(2026, 10, 9, 6, 0, tzinfo=IST)   # before 06:40
+    now_ist = dt.datetime(2026, 10, 9, 5, 30, tzinfo=IST)   # before AM's 06:00 window start
     spec = config.JOB_REGISTRY["intelligence_am"]
     row = status.job_status(str(tmp_path), str(tmp_path), spec, now_ist, _FixedCalendar(True))
     assert row["missed_state"] == PENDING
 
 
 def test_missed_after_scheduled_time_with_no_record_on_a_trading_day(tmp_path):
-    now_ist = dt.datetime(2026, 10, 9, 8, 0, tzinfo=IST)   # well after 06:40
+    now_ist = dt.datetime(2026, 10, 9, 9, 0, tzinfo=IST)   # after AM's 08:45 window end
     spec = config.JOB_REGISTRY["intelligence_am"]
     row = status.job_status(str(tmp_path), str(tmp_path), spec, now_ist, _FixedCalendar(True))
     assert row["missed_state"] == MISSED
@@ -301,7 +301,7 @@ def test_missed_after_todays_deadline_with_no_invocation_at_all(tmp_path):
     rec = RunRecord(job="post", run_id="r1", started_at="2026-10-01T14:00:00+00:00",
                     runner_status=COMPLETED, child_exit_code=0)
     records.write_record(out_dir, rec)
-    now_ist = dt.datetime(2026, 10, 9, 21, 0, tzinfo=IST)   # well after POST's window
+    now_ist = dt.datetime(2026, 10, 9, 23, 59, 30, tzinfo=IST)   # after POST's 23:59 window end
     spec = config.JOB_REGISTRY["post"]
     row = status.job_status(out_dir, out_dir, spec, now_ist, _FixedCalendar(True))
     assert row["missed_state"] == MISSED
@@ -372,8 +372,8 @@ def test_overall_status_distinguishes_missed_business_failure_and_orphan_in_one_
     monkeypatch.setattr(orphans, "probe_process",
                         lambda pid, started: {"state": orphans.DEAD, "created_at": None})
 
-    # "post": no record of any kind today, observed well after its own 20:30 IST deadline.
-    now_ist = dt.datetime(2026, 10, 22, 20, 35, tzinfo=IST)
+    # "post": no record of any kind today, observed after its own 23:59 IST window end.
+    now_ist = dt.datetime(2026, 10, 22, 23, 59, 30, tzinfo=IST)
     s = status.overall_status(out_dir, business_root=business_root, now=now_ist,
                               calendar=_FixedCalendar(True))
 

@@ -1,8 +1,8 @@
 """shadow_scheduler.dependency: scheduler-level dependency ordering (PK-E follow-up).
 
 A small static map (`config.DEPENDENCIES`) says `pre` depends on `intelligence_am` and `post`
-depends on `intelligence_pm`. This module answers exactly one question - "has TODAY's upstream
-invocation reached a terminal, attempted outcome?" - by reading shadow_scheduler's OWN run
+depends on `intelligence_pm`. This module answers exactly one question - "has the upstream job
+COMPLETED for this same scheduled occurrence?" - by reading shadow_scheduler's OWN run
 records for the upstream job (`records.read_latest`). It never reads business state (the
 canonical report, readiness, Radar, Market Structure, publication status, ...) and never
 invokes the upstream job itself - that job remains its own independently scheduled Task
@@ -16,9 +16,17 @@ Two entry points:
                  holding it, or the two jobs could deadlock/starve each other. Bounded by the
                  caller's own execution-window deadline, never indefinite.
 
-CHILD_NONZERO counts as SATISFIED: the upstream job's own business exit code (e.g. PK-D's
-BLOCKED=20) is never re-judged here - "the refresh ATTEMPT finished" is all this layer asks.
-PK-C remains the sole authority on whether the dependent job's render is actually safe.
+Only COMPLETED (child exit 0) is SATISFIED (owner decision, 2026-10-28 timing packet - before
+it, CHILD_NONZERO counted too: "the refresh ATTEMPT finished"). intelligence_refresh exits 0 for
+SUCCESS and DEGRADED, 20 for BLOCKED and 30 for FAILED/LOCKED, so a BLOCKED/FAILED refresh is
+now a terminal non-satisfying outcome and the dependent job is DEPENDENCY_FAILED. The exit code
+is still never re-judged beyond zero/nonzero, and PK-C remains the sole authority on whether
+the dependent job's render is actually safe.
+
+MISSING: no record at all for the occurrence once the upstream's own window has closed (plus
+`config.DEPENDENCY_MISSING_GRACE_SECONDS`) means the upstream never ran - a terminal
+non-satisfying outcome, reported at once rather than waited on until the dependent job's own
+deadline.
 
 Occurrence identity (PK-OPS-1, 2026-10-24): "today" is the WAITING job's own attributed
 scheduled_date (`config.resolve_occurrence`), and an upstream record counts only if IT is
@@ -44,9 +52,11 @@ SATISFIED = "SATISFIED"
 PENDING = "PENDING"
 DEP_FAILED = "FAILED"
 
-_SATISFYING_STATUSES = frozenset({COMPLETED, CHILD_NONZERO})
-_TERMINAL_NON_SATISFYING = frozenset({FAILED, LOCKED, EXPIRED, DEPENDENCY_FAILED, ABANDONED,
-                                      "ORPHAN_SUSPECTED"})
+MISSING = "MISSING"   # synthetic upstream runner_status: its window closed with no record
+
+_SATISFYING_STATUSES = frozenset({COMPLETED})
+_TERMINAL_NON_SATISFYING = frozenset({CHILD_NONZERO, FAILED, LOCKED, EXPIRED, DEPENDENCY_FAILED,
+                                      ABANDONED, "ORPHAN_SUSPECTED"})
 
 def upstream_records(out_dir: str, dep_job: str, scheduled_date: dt.date) -> list:
     """`dep_job`'s records attributed to `scheduled_date`, EARLY rejections excluded, oldest
@@ -56,15 +66,18 @@ def upstream_records(out_dir: str, dep_job: str, scheduled_date: dt.date) -> lis
             if r["_attribution"]["invocation"] != EARLY]
 
 
-def check(out_dir: str, dep_job: str, today: dt.date, ist) -> tuple[str, dict | None]:
+def check(out_dir: str, dep_job: str, today: dt.date, ist, *,
+          now: dt.datetime | None = None) -> tuple[str, dict | None]:
     """One point-in-time read of `dep_job`'s records for the occurrence `today` (the waiting
     job's own attributed scheduled_date - see the module docstring). Never waits, never writes.
 
-    Any satisfying record -> SATISFIED; else any still-in-flight one -> PENDING; else a
-    terminal non-satisfying one (incl. a verifiably abandoned checkpoint) -> FAILED; no record
-    for that occurrence at all -> PENDING. A PRIOR occurrence's record never counts - yesterday's
-    completion never satisfies today's dependency (section 14's current-day-only rule).
-    `ist` is kept for signature compatibility; attribution is always Asia/Kolkata."""
+    A COMPLETED record -> SATISFIED; else any still-in-flight one -> PENDING; else a terminal
+    non-satisfying one (incl. CHILD_NONZERO and a verifiably abandoned checkpoint) -> FAILED; no
+    record for that occurrence at all -> PENDING, or FAILED with a synthetic
+    `{"runner_status": "MISSING"}` once `now` is past the upstream's own window end + grace.
+    A PRIOR occurrence's record never counts - yesterday's completion never satisfies today's
+    dependency (section 14's current-day-only rule). `ist` is kept for signature
+    compatibility; attribution is always Asia/Kolkata."""
     from .orphans import effective_status
     in_flight = failed = None
     for rec in upstream_records(out_dir, dep_job, today):
@@ -79,7 +92,20 @@ def check(out_dir: str, dep_job: str, today: dt.date, ist) -> tuple[str, dict | 
         return PENDING, in_flight   # RUNNING / WAITING_DEPENDENCY / unrecognised - in flight
     if failed is not None:
         return DEP_FAILED, failed
+    if now is not None and _window_closed(dep_job, today, now):
+        return DEP_FAILED, {"job": dep_job, "runner_status": MISSING,
+                            "scheduled_date": today.isoformat()}
     return PENDING, None
+
+
+def _window_closed(dep_job: str, scheduled_date: dt.date, now: dt.datetime) -> bool:
+    from . import config
+    spec = config.JOB_REGISTRY.get(dep_job)
+    if spec is None:
+        return False
+    _start, end = config.window_for_date(spec, scheduled_date)
+    grace = dt.timedelta(seconds=config.DEPENDENCY_MISSING_GRACE_SECONDS)
+    return config.to_ist(now) >= end + grace
 
 
 @dataclasses.dataclass
@@ -108,7 +134,8 @@ def wait(out_dir: str, dep_job: str, deadline_dt: dt.datetime, *, utcnow, ist,
         if now_ist >= deadline_dt:
             return WaitResult("TIMED_OUT", None, clock() - t0)
         # The occurrence is fixed by the caller, never re-derived from the wall clock mid-wait.
-        outcome, latest = check(out_dir, dep_job, scheduled_date or now_ist.date(), ist)
+        outcome, latest = check(out_dir, dep_job, scheduled_date or now_ist.date(), ist,
+                                now=now_ist)
         if outcome == SATISFIED:
             return WaitResult(SATISFIED, latest, clock() - t0, satisfied_at=utcnow().isoformat())
         if outcome == DEP_FAILED:
@@ -116,5 +143,5 @@ def wait(out_dir: str, dep_job: str, deadline_dt: dt.datetime, *, utcnow, ist,
         sleep(poll_s)
 
 
-__all__ = ["SATISFIED", "PENDING", "DEP_FAILED", "upstream_records", "check", "WaitResult",
+__all__ = ["SATISFIED", "PENDING", "DEP_FAILED", "MISSING", "upstream_records", "check", "WaitResult",
           "wait"]

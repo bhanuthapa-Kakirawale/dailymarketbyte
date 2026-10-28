@@ -40,14 +40,16 @@ def test_check_is_satisfied_for_completed(tmp_path):
     assert rec["runner_status"] == COMPLETED
 
 
-def test_check_is_satisfied_for_child_nonzero(tmp_path):
-    """CHILD_NONZERO is still a completed ATTEMPT - never re-judged as a business failure here;
-    PK-C alone decides whether that outcome is actually safe to build on."""
+def test_check_is_failed_for_child_nonzero(tmp_path):
+    """Owner decision (2026-10-28 timing packet): only COMPLETED (exit 0 = refresh SUCCESS or
+    DEGRADED) satisfies. CHILD_NONZERO (refresh BLOCKED=20 / FAILED or LOCKED=30) is a terminal,
+    non-satisfying upstream outcome - it used to count as a finished attempt."""
     out_dir = str(tmp_path)
     _write(out_dir, "intelligence_pm", dt.datetime(2026, 10, 9, 13, 50, tzinfo=UTC),
           CHILD_NONZERO)
     outcome, rec = dependency.check(out_dir, "intelligence_pm", dt.date(2026, 10, 9), IST)
-    assert outcome == dependency.SATISFIED
+    assert outcome == dependency.DEP_FAILED
+    assert rec["runner_status"] == CHILD_NONZERO
 
 
 def test_check_is_failed_for_failed_locked_and_expired(tmp_path):

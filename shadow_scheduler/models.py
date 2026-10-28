@@ -23,8 +23,9 @@ JOBS = ("intelligence_am", "pre", "intelligence_pm", "post")
 # outcome, not scheduler infrastructure failure, and is never retried. LOCKED and FAILED are
 # the two infra-only outcomes where no child exit code exists to propagate. EXPIRED is a THIRD
 # kind of terminal outcome, distinct from both: the job was invoked (or finished waiting for
-# the global lock) at/after its own 1-hour execution-window deadline
-# (`config.EXECUTION_WINDOW_MINUTES`), and the runner deliberately refused to launch the child
+# the global lock) outside its own permitted start window (`JobSpec.window_start` ..
+# `window_end`), or with too little Task Scheduler time left to finish the child
+# (`config.RUNNER_WAIT_BUDGET_SECONDS`), and the runner deliberately refused to launch the child
 # at all - never a business outcome (nothing ran), never an infra failure (nothing crashed),
 # never retried.
 RUNNING, COMPLETED, CHILD_NONZERO, LOCKED, FAILED, EXPIRED = (
@@ -34,8 +35,10 @@ RUNNING, COMPLETED, CHILD_NONZERO, LOCKED, FAILED, EXPIRED = (
 # only while `pre`/`post` is genuinely blocked on its upstream intelligence job - the same
 # mechanism the ordinary RUNNING checkpoint already uses, so `status` can show it live with no
 # extra process-introspection machinery. DEPENDENCY_FAILED is a terminal outcome: the upstream
-# job reached FAILED/LOCKED/EXPIRED today (a terminal, non-satisfying attempt) or the dependency
-# state could not be re-confirmed immediately before the lock/child launch. Neither is ever
+# job reached a terminal, non-satisfying outcome for the same scheduled_date (anything but
+# COMPLETED - incl. CHILD_NONZERO since the 2026-10-28 timing packet - or MISSING: its window
+# closed with no record at all), or the dependency state could not be re-confirmed immediately
+# before the lock/child launch. Neither is ever
 # produced for intelligence_am/intelligence_pm themselves - they have no dependency of their own
 # (shadow_scheduler.config.DEPENDENCIES).
 WAITING_DEPENDENCY, DEPENDENCY_FAILED = "WAITING_DEPENDENCY", "DEPENDENCY_FAILED"
@@ -77,9 +80,9 @@ EXPIRED_EXIT_CODE = 0
 EARLY_EXIT_CODE = 0
 
 # status.py's own per-job/overall health vocabulary (distinct again from runner_status and
-# from business readiness). WAITING is new (PK-E follow-up): "scheduled_time <= now <
-# deadline, no run yet today" - distinct from PENDING (before scheduled_time) and MISSED
-# (deadline has passed with no run today). It must never be reported as MISSED.
+# from business readiness). WAITING is new (PK-E follow-up): "window_start <= now <
+# window_end, no run yet today" - distinct from PENDING (before window_start) and MISSED
+# (window_end has passed with no run today). It must never be reported as MISSED.
 PENDING, MISSED, NOT_EXPECTED, OK, UNKNOWN, WAITING = (
     "PENDING", "MISSED", "NOT_EXPECTED", "OK", "UNKNOWN", "WAITING")
 HEALTHY, ATTENTION, BROKEN = "HEALTHY", "ATTENTION", "BROKEN"
@@ -93,13 +96,18 @@ class JobSpec:
     """
     job: str
     bat_relpath: str                 # repo-root-relative, e.g. "scripts/run_production_pre.bat"
-    scheduled_time: str              # "HH:MM", IST, a plain string - no business clock logic here
+    scheduled_time: str              # "HH:MM", IST - the Windows Task Scheduler TRIGGER time
     weekdays: tuple = (0, 1, 2, 3, 4)   # Python date.weekday() numbering, Mon-Fri
     edition: str | None = None       # "PRE" | "POST" | None (the two intelligence jobs)
     business_latest_relpath: str = ""  # path, relative to config.OUT_DIR, of the OTHER
                                         # package's latest.json this job's business outcome
                                         # lives in - read-only, read by status.py only
     task_name: str = ""              # Windows Task Scheduler task name under \\DMB\\
+    # Permitted START window (2026-10-28 timing packet), "HH:MM" IST, one calendar day: a child
+    # may launch only for window_start <= now < window_end. Deliberately separate from the
+    # trigger (`scheduled_time`): PRE triggers at 06:30 but may start 06:00-09:00.
+    window_start: str = ""
+    window_end: str = ""
 
 
 @dataclass
@@ -122,15 +130,15 @@ class RunRecord:
     business_latest_ref: str | None = None   # a path STRING reference, never file content
     reclaimed_stale_lock: dict | None = None
     error: str | None = None          # launch-failure/EXPIRED diagnostic (free text)
-    # 1-hour execution-window fields (PK-E follow-up, 2026-10-12), IST ISO-8601:
+    # Execution-window fields (PK-E follow-up, 2026-10-12), IST ISO-8601:
     scheduled_time: str = ""          # "HH:MM", copied from JobSpec for a self-contained record
-    window_start: str | None = None   # == scheduled_dt
-    window_end: str | None = None     # == deadline_dt; EXPIRED means started_at (IST) >= this
+    window_start: str | None = None   # the attributed occurrence's window start (inclusive)
+    window_end: str | None = None     # ... and end (exclusive)
     child_started: bool = True        # False only for LOCKED/FAILED-before-launch/EXPIRED
     # Dependency ordering (PK-E follow-up) - all stay None for intelligence_am/intelligence_pm,
     # which have no entry in config.DEPENDENCIES:
     dependency_job: str | None = None       # e.g. "intelligence_am", or None if no dependency
-    dependency_status: str | None = None    # "SATISFIED" | "FAILED" | "TIMED_OUT" | None
+    dependency_status: str | None = None    # SATISFIED | FAILED | MISSING | TIMED_OUT | None
     dependency_run_id: str | None = None    # the upstream job's own run_id, once SATISFIED
     dependency_wait_seconds: float | None = None
     dependency_satisfied_at: str | None = None   # UTC ISO-8601, only when SATISFIED
@@ -150,6 +158,10 @@ class RunRecord:
     # "NOT_LAUNCHED" (no child can exist) -> "LAUNCHING" (checkpointed immediately before the
     # launch: a child may exist) -> "LAUNCHED" (PID known). None on a pre-PK-OPS-1 record.
     child_phase: str | None = None
+    # Which window rule produced window_start/window_end/invocation (2026-10-28 timing packet):
+    # "2" = JobSpec.window_start/window_end. None = an older record, written under the trigger +
+    # 60 min rule (config.LEGACY_WINDOWS).
+    window_policy: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)

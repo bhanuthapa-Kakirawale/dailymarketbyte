@@ -6,6 +6,12 @@ Incident: on 2026-10-21 06:48 IST the previous evening's missed 19:15/19:30 jobs
 calendar date and only checked `now >= deadline`. The same defect launched POST on Saturday
 2026-10-24 08:29. Every clock here is injected; no test touches a real process, a real Windows
 task, or production output. Section letters follow the packet's section-14 list (A-Q).
+
+Boundaries below use the CURRENT permitted start windows (2026-10-28 timing packet: AM
+06:00-08:45, PRE 06:00-09:00, PM 19:15-23:30, POST 19:00-23:59 IST). A seeded record with no
+stored `scheduled_date`/`invocation` is a legacy record and is attributed under
+`config.LEGACY_WINDOWS` (the trigger + 60 min rule it was written under), exactly like the real
+2026-10-19..10-24 incident records.
 """
 from __future__ import annotations
 
@@ -88,29 +94,39 @@ def _run(tmp_path, job, clock, spy=None, **kw):
 
 
 def _seed_upstream_for(out_dir, job, when_utc):
-    """Seed an in-window COMPLETED upstream for `job`'s own occurrence at `when_utc`."""
+    """Seed an in-window COMPLETED upstream for `job`'s own occurrence at `when_utc`, with the
+    stored attribution every current runner record carries."""
     dep = config.DEPENDENCIES.get(job)
     if not dep:
         return
     occ = config.resolve_occurrence(config.JOB_REGISTRY[job], when_utc)
     start, _ = config.window_for_date(config.JOB_REGISTRY[dep], occ.scheduled_date)
-    _seed(out_dir, dep, (start + dt.timedelta(minutes=1)).astimezone(UTC))
+    _seed(out_dir, dep, (start + dt.timedelta(minutes=1)).astimezone(UTC),
+          scheduled_date=occ.scheduled_date.isoformat(), invocation=config.IN_WINDOW)
 
 
 # --- occurrence attribution (pure) -----------------------------------------------------------
 
 @pytest.mark.parametrize("job,ist,expected_date,expected_class", [
-    ("intelligence_am", (2026, 10, 21, 6, 39), "2026-10-21", config.EARLY),
-    ("intelligence_am", (2026, 10, 21, 6, 40), "2026-10-21", config.IN_WINDOW),
-    ("intelligence_am", (2026, 10, 21, 7, 40), "2026-10-21", config.LATE),
+    ("intelligence_am", (2026, 10, 21, 5, 59), "2026-10-21", config.EARLY),
+    ("intelligence_am", (2026, 10, 21, 6, 0), "2026-10-21", config.IN_WINDOW),
+    ("intelligence_am", (2026, 10, 21, 8, 44, 59), "2026-10-21", config.IN_WINDOW),
+    ("intelligence_am", (2026, 10, 21, 8, 45), "2026-10-21", config.LATE),
+    ("pre", (2026, 10, 21, 5, 59), "2026-10-21", config.EARLY),
+    ("pre", (2026, 10, 21, 6, 0), "2026-10-21", config.IN_WINDOW),
+    ("pre", (2026, 10, 21, 9, 0), "2026-10-21", config.LATE),
     ("intelligence_pm", (2026, 10, 21, 6, 48), "2026-10-20", config.LATE),
     ("post", (2026, 10, 21, 6, 48), "2026-10-20", config.LATE),
     ("post", (2026, 10, 24, 8, 29), "2026-10-23", config.LATE),     # Saturday -> Friday
     ("post", (2026, 10, 26, 6, 48), "2026-10-23", config.LATE),     # Monday AM -> Friday
     ("intelligence_pm", (2026, 10, 24, 19, 20), "2026-10-23", config.LATE),   # Sat "window"
     ("intelligence_pm", (2026, 10, 21, 19, 14), "2026-10-21", config.EARLY),
-    ("post", (2026, 10, 21, 20, 29, 59), "2026-10-21", config.IN_WINDOW),
-    ("post", (2026, 10, 21, 20, 30), "2026-10-21", config.LATE),
+    ("intelligence_pm", (2026, 10, 21, 23, 30), "2026-10-21", config.LATE),
+    ("post", (2026, 10, 21, 18, 59), "2026-10-21", config.EARLY),
+    ("post", (2026, 10, 21, 19, 0), "2026-10-21", config.IN_WINDOW),
+    ("post", (2026, 10, 21, 23, 58, 59), "2026-10-21", config.IN_WINDOW),
+    ("post", (2026, 10, 21, 23, 59), "2026-10-21", config.LATE),
+    ("post", (2026, 10, 22, 0, 30), "2026-10-21", config.LATE),     # after midnight -> D
 ])
 def test_resolve_occurrence_attributes_every_invocation_to_one_occurrence(
         job, ist, expected_date, expected_class):
@@ -122,8 +138,8 @@ def test_resolve_occurrence_attributes_every_invocation_to_one_occurrence(
 
 # --- A-F: window start/end at the boundaries --------------------------------------------------
 
-def test_a_intelligence_am_at_0639_is_early_and_launches_no_child(tmp_path):
-    code, spy, full = _run(tmp_path, "intelligence_am", _Clock(_utc(2026, 10, 21, 6, 39)))
+def test_a_intelligence_am_at_0559_is_early_and_launches_no_child(tmp_path):
+    code, spy, full = _run(tmp_path, "intelligence_am", _Clock(_utc(2026, 10, 21, 5, 59)))
     assert code == 0 and spy.calls == []
     assert full["runner_status"] == EARLY
     assert full["child_started"] is False and full["child_exit_code"] is None
@@ -132,14 +148,15 @@ def test_a_intelligence_am_at_0639_is_early_and_launches_no_child(tmp_path):
     assert not os.path.exists(lock_path(str(tmp_path / "ss")))   # never even tried the lock
 
 
-def test_b_intelligence_am_at_0640_is_allowed(tmp_path):
-    code, spy, full = _run(tmp_path, "intelligence_am", _Clock(_utc(2026, 10, 21, 6, 40)))
+def test_b_intelligence_am_at_0600_is_allowed(tmp_path):
+    code, spy, full = _run(tmp_path, "intelligence_am", _Clock(_utc(2026, 10, 21, 6, 0)))
     assert code == 0 and len(spy.calls) == 1
     assert full["runner_status"] == COMPLETED and full["invocation"] == config.IN_WINDOW
 
 
-def test_c_pre_at_0700_is_allowed(tmp_path):
-    clock = _Clock(_utc(2026, 10, 21, 7, 0))
+def test_c_pre_at_0600_is_allowed(tmp_path):
+    """PRE's window opens at 06:00, half an hour before its 06:30 trigger."""
+    clock = _Clock(_utc(2026, 10, 21, 6, 0))
     _seed_upstream_for(str(tmp_path / "ss"), "pre", clock.utc)
     code, spy, full = _run(tmp_path, "pre", clock)
     assert code == 0 and len(spy.calls) == 1 and full["runner_status"] == COMPLETED
@@ -216,12 +233,18 @@ def test_g_a_missed_job_never_becomes_todays_scheduled_job_in_status(tmp_path):
 
 def test_h_dependency_completing_after_the_deadline_never_launches(tmp_path):
     out_dir = str(tmp_path / "ss")
-    clock = _Clock(_utc(2026, 10, 21, 20, 25))      # 5 minutes of POST window left
-    deadline = _utc(2026, 10, 21, 20, 30)
+    clock = _Clock(_utc(2026, 10, 21, 23, 54))      # 5 minutes of POST window left
+    deadline = _utc(2026, 10, 21, 23, 59)
+    # PM is still in flight (started inside its own window, an unverifiable cross-host
+    # checkpoint), so POST waits - and PM only finishes at/after POST's own deadline.
+    pm = _seed(out_dir, "intelligence_pm", _utc(2026, 10, 21, 23, 20), status_=RUNNING,
+               run_id="late-pm", hostname="", pid=0, scheduled_date="2026-10-21",
+               invocation=config.IN_WINDOW)
 
     def upstream_appears(now):
         if now >= deadline:
-            _seed(out_dir, "intelligence_pm", _utc(2026, 10, 21, 19, 16), run_id="late-pm")
+            pm.runner_status = COMPLETED
+            records.write_record(out_dir, pm)
 
     clock.on_sleep = upstream_appears
     code, spy, full = _run(tmp_path, "post", clock, dependency_poll_s=60)
@@ -248,12 +271,12 @@ def test_window_is_rechecked_after_the_dependency_wait_not_only_at_invocation(tm
     """The dependency is observed SATISFIED inside the window, but the clock crosses the
     deadline before the post-wait re-check - the first window check passing is not enough."""
     out_dir = str(tmp_path / "ss")
-    clock = _Clock(_utc(2026, 10, 21, 20, 29, 50))
+    clock = _Clock(_utc(2026, 10, 21, 23, 58, 50))
     real_wait = dependency.wait
 
     def wait_then_jump(*a, **kw):
         result = real_wait(*a, **kw)
-        clock.utc = _utc(2026, 10, 21, 20, 30, 1)   # e.g. machine slept right after
+        clock.utc = _utc(2026, 10, 21, 23, 59, 1)   # e.g. machine slept right after
         return result
 
     _seed(out_dir, "intelligence_pm", _utc(2026, 10, 21, 19, 20))
@@ -292,7 +315,8 @@ def test_an_early_upstream_rejection_is_ignored_not_a_failure(tmp_path):
 
 def test_waits_are_capped_by_the_runner_budget_before_task_schedulers_time_limit(tmp_path):
     """2026-10-21: the 06:48 POST was killed by PT50M while waiting, leaving
-    WAITING_DEPENDENCY. The runner now gives up (and records it) at 45 min."""
+    WAITING_DEPENDENCY. The runner now gives up (and records it) at its wait budget - 25 min
+    since the 2026-10-28 timing packet, so a launched child also keeps its 20-min reserve."""
     clock = _Clock(_utc(2026, 10, 21, 19, 30))
     code, spy, full = _run(tmp_path, "post", clock, dependency_poll_s=60)
     assert spy.calls == [] and full["runner_status"] == EXPIRED
@@ -305,11 +329,11 @@ def test_waits_are_capped_by_the_runner_budget_before_task_schedulers_time_limit
 def test_dependency_starting_late_inside_the_window_still_satisfies(tmp_path):
     out_dir = str(tmp_path / "ss")
     clock = _Clock(_utc(2026, 10, 21, 19, 30))
-    pm_running = _seed(out_dir, "intelligence_pm", _utc(2026, 10, 21, 19, 50),
+    pm_running = _seed(out_dir, "intelligence_pm", _utc(2026, 10, 21, 19, 40),
                        status_=RUNNING, run_id="pm-late", hostname="", pid=0)
 
-    def finish(now):
-        if now >= _utc(2026, 10, 21, 19, 58):
+    def finish(now):   # inside POST's 25-minute wait budget (19:30 + 25 min = 19:55)
+        if now >= _utc(2026, 10, 21, 19, 50):
             pm_running.runner_status = COMPLETED
             records.write_record(out_dir, pm_running)
 
@@ -662,9 +686,9 @@ def test_status_todays_orphan_is_orphan_suspected_then_abandoned_once_reconciled
 
 def test_status_never_counts_an_early_rejection_as_todays_run(tmp_path):
     out_dir = str(tmp_path / "ss")
-    _run(tmp_path, "intelligence_am", _Clock(_utc(2026, 10, 22, 6, 39)))
+    _run(tmp_path, "intelligence_am", _Clock(_utc(2026, 10, 22, 5, 59)))
     s = status.overall_status(out_dir, business_root=str(tmp_path / "biz"),
-                              now=dt.datetime(2026, 10, 22, 7, 45, tzinfo=IST),
+                              now=dt.datetime(2026, 10, 22, 8, 50, tzinfo=IST),
                               calendar=_Calendar(True))
     row = s["jobs"]["intelligence_am"]
     assert row["runner_status"] is None and row["missed_state"] == MISSED
@@ -702,8 +726,10 @@ def test_status_previous_occurrence_shows_last_nights_miss_for_information_only(
 
 def test_o_a_manual_replay_never_counterfeits_the_scheduled_run(tmp_path):
     """A manual `production_orchestrator post` (no scheduler record, e.g. 2026-10-21 21:17)
-    updates the business latest.json, but the scheduled POST occurrence stays MISSED and the
-    business result is not attributed to it."""
+    updates the business latest.json, but the scheduled POST occurrence stays MISSED (observed
+    after today's 23:59 window end) and the business result is not attributed to it. The
+    21:16 EXPIRED record is a legacy one, attributed under the 19:30-20:30 rule it was written
+    under."""
     out_dir = str(tmp_path / "ss")
     biz = tmp_path / "biz" / "production_runs" / "POST"
     biz.mkdir(parents=True)
@@ -712,7 +738,7 @@ def test_o_a_manual_replay_never_counterfeits_the_scheduled_run(tmp_path):
         "started_at": _utc(2026, 10, 21, 21, 17).isoformat()}), encoding="utf-8")
     _seed(out_dir, "post", _utc(2026, 10, 21, 21, 16), status_=EXPIRED, child_started=False)
     s = status.overall_status(out_dir, business_root=str(tmp_path / "biz"),
-                              now=dt.datetime(2026, 10, 21, 21, 30, tzinfo=IST),
+                              now=dt.datetime(2026, 10, 21, 23, 59, 30, tzinfo=IST),
                               calendar=_Calendar(True))
     row = s["jobs"]["post"]
     assert row["runner_status"] is None and row["business_status"] is None
@@ -810,7 +836,7 @@ def test_q_child_commands_and_argv_are_unchanged(tmp_path):
         "intelligence_pm": "scripts/run_intelligence_refresh.bat",
         "post": "scripts/run_production_post.bat"}
     assert {j: s.scheduled_time for j, s in config.JOB_REGISTRY.items()} == {
-        "intelligence_am": "06:40", "pre": "07:00", "intelligence_pm": "19:15", "post": "19:30"}
+        "intelligence_am": "06:00", "pre": "06:30", "intelligence_pm": "19:15", "post": "19:30"}
     code, spy, full = _run(tmp_path, "intelligence_am", _Clock(_utc(2026, 10, 21, 6, 41)))
     assert spy.calls == [[os.path.normpath(os.path.join(str(tmp_path / "repo"),
                                                         "scripts/run_intelligence_refresh.bat"))]]

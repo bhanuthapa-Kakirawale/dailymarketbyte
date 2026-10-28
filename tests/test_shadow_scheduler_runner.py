@@ -268,9 +268,10 @@ def test_pre_rejects_yesterdays_intelligence_am_completion_and_expires(tmp_path)
     assert latest["runner_status"] == EXPIRED
 
 
-def test_pre_proceeds_when_intelligence_am_reached_child_nonzero(tmp_path):
-    """CHILD_NONZERO upstream (packet section 17/30): the refresh ATTEMPT finished - ordering is
-    satisfied, PK-C (not this layer) judges whether that business outcome is actually safe."""
+def test_pre_stops_when_intelligence_am_reached_child_nonzero(tmp_path):
+    """CHILD_NONZERO upstream: owner decision (2026-10-28 timing packet) - PRE depends on a
+    SUCCESSFUL (exit 0) Intelligence AM. A BLOCKED/FAILED refresh is DEPENDENCY_FAILED: no PRE
+    child, exit 5. (Before the packet this was satisfied as "the attempt finished".)"""
     out_dir = str(tmp_path / "shadow_scheduler")
     today_utc = dt.datetime(2026, 10, 9, 1, 45, tzinfo=UTC)   # 07:15 IST
     _write_upstream(out_dir, "intelligence_am", today_utc, CHILD_NONZERO)
@@ -280,8 +281,11 @@ def test_pre_proceeds_when_intelligence_am_reached_child_nonzero(tmp_path):
         repo_root=str(tmp_path / "repo"), python_executable="D:\\repo\\venv\\Scripts\\python.exe",
         subprocess_run=fake, utcnow=lambda: today_utc, sleep=lambda s: None,
         clock_monotonic=lambda: 0.0)
-    assert exit_code == 0
-    assert len(fake.calls) == 1
+    assert exit_code == 5
+    assert len(fake.calls) == 0
+    latest = records.read_latest(out_dir, "pre")
+    assert latest["runner_status"] == "DEPENDENCY_FAILED"
+    assert latest["dependency_status"] == "FAILED"
 
 
 def test_pre_stops_when_intelligence_am_failed_before_completing(tmp_path):

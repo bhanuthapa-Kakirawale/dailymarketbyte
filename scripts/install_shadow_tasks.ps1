@@ -56,8 +56,8 @@ function Find-ShadowPythonExecutable {
 function Get-ExpectedShadowTasks {
     param([Parameter(Mandatory)][string]$RepoRoot, [Parameter(Mandatory)][string]$PythonExe)
     $rows = @(
-        [pscustomobject]@{ Name = "DMB-Shadow-Intelligence-AM"; Job = "intelligence_am"; Time = "06:40" }
-        [pscustomobject]@{ Name = "DMB-Shadow-PRE";             Job = "pre";             Time = "07:00" }
+        [pscustomobject]@{ Name = "DMB-Shadow-Intelligence-AM"; Job = "intelligence_am"; Time = "06:00" }
+        [pscustomobject]@{ Name = "DMB-Shadow-PRE";             Job = "pre";             Time = "06:30" }
         [pscustomobject]@{ Name = "DMB-Shadow-Intelligence-PM"; Job = "intelligence_pm"; Time = "19:15" }
         [pscustomobject]@{ Name = "DMB-Shadow-POST";            Job = "post";            Time = "19:30" }
     )
@@ -65,8 +65,8 @@ function Get-ExpectedShadowTasks {
         $row | Add-Member -NotePropertyName Execute -NotePropertyValue $PythonExe
         $row | Add-Member -NotePropertyName Arguments -NotePropertyValue "-m shadow_scheduler run $($row.Job)"
         $row | Add-Member -NotePropertyName WorkingDirectory -NotePropertyValue $RepoRoot
-        # DMB is a lightweight scheduled workflow and is allowed to run inside its own one-hour
-        # execution window even on battery; the window itself (not these flags) is the safety
+        # DMB is a lightweight scheduled workflow and is allowed to run inside its own permitted
+        # start window even on battery; the window itself (not these flags) is the safety
         # boundary. WakeToRun can only wake a SLEEPING/HIBERNATING machine with wake-timer support
         # - it can never power on a fully shut-down laptop. See docs\SHADOW_PRODUCTION_OPERATIONS.md.
         $row | Add-Member -NotePropertyName DisallowStartIfOnBatteries -NotePropertyValue $false

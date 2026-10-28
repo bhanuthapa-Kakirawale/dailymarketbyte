@@ -129,7 +129,7 @@ valid canonical report exists.** If one already does, it's a no-op. If not, the 
 `products.report_job.run_report_job` is invoked to build it (never a second report-building
 path, never a fabricated report, never an older session substituted).
 
-- **Morning (e.g. 06:40 IST) repairs the previous session if its evening build was missed or
+- **Morning (e.g. 06:00 IST) repairs the previous session if its evening build was missed or
   failed.** If the prior evening's REPORT job never ran (laptop off) or failed (a transient
   data gap - see the 2026-10-13 incident below), the morning run resolves
   `latest_final_session` to that prior session and builds it, so the same morning's PRE can

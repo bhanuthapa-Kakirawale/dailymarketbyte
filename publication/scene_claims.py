@@ -14,10 +14,28 @@ from .claims import (BriefResolver, ReportResolver, claim, definition_claims, ho
 STRUCTURE_SOURCES = (S.SRC_YAHOO, S.SRC_NSE_CONSTITUENTS, S.SRC_MARKET_STRUCTURE)
 STRUCTURE_ROLE = "PRICES: YAHOO FINANCE EOD / UNIVERSE & SECTORS: NSE"
 NO_CLAIM_KINDS = {"CLOSING"}
+# hook facts whose source_refs are Market Structure metric keys, not report fact ids
+STRUCTURE_FACT_KINDS = ("STRUCTURE_COUNT", "BREADTH_MOVE")
 
 
 def _numeric(texts):
     return [(k, v) for k, v in texts.items() if numbers(v)]
+
+
+def _breadth_evidence_ok(f, snap, session) -> bool:
+    """A BREADTH_MOVE (`structure.divergence`) resolves only when it names metric keys, every
+    key is a PUBLISHABLE metric of THIS session's snapshot, and every number the fact displays
+    is one of those metrics' own counts - the display never stands in for the evidence."""
+    from market_structure.aggregator import PUBLISHABLE
+    refs = tuple(f.source_refs or ())
+    if not refs or snap is None or str(snap.session_date) != str(session):
+        return False
+    metrics = [snap.metric(k) for k in refs]
+    if any(m is None or m.status != PUBLISHABLE for m in metrics):
+        return False
+    counts = {str(v) for m in metrics for v in (m.numerator, m.denominator)}
+    shown = {n.replace(",", "") for n in (f.numbers or ())} | numbers(f.display)
+    return bool(shown) and shown <= counts
 
 
 def _public_section_claims(sid, spec, texts, session):
@@ -49,7 +67,9 @@ def _public_section_claims(sid, spec, texts, session):
 
 
 # --------------------------------------------------------------------------- unified POST
-def post_claims(sb, report, sheet=None) -> list:
+def post_claims(sb, report, sheet=None, structure=None) -> list:
+    """`structure`: the session's MarketStructureSnapshot (what a BREADTH_MOVE hook fact is
+    checked against); None leaves every BREADTH_MOVE unresolved."""
     res = ReportResolver(report)
     session = sb.session_date
     nifty_ids = list((getattr(report, "nifty", None) or {}).get("fact_ids") or []) if report else []
@@ -80,7 +100,9 @@ def post_claims(sb, report, sheet=None) -> list:
         if refs:
             return refs, res.sources(refs), ("historical rank over canonical sessions"
                                              if kind == "INDEX_RANK" else None)
-        if kind == "STRUCTURE_COUNT":
+        if kind in STRUCTURE_FACT_KINDS:
+            if kind == "BREADTH_MOVE" and not _breadth_evidence_ok(f, structure, session):
+                return [], [], None            # unresolved: check_claims reports it
             return ([f"market_structure:{session}:{k}" for k in f.source_refs],
                     list(STRUCTURE_SOURCES), "count over the named universe")
         if kind in ("INDEX_MOVE", "INDEX_LEVEL", "INDEX_CONTEXT", "INDEX_RANK") and \

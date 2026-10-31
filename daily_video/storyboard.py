@@ -839,7 +839,8 @@ def build_storyboard(plan, pres, radar_presentation: dict | None = None,
     # every visible number -> the fact(s) / approved derivation it comes from
     from publication.scene_claims import post_claims, storyboard_scene_texts
     sb.claims = post_claims(sb, getattr(pres, "report", None),
-                            sheet if dynamic_hook else None)
+                            sheet if dynamic_hook else None,
+                            structure=getattr(intelligence, "structure", None))
     sb.claim_texts = storyboard_scene_texts(sb)
     return sb
 

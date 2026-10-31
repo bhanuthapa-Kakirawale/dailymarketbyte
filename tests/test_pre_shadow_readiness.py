@@ -514,7 +514,11 @@ FROZEN = {
     # file changed.
     "daily_video/scenes.py": "4347e5280af68e429a25e471d372bc830c52bedc9ec4b5c1c22208c8d9be8abb",
     # re-pinned: P4 Editorial Planner V3 (owner-approved plan)
-    "daily_video/storyboard.py": "cff54bc8ae35b85be1e45dfa174db68cd87fde26b0ca6d1f2d6f8cb7448c69db",
+    # Re-pinned 2026-10-31 with owner approval: build_storyboard hands the session's Market
+    # Structure snapshot to post_claims (`structure=`), so the breadth-divergence hook's
+    # BREADTH_MOVE claim can be checked against its PUBLISHABLE metrics (2026-10-30 POST
+    # displayed_claims BLOCK). One call argument; no scene drawing/timing changed.
+    "daily_video/storyboard.py": "3313d8a74c10aa6d35230d1d522b79f185c3d518d3ffaf94913025d1db1d6de9",
     "daily_video/theme.py": "8e1af617da9052c104ede87ddd393de5744355d657b513accfee4414f8b726db",
     "daily_video/typography.py": "d6b5620d928e4ea9eef40647713b37f639f5ce087a47bd112bf0af2c37f152ae",
     "video.py": "7b7155df022f5795ab271a38963fa05ab9cd4ba6917391a75f5df3567280e352",

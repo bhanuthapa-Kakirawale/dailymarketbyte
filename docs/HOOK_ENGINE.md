@@ -69,6 +69,10 @@ The hook is derived from the edition's strongest selected story without a second
   insight, `publication.public_hooks.add_structure_facts` adds `structure.divergence`.
   - It is a `BREADTH_MOVE` fact: the count of universe stocks that closed against Nifty's
     direction, over the covered denominator, taken from the insight's own split.
+  - Only when the breadth metrics are PUBLISHABLE (100% coverage). A PARTIAL divergence still
+    plays in UNDER THE SURFACE, worded "of N covered", but is not offered as a hook: the hook's
+    "n of N" has no room for that qualifier, and its claim would not resolve. The omission is
+    recorded in `sheet.metadata["structure_hook_omitted"]` (fact id -> reason).
   - `BREADTH_MOVE` is a move kind for the validator, so "fell" next to "NIFTY 200" is checked
     against that fact's direction.
   - The candidate `post-breadth-divergence` (CONTRAST, `HEADLINE_NUMBER` hero) says, e.g., "Nifty

@@ -76,12 +76,26 @@ def add_structure_facts(sheet, insights, nifty_pct=None) -> None:
 
 def _add_divergence(sheet, ins, nifty_pct) -> None:
     """`structure.divergence`: the count of universe stocks that closed AGAINST Nifty's direction
-    on the session, over the covered denominator - the insight's own split, nothing recomputed."""
+    on the session, over the covered denominator - the insight's own split, nothing recomputed.
+
+    Only a PUBLISHABLE (100% coverage) breadth insight becomes a hook fact. A PARTIAL one may
+    still play in UNDER THE SURFACE, worded "of N covered", but the hook's "n of N" has no room
+    for that qualifier and its claim would fail resolution (publication.scene_claims requires
+    PUBLISHABLE) - so the candidate is never offered, and the omission is recorded in
+    `sheet.metadata["structure_hook_omitted"]` instead. ADVANCES and DECLINES share one coverage
+    field (market_structure.aggregator), so the insight's coverage_status is both metrics'."""
+    from market_structure.aggregator import PUBLISHABLE
     split = {s["label"]: int(s["value"]) for s in ins.split if str(s["value"]).isdigit()}
     lower = nifty_pct > 0
     n = split.get("LOWER" if lower else "HIGHER", 0)
     cov = sum(split.values())
     if not n or not cov or sheet.fact("structure.divergence") is not None:
+        return
+    if ins.coverage_status != PUBLISHABLE:
+        omitted = dict(sheet.metadata.get("structure_hook_omitted") or {})
+        omitted["structure.divergence"] = (f"BREADTH_NOT_PUBLISHABLE: coverage_status="
+                                           f"{ins.coverage_status} ({ins.coverage_pct:g}%)")
+        sheet.metadata = dict(sheet.metadata, structure_hook_omitted=omitted)
         return
     U = ins.universe_label
     word = "lower" if lower else "higher"

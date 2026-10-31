@@ -75,6 +75,16 @@ The hook is derived from the edition's strongest selected story without a second
     recorded in `sheet.metadata["structure_hook_omitted"]` (fact id -> reason).
   - `BREADTH_MOVE` is a move kind for the validator, so "fell" next to "NIFTY 200" is checked
     against that fact's direction.
+  - Its displayed claim resolves (`publication.scene_claims._breadth_evidence_ok`) only against
+    the session's own Market Structure snapshot, and only when the fact is that snapshot's count
+    for its own direction - pooled membership in the referenced metrics' counts is not enough:
+    - direction: polarity -1 is DECLINES, +1 is ADVANCES; any other polarity fails;
+    - references: only ADVANCES / DECLINES (any order), the directional one among them, and
+      every referenced metric PUBLISHABLE;
+    - display: exactly "n of N", n = the directional metric's numerator (> 0, = the fact's
+      value), N = its denominator = the universe size, no other number on the fact;
+    - universe: the fact names the snapshot's own universe label.
+    Anything else stays unresolved, so the audit fails closed as a CONTENT_FAILURE.
   - The candidate `post-breadth-divergence` (CONTRAST, `HEADLINE_NUMBER` hero) says, e.g., "Nifty
     rose 0.30%. 128 of 200 NIFTY 200 stocks fell.".
   - Score: 0.62 + up to 0.10 by breadth share, below BIG_MOVE's floor, so the big-move priority

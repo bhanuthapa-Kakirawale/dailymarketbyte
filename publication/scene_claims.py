@@ -6,6 +6,8 @@ the point the storyboard is built, never by parsing rendered pixels.
 """
 from __future__ import annotations
 
+import re
+
 from core import sources as S
 
 from .claims import (BriefResolver, ReportResolver, claim, definition_claims, hook_claims,
@@ -22,10 +24,18 @@ def _numeric(texts):
     return [(k, v) for k, v in texts.items() if numbers(v)]
 
 
+# a BREADTH_MOVE's direction -> the one metric whose count can support it
+BREADTH_METRIC = {-1: "DECLINES", 1: "ADVANCES"}
+_BREADTH_DISPLAY = re.compile(r"(\d+) of (\d+)")
+
+
 def _breadth_evidence_ok(f, snap, session) -> bool:
     """A BREADTH_MOVE (`structure.divergence`) resolves only when it names metric keys, every
-    key is a PUBLISHABLE metric of THIS session's snapshot, and every number the fact displays
-    is one of those metrics' own counts - the display never stands in for the evidence."""
+    key is a PUBLISHABLE metric of THIS session's snapshot, and the fact is exactly that
+    snapshot's count for its own direction - the display never stands in for the evidence:
+    polarity -1 is DECLINES and +1 ADVANCES (that metric referenced, no other metric family);
+    the display is exactly "n of N" with n = that metric's numerator (> 0, = the fact's value)
+    and N = its denominator = the universe size; the fact names the snapshot's universe."""
     from market_structure.aggregator import PUBLISHABLE
     refs = tuple(f.source_refs or ())
     if not refs or snap is None or str(snap.session_date) != str(session):
@@ -33,9 +43,23 @@ def _breadth_evidence_ok(f, snap, session) -> bool:
     metrics = [snap.metric(k) for k in refs]
     if any(m is None or m.status != PUBLISHABLE for m in metrics):
         return False
-    counts = {str(v) for m in metrics for v in (m.numerator, m.denominator)}
-    shown = {n.replace(",", "") for n in (f.numbers or ())} | numbers(f.display)
-    return bool(shown) and shown <= counts
+    pol = f.polarity
+    # exactly an int (never bool / float / anything unhashable) before the dict lookup
+    key = BREADTH_METRIC.get(pol) if type(pol) is int else None
+    if key is None or key not in refs or not set(refs) <= set(BREADTH_METRIC.values()):
+        return False
+    d = snap.metric(key)
+    m = _BREADTH_DISPLAY.fullmatch(f.display or "")
+    if m is None or f.entity != snap.universe_label:
+        return False
+    n, total = m.groups()
+    if n != str(d.numerator) or d.numerator <= 0 or total != str(d.denominator) or \
+            d.denominator != d.universe_size or d.universe_size != snap.constituent_count:
+        return False
+    if isinstance(f.value, bool) or not isinstance(f.value, (int, float)) or f.value != d.numerator:
+        return False
+    shown = {x.replace(",", "") for x in (f.numbers or ())} | numbers(f.display)
+    return shown == {n, total}
 
 
 def _public_section_claims(sid, spec, texts, session):
@@ -82,10 +106,19 @@ def post_claims(sb, report, sheet=None, structure=None) -> list:
         return claim(sid, text, metric, ids, res.sources(ids), role=role, data_as_of=session,
                      retrieved_at=res.retrieved_at(ids), derivation=derivation)
 
+    def structure_evidence(f):
+        return ([f"market_structure:{session}:{k}" for k in f.source_refs],
+                list(STRUCTURE_SOURCES), "count over the named universe")
+
     def resolve_fact(f):
         # well-known kinds resolve to THEIR canonical facts first: a hook fact's refs can carry
         # whatever the legacy hook candidate cited (e.g. an FII fact next to Nifty's move)
         kind, ent = f.kind, f.entity
+        if kind == "BREADTH_MOVE":
+            # only its own Market Structure evidence - never a report fact id among its refs
+            if not _breadth_evidence_ok(f, structure, session):
+                return [], [], None            # unresolved: check_claims reports it
+            return structure_evidence(f)
         if kind == "SECTOR_MOVE":
             ids = res.ids_for(ent)
             if ids:
@@ -100,11 +133,8 @@ def post_claims(sb, report, sheet=None, structure=None) -> list:
         if refs:
             return refs, res.sources(refs), ("historical rank over canonical sessions"
                                              if kind == "INDEX_RANK" else None)
-        if kind in STRUCTURE_FACT_KINDS:
-            if kind == "BREADTH_MOVE" and not _breadth_evidence_ok(f, structure, session):
-                return [], [], None            # unresolved: check_claims reports it
-            return ([f"market_structure:{session}:{k}" for k in f.source_refs],
-                    list(STRUCTURE_SOURCES), "count over the named universe")
+        if kind in STRUCTURE_FACT_KINDS:     # STRUCTURE_COUNT (BREADTH_MOVE returned above)
+            return structure_evidence(f)
         if kind in ("INDEX_MOVE", "INDEX_LEVEL", "INDEX_CONTEXT", "INDEX_RANK") and \
                 "NIFTY 50" in ent.upper():
             return nifty_ids, res.sources(nifty_ids), (

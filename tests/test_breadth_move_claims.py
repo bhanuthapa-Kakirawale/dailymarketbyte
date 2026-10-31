@@ -43,13 +43,29 @@ def _snap(**status):
     return dataclasses.replace(snap, metrics=metrics)
 
 
-def _breadth(display="130 of 200", refs=("ADVANCES", "DECLINES"), n=130, cov=200):
-    """`structure.divergence` exactly as publication.public_hooks._add_divergence builds it."""
-    return fact("structure.divergence", "BREADTH_MOVE", "NIFTY 200",
-                f"{n} of {cov} NIFTY 200 stocks closed lower on the session, while Nifty 50 "
-                f"closed higher ({n} of {cov}).", display, value=float(n), polarity=-1,
-                aliases=("NIFTY 200",), claims={"divergence"}, refs=refs,
-                extra_numbers=(str(cov),))
+_UNSET = object()
+
+
+def _breadth(display="130 of 200", refs=("ADVANCES", "DECLINES"), n=130, cov=200, polarity=-1,
+             entity="NIFTY 200", value=_UNSET, extra=None):
+    """`structure.divergence` exactly as publication.public_hooks._add_divergence builds it
+    (polarity -1 = "closed lower"), with any one field overridable for a negative case."""
+    word = "lower" if polarity == -1 else "higher"
+    return fact("structure.divergence", "BREADTH_MOVE", entity,
+                f"{n} of {cov} {entity} stocks closed {word} on the session ({n} of {cov}).",
+                display, value=float(n) if value is _UNSET else value, polarity=polarity,
+                aliases=(entity,), claims={"divergence"}, refs=refs,
+                extra_numbers=(str(cov),) if extra is None else extra)
+
+
+def _rising_snap():
+    """The mirror of the DIVERGENCE fixture: ADVANCES 130/200, DECLINES 70/200."""
+    snap = _snap()
+    adv, dec = snap.metric("ADVANCES"), snap.metric("DECLINES")
+    swap = lambda m, o: dataclasses.replace(m, numerator=o.numerator, by_sector=o.by_sector,
+                                            observation_ids=o.observation_ids)
+    return dataclasses.replace(snap, metrics=dict(snap.metrics, ADVANCES=swap(adv, dec),
+                                                  DECLINES=swap(dec, adv)))
 
 
 def _sheet(*facts):
@@ -119,6 +135,157 @@ def test_c_breadth_move_without_publishable_evidence_is_never_approved(why, f, s
     (c,) = [c for c in claims if c["metric"] == "breadth_move"]
     assert c["fact_ids"] == [] and c["derivation"] is None, why
     assert _unresolved(issues, f.display), why
+
+
+# --------------------------------------------------------------------------- C2. direction
+def test_c2_audit_fixture_is_the_one_these_cases_are_written_against():
+    s = _snap()
+    got = {k: (s.metric(k).numerator, s.metric(k).denominator, s.metric(k).status)
+           for k in ("ADVANCES", "DECLINES", "UNUSUAL_VOLUME")}
+    assert got == {"ADVANCES": (70, 200, "PUBLISHABLE"), "DECLINES": (130, 200, "PUBLISHABLE"),
+                   "UNUSUAL_VOLUME": (0, 200, "PUBLISHABLE")}
+    assert s.universe_label == "NIFTY 200" and s.constituent_count == 200
+
+
+# Every number below IS a count of a referenced PUBLISHABLE metric (the old union check passed
+# them all, issue 2); none is the snapshot's count for the fact's own direction.
+@pytest.mark.parametrize("why,f,snap", [
+    ("1: 70 fell - 70 is the ADVANCES count", _breadth("70 of 200", n=70), _snap()),
+    ("2: 130 rose - 130 is the DECLINES count", _breadth(polarity=1), _snap()),
+    ("3: count and total swapped", _breadth("200 of 130", n=200, cov=130), _snap()),
+    ("4: another metric's count as the total", _breadth("70 of 130", n=70, cov=130), _snap()),
+    ("5: falling claim citing ADVANCES only", _breadth(refs=("ADVANCES",)), _snap()),
+    ("5b: falling 70 citing ADVANCES only", _breadth("70 of 200", n=70, refs=("ADVANCES",)),
+     _snap()),
+    ("6: UNUSUAL_VOLUME's 0 as a decline count",
+     _breadth("0 of 200", n=0, refs=("UNUSUAL_VOLUME", "DECLINES")), _snap()),
+    ("6b: UNUSUAL_VOLUME referenced beside the right count",
+     _breadth(refs=("UNUSUAL_VOLUME", "DECLINES")), _snap()),
+    ("7: NIFTY 100 named against a NIFTY 200 snapshot", _breadth(entity="NIFTY 100"), _snap()),
+    ("8: the total as a falling count", _breadth("200 of 200", n=200), _snap()),
+    ("9: no direction", _breadth(polarity=None), _snap()),
+    ("9b: zero direction", _breadth(polarity=0), _snap()),
+    ("9c: unsupported direction", _breadth(polarity=2), _snap()),
+    ("10: value disagrees with the display", _breadth(value=70.0), _snap()),
+    ("10b: no value", _breadth(value=None), _snap()),
+    ("11: NEW_52W_HIGH beside DECLINES", _breadth(refs=("NEW_52W_HIGH", "DECLINES")),
+     dataclasses.replace(_snap(), metrics=dict(_snap().metrics, NEW_52W_HIGH=dataclasses.replace(
+         _snap().metric("UNUSUAL_VOLUME"), key="NEW_52W_HIGH")))),
+    ("12: not 'n of N'", _breadth("130 / 200"), _snap()),
+    ("12b: no total", _breadth("130", extra=()), _snap()),
+    ("12c: extra words", _breadth("130 of 200 stocks"), _snap()),
+    ("12d: an extra number on the fact", _breadth(extra=("200", "70")), _snap()),
+    ("12e: leading zero", _breadth("0130 of 200"), _snap()),
+    ("12f: comma-grouped", _breadth("1,30 of 200"), _snap()),
+    ("13: directional metric missing", _breadth(refs=("ADVANCES", "DECLINES")),
+     _snap(DECLINES=None)),
+    ("13b: directional metric PARTIAL", _breadth(refs=("DECLINES",)), _snap(DECLINES="PARTIAL")),
+    ("13c: other breadth metric PARTIAL", _breadth(), _snap(ADVANCES="PARTIAL")),
+    ("14: another session's snapshot", _breadth(),
+     dataclasses.replace(_snap(), session_date=str(PREV))),
+])
+def test_c2_direction_count_and_universe_mismatches_never_resolve(why, f, snap):
+    claims, issues = _resolve(f, structure=snap)
+    (c,) = [c for c in claims if c["metric"] == "breadth_move"]
+    assert c["fact_ids"] == [] and c["derivation"] is None, why
+    assert _unresolved(issues, f.display), why
+
+
+@pytest.mark.parametrize("why,f,snap,ids", [
+    ("130 fell, DECLINES", _breadth(), _snap(), [ADV, DEC]),
+    ("130 fell, DECLINES only", _breadth(refs=("DECLINES",)), _snap(), [DEC]),
+    ("130 fell, refs reversed", _breadth(refs=("DECLINES", "ADVANCES")), _snap(), [DEC, ADV]),
+    ("mirror: 130 rose, ADVANCES", _breadth(polarity=1), _rising_snap(), [ADV, DEC]),
+    ("mirror, refs reversed", _breadth(polarity=1, refs=("DECLINES", "ADVANCES")),
+     _rising_snap(), [DEC, ADV]),
+    ("70 rose, ADVANCES (direction-bound, not majority-bound)",
+     _breadth("70 of 200", n=70, polarity=1), _snap(), [ADV, DEC]),
+])
+def test_c2_direction_supported_claims_resolve(why, f, snap, ids):
+    claims, issues = _resolve(f, structure=snap)
+    (c,) = [c for c in claims if c["metric"] == "breadth_move"]
+    assert c["fact_ids"] == ids, why
+    assert c["derivation"] == "count over the named universe" and issues == [], why
+
+
+def test_c2_builder_output_resolves_in_both_directions():
+    """publication.public_hooks._add_divergence's own facts pass the stricter check: Nifty up
+    -> the DECLINES count "lower"; Nifty down (mirror snapshot) -> the ADVANCES count."""
+    from market_structure.editorial import _breadth as insight
+    from publication.public_hooks import add_structure_facts
+    for snap, pct, pol in ((_snap(), 0.42, -1), (_rising_snap(), -0.42, 1)):
+        sheet = NS(facts=[], metadata={}, fact=lambda fid: None)
+        add_structure_facts(sheet, [insight(snap, pct)], nifty_pct=pct)
+        (f,) = sheet.facts
+        assert (f.kind, f.display, f.polarity) == ("BREADTH_MOVE", "130 of 200", pol)
+        claims, issues = _resolve(f, structure=snap)
+        assert issues == [], (pct, issues)
+
+
+@pytest.mark.parametrize("refs", [("f.nifty",), ("DECLINES", "f.nifty")],
+                         ids=["report-fact-only", "breadth-ref-plus-report-fact"])
+def test_c2_a_report_fact_id_never_stands_in_for_breadth_evidence(refs):
+    """A BREADTH_MOVE is checked before the generic report-fact lookup: citing a canonical
+    report fact (`f.nifty`, real in `_Report`) - alone or beside a breadth key - must not let
+    a wrong-direction count resolve to that fact instead of failing the breadth check."""
+    report = _Report()
+    assert report.fact("f.nifty") is not None
+    f = _breadth("70 of 200", n=70, refs=refs)
+    claims, issues = _resolve(f, report=report, structure=_snap())
+    (c,) = [c for c in claims if c["metric"] == "breadth_move"]
+    assert c["fact_ids"] == [] and c["derivation"] is None
+    assert _unresolved(issues, "70 of 200")
+
+
+def test_c2_valid_breadth_move_resolves_to_structure_even_with_a_report():
+    claims, issues = _resolve(_breadth(), report=_Report(), structure=_snap())
+    (c,) = [c for c in claims if c["metric"] == "breadth_move"]
+    assert c["fact_ids"] == [ADV, DEC] and c["source_name"] == list(STRUCTURE_SOURCES)
+    assert c["derivation"] == "count over the named universe" and issues == []
+
+
+# Each malformed polarity is paired with the display its nearest int direction would make
+# correct (-1 -> DECLINES 130, +1 -> ADVANCES 70), so the polarity's TYPE is the only fault.
+@pytest.mark.parametrize("polarity,display,n", [
+    (None, "130 of 200", 130), (0, "130 of 200", 130), (2, "70 of 200", 70),
+    (True, "70 of 200", 70), (False, "130 of 200", 130),
+    (-1.0, "130 of 200", 130), (1.0, "70 of 200", 70), ([-1], "130 of 200", 130),
+], ids=["None", "0", "2", "True", "False", "-1.0", "+1.0", "unhashable[-1]"])
+def test_c2_malformed_polarity_is_unresolved_never_raised(polarity, display, n):
+    f = _breadth(display, n=n, polarity=polarity)
+    claims, issues = _resolve(f, report=_Report(), structure=_snap())   # must not raise
+    (c,) = [c for c in claims if c["metric"] == "breadth_move"]
+    assert c["fact_ids"] == [] and c["derivation"] is None
+    assert _unresolved(issues, display)
+
+
+@pytest.mark.parametrize("polarity,display,n", [(-1, "130 of 200", 130), (1, "70 of 200", 70)],
+                         ids=["-1", "+1"])
+def test_c2_int_polarity_controls_still_resolve(polarity, display, n):
+    claims, issues = _resolve(_breadth(display, n=n, polarity=polarity), report=_Report(),
+                              structure=_snap())
+    (c,) = [c for c in claims if c["metric"] == "breadth_move"]
+    assert c["fact_ids"] == [ADV, DEC] and issues == []
+
+
+def _one_decline_snap():
+    """DECLINES 1/200: a numerator that `True == 1` would match without the bool check."""
+    snap = _snap()
+    return dataclasses.replace(snap, metrics=dict(snap.metrics, DECLINES=dataclasses.replace(
+        snap.metric("DECLINES"), numerator=1)))
+
+
+@pytest.mark.parametrize("value,resolves", [(True, False), (False, False), (1.0, True), (1, True)],
+                         ids=["True", "False", "float 1.0", "int 1"])
+def test_c2_boolean_fact_value_is_unresolved(value, resolves):
+    f = _breadth("1 of 200", n=1, value=value)
+    claims, issues = _resolve(f, report=_Report(), structure=_one_decline_snap())
+    (c,) = [c for c in claims if c["metric"] == "breadth_move"]
+    if resolves:
+        assert c["fact_ids"] == [ADV, DEC] and issues == [], value
+    else:
+        assert c["fact_ids"] == [] and c["derivation"] is None, value
+        assert _unresolved(issues, "1 of 200"), value
 
 
 def test_c_structure_count_resolution_is_unchanged():
